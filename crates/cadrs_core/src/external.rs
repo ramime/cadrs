@@ -519,7 +519,7 @@ impl Command for InsertLinked {
 /// Whether `document` can be reached in `store` (DV1.7).
 pub fn link_state(store: &Store, document: DocumentId) -> LinkState {
     let path = store.document_path(document);
-    if !path.is_file() {
+    if !cadrs_fs::is_file(&path) {
         return LinkState::Gone;
     }
     match store.load(document) {
@@ -530,10 +530,10 @@ pub fn link_state(store: &Store, document: DocumentId) -> LinkState {
 }
 
 /// A file's modification time and length, to tell when it changed.
-type Stamp = Option<(std::time::SystemTime, u64)>;
+type Stamp = Option<(cadrs_fs::SystemTime, u64)>;
 
 fn stamp(path: &PathBuf) -> Stamp {
-    let m = std::fs::metadata(path).ok()?;
+    let m = cadrs_fs::metadata(path).ok()?;
     Some((m.modified().ok()?, m.len()))
 }
 
@@ -581,7 +581,7 @@ impl Resolver {
     fn read_current(&mut self, document: DocumentId) -> (LinkState, Option<Arc<Document>>) {
         let path = self.store.document_path(document);
         let now = stamp(&path);
-        if now.is_none() || !path.is_file() {
+        if now.is_none() || !cadrs_fs::is_file(&path) {
             self.current.remove(&document);
             return (LinkState::Gone, None);
         }

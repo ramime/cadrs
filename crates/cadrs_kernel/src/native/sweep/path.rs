@@ -658,7 +658,7 @@ pub(crate) fn sweep_spines(
 ) -> Result<Tagged> {
     let frames = frames.into();
     let prof = std::env::var("CADRS_PROFILE").is_ok();
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let path_len: usize = sp.iter().map(|s| s.0.len()).sum();
     let mut pieces: Vec<Tagged> = Vec::new();
     if std::env::var("CADRS_SWEEP_DEBUG").is_ok() {
@@ -764,7 +764,7 @@ pub(crate) fn sweep_spines(
             path_len
         );
     }
-    let t1 = std::time::Instant::now();
+    let t1 = web_time::Instant::now();
     // Join the pieces: the caps at the joints are glued away (pieces that meet anywhere else,
     // a two-way sweep's halves, are united).
     if pieces.is_empty() {

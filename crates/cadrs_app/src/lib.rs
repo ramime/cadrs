@@ -59,7 +59,10 @@ pub mod linked_session;
 pub mod manipulator;
 pub mod mass_props;
 pub mod material_dialog;
+// The MCP server listens on a port: not in the browser build (`tools/web`).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mcp_board;
 pub mod measure;
 pub mod move_document;
@@ -198,8 +201,8 @@ impl AppClock {
 
     pub fn now(&self) -> Timestamp {
         self.fixed.unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0)
         })
@@ -782,7 +785,6 @@ impl Plugin for CadrsAppPlugin {
                 analysis::AnalysisPlugin,
                 preferences_ui::PreferencesPlugin,
                 manipulator::ManipulatorPlugin,
-                mcp::McpPlugin,
             ))
             .add_plugins((
                 variables_ui::VariablesPlugin,
@@ -821,6 +823,8 @@ impl Plugin for CadrsAppPlugin {
                     open_at_start.after(apply_start_state),
                 ),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_plugins(mcp::McpPlugin);
     }
 }
 

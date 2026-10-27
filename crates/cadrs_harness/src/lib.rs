@@ -193,14 +193,14 @@ pub const COMPLETE_MARKER: &str = ".complete";
 /// would autosave them when it opens one).
 pub fn prepare_data_from(from: &Path, to: &Path) -> Result<(), String> {
     let marker = from.join(COMPLETE_MARKER);
-    let start = std::time::Instant::now();
+    let start = web_time::Instant::now();
     loop {
-        if marker.is_file() {
-            let _ = std::fs::remove_dir_all(to);
+        if cadrs_fs::is_file(&marker) {
+            let _ = cadrs_fs::remove_dir_all(to);
             // (A run of the other scenario starting meanwhile clears its directory: wait for
             // it to finish again.)
             match copy_dir(&from.join("data"), to) {
-                Ok(()) if marker.is_file() => return Ok(()),
+                Ok(()) if cadrs_fs::is_file(&marker) => return Ok(()),
                 Ok(()) => {}
                 Err(e) if start.elapsed() > Duration::from_secs(180) => {
                     return Err(format!("cannot copy {}: {e}", from.display()));
@@ -215,7 +215,7 @@ pub fn prepare_data_from(from: &Path, to: &Path) -> Result<(), String> {
                 COMPLETE_MARKER
             ));
         }
-        if !from.is_dir() && start.elapsed() > Duration::from_secs(5) {
+        if !cadrs_fs::is_dir(from) && start.elapsed() > Duration::from_secs(5) {
             return Err(format!(
                 "{} does not exist: run that scenario first",
                 from.display()
@@ -226,14 +226,14 @@ pub fn prepare_data_from(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for e in std::fs::read_dir(from)? {
+    cadrs_fs::create_dir_all(to)?;
+    for e in cadrs_fs::read_dir(from)? {
         let e = e?;
         let target = to.join(e.file_name());
         if e.file_type()?.is_dir() {
             copy_dir(&e.path(), &target)?;
         } else if e.path().extension().is_none_or(|x| x != "tmp") {
-            std::fs::copy(e.path(), target)?;
+            cadrs_fs::copy(e.path(), target)?;
         }
     }
     Ok(())

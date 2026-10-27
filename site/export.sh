@@ -3,6 +3,10 @@
 #
 #   site/export.sh [OUT_DIR] [BASE_PATH]     defaults: site/dist, /cadrs
 #
+# The browser build (tools/web) goes in OUT_DIR/app: the latest release's
+# (`cadrs-web.tar.gz`), or the folder `CADRS_WEB_DIR` names (a local `tools/web/build.sh`).
+# With one, the page links to it ("Try it in your browser").
+#
 # Needs the `proa` CLI from our Proa fork (static export is not upstream yet) and the
 # Tailwind CLI v4 on PATH:
 #   cargo install --git https://github.com/rvdende/proa --branch feat/static-export --locked proa-cli
@@ -26,9 +30,26 @@ fi
 if [[ -z "${CADRS_STARS:-}" ]]; then
     CADRS_STARS="$(api "" | sed -n 's/^  "stargazers_count": \([0-9]*\),$/\1/p')"
 fi
-export CADRS_RELEASE="${CADRS_RELEASE:-}" CADRS_STARS="${CADRS_STARS:-}"
+web="$(mktemp -d)"
+trap 'rm -rf "$web"' EXIT
+if [[ -n "${CADRS_WEB_DIR:-}" ]]; then
+    cp -r "$CADRS_WEB_DIR"/. "$web/"
+elif curl -fsSL -o "$web/web.tar.gz" \
+    "https://github.com/rvdende/cadrs/releases/latest/download/cadrs-web.tar.gz"; then
+    tar -xzf "$web/web.tar.gz" -C "$web" --strip-components=1
+    rm "$web/web.tar.gz"
+fi
+CADRS_WEB_APP=""
+[[ -f "$web/index.html" ]] && CADRS_WEB_APP=1
+export CADRS_RELEASE="${CADRS_RELEASE:-}" CADRS_STARS="${CADRS_STARS:-}" CADRS_WEB_APP
 echo "release: ${CADRS_RELEASE:-unknown (links go to the releases page)}"
 echo "stars: ${CADRS_STARS:-unknown (the page fetches them)}"
+if [[ -n "$CADRS_WEB_APP" ]]; then echo "browser build: at app/"; else echo "browser build: none"; fi
 
 proa build --locked --artifact-out target/site/cadrs-site
 proa export --bin target/site/cadrs-site --out "$out" --base-path "$base_path"
+if [[ -n "$CADRS_WEB_APP" ]]; then
+    rm -rf "$out/app"
+    mkdir -p "$out/app"
+    cp -r "$web"/. "$out/app/"
+fi

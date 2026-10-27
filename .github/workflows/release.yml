@@ -1,8 +1,8 @@
 name: Release
 
 # Pushing a version tag (`git tag v0.1.6 && git push origin v0.1.6`) builds the Linux and Windows
-# archives, as tools/release/build.sh does locally, and the macOS disk image (#103), and publishes
-# them as a GitHub release with SHA256SUMS.txt. The release notes are
+# archives, as tools/release/build.sh does locally, the macOS disk image (#103) and the browser
+# build (tools/web), and publishes them as a GitHub release with SHA256SUMS.txt. The release notes are
 # tools/release/notes/<tag>.md (GitHub's generated notes when there is none); a tag with a `-` in
 # it (v0.1.7-beta.1) is a pre-release. Then the site is redeployed so its download links point at
 # the new release. Running it by hand with a tag (Actions › Release › Run workflow) releases the
@@ -167,9 +167,56 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
 
+  # The browser build (tools/web/build.sh): the app as WebAssembly, drawn with WebGPU. The site
+  # serves the latest release's at /cadrs/app/ (site/export.sh).
+  web:
+    name: Build (browser)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # clang and mold link the build scripts (.cargo/config.toml's host settings).
+      - name: System packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo -E apt-get update
+          sudo -E apt-get install -y --no-install-recommends clang mold < /dev/null
+
+      # The nightly pinned in rust-toolchain.toml, with its wasm32 target.
+      - name: Rust toolchain
+        run: rustup toolchain install && rustc -V
+
+      # wasm-bindgen's command line has to match the crate in Cargo.lock.
+      - name: wasm-bindgen version
+        id: wasm-bindgen
+        run: echo "version=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"/\1/p}' Cargo.lock)" >> "$GITHUB_OUTPUT"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-web
+
+      - name: Build
+        run: tools/web/build.sh target/web
+
+      - name: Package
+        run: tools/release/package.sh web target/web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   publish:
     name: Publish the release
-    needs: [linux, windows, macos]
+    needs: [linux, windows, macos, web]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
     permissions:

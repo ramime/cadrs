@@ -377,7 +377,7 @@ fn on_activate(ev: On<Activate>, q: Query<&Name>, mut commands: Commands) {
         "export-image-browse" => commands.queue(|world: &mut World| {
             let typed = field(world, "export-image-folder-field");
             let dir = PathBuf::from(typed.trim());
-            let dir = if dir.is_dir() {
+            let dir = if cadrs_fs::is_dir(&dir) {
                 dir
             } else {
                 std::env::current_dir().unwrap_or_default()
@@ -606,7 +606,7 @@ pub fn write_image(
         }
     }
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     match format {
         ImageFormat::Png => img.save(path),
@@ -683,6 +683,6 @@ mod tests {
         let p = write_image(img, &dir.join("a.jpg"), ImageFormat::Jpeg, false).unwrap();
         let back = image::open(&p).unwrap();
         assert_eq!((back.width(), back.height()), (64, 48));
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = cadrs_fs::remove_dir_all(dir);
     }
 }

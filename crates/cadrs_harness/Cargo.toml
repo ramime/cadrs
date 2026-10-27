@@ -6,8 +6,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cadrs_fs.workspace = true
 bevy.workspace = true
 cadrs_ui.workspace = true
 serde.workspace = true
 ron.workspace = true
 image.workspace = true
+web-time.workspace = true

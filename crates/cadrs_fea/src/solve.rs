@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use web_time::Instant;
 
 use faer::sparse::{SparseColMat, SymbolicSparseColMat};
 use rayon::prelude::*;
@@ -856,7 +856,11 @@ fn factor_parallelism() -> faer::Par {
         .unwrap_or(cores.min(4))
     {
         0 | 1 => faer::Par::Seq,
+        #[cfg(not(target_arch = "wasm32"))]
         n => faer::Par::rayon(n),
+        // A browser has one thread (faer is built without its own there).
+        #[cfg(target_arch = "wasm32")]
+        _ => faer::Par::Seq,
     }
 }
 

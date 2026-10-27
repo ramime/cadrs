@@ -129,7 +129,7 @@ pub fn bytes_for(hash: &str, dir: &Path) -> Result<Vec<u8>, String> {
     let bytes = if let Some(bytes) = get(hash) {
         bytes.to_vec()
     } else {
-        let path = std::fs::read_dir(dir)
+        let path = cadrs_fs::read_dir(dir)
             .ok()
             .into_iter()
             .flatten()
@@ -137,7 +137,7 @@ pub fn bytes_for(hash: &str, dir: &Path) -> Result<Vec<u8>, String> {
             .map(|e| e.path())
             .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(hash))
             .ok_or_else(|| format!("Missing required asset {hash}"))?;
-        std::fs::read(path).map_err(|e| e.to_string())?
+        cadrs_fs::read(path).map_err(|e| e.to_string())?
     };
     if hash_of(&bytes) != hash {
         return Err(format!("Asset {hash} failed validation"));
@@ -221,16 +221,16 @@ pub fn save_dir(dir: &Path, doc: &Document) -> io::Result<()> {
     if used.is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(dir)?;
+    cadrs_fs::create_dir_all(dir)?;
     for (hash, ext) in used {
         let path = dir.join(file_name(&hash, &ext));
-        if path.is_file() {
+        if cadrs_fs::is_file(&path) {
             continue;
         }
         if let Some(bytes) = get(&hash) {
             let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, &bytes[..])?;
-            std::fs::rename(&tmp, &path)?;
+            cadrs_fs::write(&tmp, &bytes[..])?;
+            cadrs_fs::rename(&tmp, &path)?;
         }
     }
     Ok(())
@@ -239,7 +239,7 @@ pub fn save_dir(dir: &Path, doc: &Document) -> io::Result<()> {
 /// Loads every blob in `dir` (a document's blobs folder) into the cache. A file whose content
 /// doesn't match its name is skipped.
 pub fn load_dir(dir: &Path) -> io::Result<()> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = cadrs_fs::read_dir(dir) else {
         return Ok(());
     };
     for e in entries.flatten() {
@@ -250,7 +250,7 @@ pub fn load_dir(dir: &Path) -> io::Result<()> {
         if stem.len() != 32 || contains(stem) || path.extension().is_some_and(|x| x == "tmp") {
             continue;
         }
-        let bytes = std::fs::read(&path)?;
+        let bytes = cadrs_fs::read(&path)?;
         if hash_of(&bytes) == stem {
             insert(bytes);
         }
@@ -260,13 +260,13 @@ pub fn load_dir(dir: &Path) -> io::Result<()> {
 
 /// Copies the blobs folder `from` to `to` (a copied document).
 pub fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
-    let Ok(entries) = std::fs::read_dir(from) else {
+    let Ok(entries) = cadrs_fs::read_dir(from) else {
         return Ok(());
     };
-    std::fs::create_dir_all(to)?;
+    cadrs_fs::create_dir_all(to)?;
     for e in entries.flatten() {
-        if e.path().is_file() {
-            std::fs::copy(e.path(), to.join(e.file_name()))?;
+        if cadrs_fs::is_file(e.path()) {
+            cadrs_fs::copy(e.path(), to.join(e.file_name()))?;
         }
     }
     Ok(())

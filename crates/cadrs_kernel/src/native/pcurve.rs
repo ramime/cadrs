@@ -43,7 +43,7 @@ pub fn pcurve_or(
         .or_else(|| iso_line(s, c, t0, t1))
         .or(fit)
         .unwrap_or_else(|| {
-            let t = super::boolean::profiling().then(std::time::Instant::now);
+            let t = super::boolean::profiling().then(web_time::Instant::now);
             let pc = fitted(s, c, t0, t1);
             if let Some(t) = t {
                 FITTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

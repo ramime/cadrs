@@ -1024,7 +1024,7 @@ pub fn sweep_seg(
             reach = reach.max((m.point(&P3::new(q.x, q.y, 0.0)) - start).norm());
         }
     }
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let kind = PathSweep::new(plane, segs, frames, reach, helix)?;
     let t1 = t0.elapsed();
     if (kind.pts[1] - kind.pts[0]).dot(&plane.normal).abs()

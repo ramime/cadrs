@@ -373,7 +373,7 @@ impl Preferences {
     /// Reads the preferences from a store root; the defaults when there is no file or it can't
     /// be read.
     pub fn load(root: &Path) -> Self {
-        std::fs::read_to_string(Self::path(root))
+        cadrs_fs::read_to_string(Self::path(root))
             .ok()
             .and_then(|s| ron::from_str(&s).ok())
             .unwrap_or_default()
@@ -383,11 +383,11 @@ impl Preferences {
     pub fn save(&self, root: &Path) -> io::Result<()> {
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
             .map_err(io::Error::other)?;
-        std::fs::create_dir_all(root)?;
+        cadrs_fs::create_dir_all(root)?;
         let path = Self::path(root);
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path)
+        cadrs_fs::write(&tmp, text)?;
+        cadrs_fs::rename(&tmp, path)
     }
 }
 
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn preferences_round_trip_through_the_store_root() {
         let dir = std::env::temp_dir().join(format!("cadrs-prefs-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = cadrs_fs::remove_dir_all(&dir);
         assert_eq!(Preferences::load(&dir), Preferences::default());
         let p = Preferences {
             mouse: MousePreset::SolidWorks,
@@ -512,7 +512,7 @@ mod tests {
         p.save(&dir).unwrap();
         assert_eq!(Preferences::load(&dir), p);
         // A file from before the MCP server reads with it off.
-        std::fs::write(Preferences::path(&dir), "(mouse: Creo)").unwrap();
+        cadrs_fs::write(Preferences::path(&dir), "(mouse: Creo)").unwrap();
         assert_eq!(
             Preferences::load(&dir),
             Preferences {
@@ -521,9 +521,9 @@ mod tests {
             }
         );
         // An unreadable file reads as the defaults.
-        std::fs::write(Preferences::path(&dir), "not ron").unwrap();
+        cadrs_fs::write(Preferences::path(&dir), "not ron").unwrap();
         assert_eq!(Preferences::load(&dir), Preferences::default());
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = cadrs_fs::remove_dir_all(&dir);
     }
 
     #[test]

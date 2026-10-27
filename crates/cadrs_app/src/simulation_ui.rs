@@ -187,7 +187,7 @@ struct Run {
     progress: Arc<Mutex<(Stage, f32)>>,
     out: Arc<Mutex<Option<Result<Solution, FeaError>>>>,
     cancel: Arc<AtomicBool>,
-    started: std::time::Instant,
+    started: web_time::Instant,
 }
 
 /// A finished solve.
@@ -367,27 +367,25 @@ fn start_solve(world: &mut World) {
     options.cancel = Some(cancel.clone());
     let (p2, o2, c2) = (progress.clone(), out.clone(), cancel.clone());
     let model = setup.model;
-    std::thread::Builder::new()
-        .name("cadrs-simulation".into())
-        .spawn(move || {
-            let report = |s: Stage, f: f32| {
-                if let Ok(mut p) = p2.lock() {
-                    *p = (s, f);
-                }
-                if s == Stage::Assembling && SIM_HOLD.load(Ordering::Relaxed) {
-                    SIM_HELD.store(true, Ordering::Relaxed);
-                    while SIM_HOLD.load(Ordering::Relaxed) && !c2.load(Ordering::Relaxed) {
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                    SIM_HELD.store(false, Ordering::Relaxed);
-                }
-            };
-            let r = cadrs_fea::solve(&model, &options, &report);
-            if let Ok(mut o) = o2.lock() {
-                *o = Some(r);
+    cadrs_core::background::spawn("cadrs-simulation", move || {
+        let report = |s: Stage, f: f32| {
+            if let Ok(mut p) = p2.lock() {
+                *p = (s, f);
             }
-        })
-        .ok();
+            if s == Stage::Assembling && SIM_HOLD.load(Ordering::Relaxed) {
+                SIM_HELD.store(true, Ordering::Relaxed);
+                while SIM_HOLD.load(Ordering::Relaxed) && !c2.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                SIM_HELD.store(false, Ordering::Relaxed);
+            }
+        };
+        let r = cadrs_fea::solve(&model, &options, &report);
+        if let Ok(mut o) = o2.lock() {
+            *o = Some(r);
+        }
+    })
+    .ok();
     state.run = Some(Run {
         element,
         key,
@@ -397,7 +395,7 @@ fn start_solve(world: &mut World) {
         progress,
         out,
         cancel,
-        started: std::time::Instant::now(),
+        started: web_time::Instant::now(),
     });
 }
 

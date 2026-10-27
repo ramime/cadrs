@@ -720,7 +720,7 @@ pub struct BrowserList {
 #[derive(Resource, Default)]
 pub struct LibrarySnapshot {
     data: Option<Arc<LibraryData>>,
-    read_at: Option<std::time::Instant>,
+    read_at: Option<web_time::Instant>,
     reading: Option<Pending<LibraryData>>,
     decoding: Option<Pending<Vec<Decoded>>>,
     /// Thumbnails asked for while a decode was running.
@@ -745,7 +745,7 @@ type Pending<T> = Arc<std::sync::Mutex<Option<T>>>;
 fn spawn_read<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Pending<T> {
     let slot: Pending<T> = Arc::default();
     let out = slot.clone();
-    std::thread::spawn(move || {
+    let _ = cadrs_core::background::spawn("linked-read", move || {
         let v = f();
         if let Ok(mut s) = out.lock() {
             *s = Some(v);
@@ -843,7 +843,7 @@ fn land_library_reads(world: &mut World) {
     let mut snap = world.resource_mut::<LibrarySnapshot>();
     let mut changed = decoded_any;
     if let Some(d) = read {
-        snap.read_at = Some(std::time::Instant::now());
+        snap.read_at = Some(web_time::Instant::now());
         // The same as before: nothing to rebuild (a browser keeps its focus while typing).
         if snap.data.as_deref() != Some(&d) {
             snap.data = Some(Arc::new(d));

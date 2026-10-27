@@ -9,7 +9,7 @@ repository.workspace = true
 # the tools' parameters, without Bevy. The app runs the calls (`cadrs_app::mcp`).
 [dependencies]
 rmcp.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "sync", "time", "macros"] }
 tokio-util.workspace = true
 axum.workspace = true
 serde.workspace = true

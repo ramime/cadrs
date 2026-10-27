@@ -60,8 +60,8 @@ pub struct Project {
 /// holding one project. The schematic and board beside it are read when present.
 pub fn read_project(path: &Path) -> Result<Project, Error> {
     let io = |p: &Path, e| Error::Io(p.to_path_buf(), e);
-    let (dir, stem) = if path.is_dir() {
-        let pro = std::fs::read_dir(path)
+    let (dir, stem) = if cadrs_fs::is_dir(path) {
+        let pro = cadrs_fs::read_dir(path)
             .map_err(|e| io(path, e))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .find(|p| {
@@ -89,21 +89,21 @@ pub fn read_project(path: &Path) -> Result<Project, Error> {
     let mut warnings = vec![];
     let mut design = Design::default();
     let sch = file("kicad_sch");
-    if sch.exists() {
-        let text = std::fs::read_to_string(&sch).map_err(|e| io(&sch, e))?;
+    if cadrs_fs::exists(&sch) {
+        let text = cadrs_fs::read_to_string(&sch).map_err(|e| io(&sch, e))?;
         design.schematic = read_schematic(&text, &mut warnings)?;
     } else {
         warnings.push(format!("no schematic ({})", sch.display()));
     }
     let pcb = file("kicad_pcb");
-    if pcb.exists() {
-        let text = std::fs::read_to_string(&pcb).map_err(|e| io(&pcb, e))?;
+    if cadrs_fs::exists(&pcb) {
+        let text = cadrs_fs::read_to_string(&pcb).map_err(|e| io(&pcb, e))?;
         design.board = read_board(&text, &mut warnings)?;
     } else {
         warnings.push(format!("no board ({})", pcb.display()));
     }
     let pro = file("kicad_pro");
-    if let Ok(text) = std::fs::read_to_string(&pro) {
+    if let Ok(text) = cadrs_fs::read_to_string(&pro) {
         match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(v) => read_rules(&v, &mut design.board.rules),
             Err(e) => warnings.push(format!("{}: {e}", pro.display())),
@@ -228,12 +228,12 @@ pub fn resolve_model(source: &str, project_dir: &Path) -> Option<PathBuf> {
     candidates
         .iter()
         .flat_map(|c| with_step(c))
-        .find(|p| p.is_file())
+        .find(|p| cadrs_fs::is_file(p))
 }
 
 /// The installed 3D model libraries, newest first.
 fn model_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir("/usr/share")
+    let mut dirs: Vec<PathBuf> = cadrs_fs::read_dir("/usr/share")
         .into_iter()
         .flatten()
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -242,7 +242,7 @@ fn model_dirs() -> Vec<PathBuf> {
                 .is_some_and(|n| n.to_string_lossy().starts_with("kicad"))
         })
         .map(|p| p.join("3dmodels"))
-        .filter(|p| p.is_dir())
+        .filter(|p| cadrs_fs::is_dir(p))
         .collect();
     dirs.sort();
     dirs.reverse();
@@ -251,12 +251,12 @@ fn model_dirs() -> Vec<PathBuf> {
 
 fn find_files(dir: &Path, name: &std::ffi::OsStr, depth: u32) -> Vec<PathBuf> {
     let mut out = vec![];
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(rd) = cadrs_fs::read_dir(dir) else {
         return out;
     };
     for e in rd.flatten() {
         let p = e.path();
-        if p.is_dir() {
+        if cadrs_fs::is_dir(&p) {
             if depth > 0
                 && !p
                     .file_name()

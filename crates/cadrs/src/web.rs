@@ -1,0 +1,69 @@
+//! cadrs in a browser (`tools/web`): the app on the page's `<canvas id="cadrs">`, drawn with
+//! WebGPU.
+//!
+//! A page has one thread and no processes, so the kernel's jobs run on it as they are sent
+//! (`cadrs_core::rebuild`), and there is no MCP server and no update check (the page is
+//! deployed with the site, always the latest).
+//!
+//! Its files are `cadrs_fs`'s, kept in the browser: the documents in [`DOCUMENTS`], the user's
+//! libraries in [`LIBRARIES`]. Exports go to [`DOWNLOADS`], and each file written there is
+//! handed to the browser as a download. Files to import come from the browser's file chooser,
+//! copied into `cadrs_ui::file_picker::UPLOADS`. Neither of those two folders is kept.
+
+use std::path::PathBuf;
+
+use bevy::prelude::*;
+use cadrs_app::{CadrsAppPlugin, DocumentStore, ExportDirOverride};
+use cadrs_core::Store;
+use cadrs_harness::{HarnessOptions, HarnessPlugin};
+use cadrs_ui::CadrsUiPlugin;
+
+/// The page's canvas the app draws on.
+const CANVAS: &str = "#cadrs";
+const DOCUMENTS: &str = "/cadrs/documents";
+const LIBRARIES: &str = "/cadrs/libraries";
+const DOWNLOADS: &str = "/Downloads";
+
+pub fn run() -> AppExit {
+    cadrs_app::register_kernel_tasks();
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "cadrs".into(),
+                    canvas: Some(CANVAS.into()),
+                    // The canvas fills the page, and follows it as the browser window resizes.
+                    fit_canvas_to_parent: true,
+                    // Keys the app uses (Tab, Ctrl+S, the arrows) are the app's, not the page's.
+                    prevent_default_event_handling: true,
+                    ..default()
+                }),
+                ..default()
+            })
+            // The frame panel's CPU times, as in the app.
+            .set(bevy::log::LogPlugin {
+                custom_layer: cadrs_app::frame_profile::profiler_layer,
+                ..default()
+            }),
+    );
+    app.add_plugins(HarnessPlugin {
+        opts: HarnessOptions::default(),
+        scenario: None,
+    });
+    let uploads = cadrs_ui::file_picker::UPLOADS;
+    cadrs_fs::web::set_scratch([DOWNLOADS.into(), uploads.into()]);
+    for dir in [DOCUMENTS, LIBRARIES, DOWNLOADS, uploads] {
+        if let Err(e) = cadrs_fs::create_dir_all(dir) {
+            error!("cannot make {dir}: {e}");
+        }
+    }
+    cadrs_fs::web::set_downloads(Some(DOWNLOADS.into()));
+    app.insert_resource(DocumentStore(Store::new(DOCUMENTS)))
+        .insert_resource(ExportDirOverride(Some(DOWNLOADS.into())))
+        .insert_resource(cadrs_ui::file_picker::NativeFileDialogs(true))
+        .insert_resource(cadrs_app::eda::libraries::UserLibraries::load(Some(
+            PathBuf::from(LIBRARIES),
+        )));
+    app.add_plugins((CadrsUiPlugin, CadrsAppPlugin)).run()
+}

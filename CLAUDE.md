@@ -20,6 +20,14 @@ Onshape-style CAD in Rust + Bevy 0.19.1. Local notes in `docs/` (git-ignored: `P
   debugging. Kernel work besides rebuilds is a named `rebuild::task::Task`, not a closure.
 - Windowed run from a shell with no display: prefix `WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000`.
 - Windows exe: `cargo build -r --target x86_64-pc-windows-gnu` (MinGW is installed).
+- Browser build: `tools/web/build.sh` → `target/web/` (WebAssembly, drawn with WebGPU; serve the
+  folder over HTTP). Needs wasm-bindgen-cli at Cargo.lock's version. Releases attach it as
+  `cadrs-v<version>-web.tar.gz` and the site serves the latest at `/cadrs/app/`. A page has one
+  thread and no `std::fs` or `std` clock, so code it runs (everything but `cadrs_mcp`, the
+  updater and the kernel's debug dumps) reads files through `cadrs_fs` (also `cadrs_fs::exists`,
+  `is_file`, `is_dir`, not `Path`'s), tells the time with `web_time`, and starts threads with
+  `cadrs_core::background::spawn` (inline in a page); kernel jobs run inline there. CI's
+  "Check (browser)" job compiles it.
 - Release: bump `version` in the root `Cargo.toml`, write `tools/release/notes/v<version>.md`,
   then push the tag `v<version>`; `.github/workflows/release.yml` builds the Linux and Windows
   archives and the macOS disk image (universal, ad-hoc signed; only on GitHub's macOS runner),

@@ -20,8 +20,8 @@ fn fixture(dir: &str, name: &str) -> (PathBuf, PathBuf) {
 fn vision() -> PcbBoard {
     let (emn, emp) = fixture("vision controller", "Vision PCB");
     PcbBoard::read(
-        &std::fs::read_to_string(emn).unwrap(),
-        &std::fs::read_to_string(emp).unwrap(),
+        &cadrs_fs::read_to_string(emn).unwrap(),
+        &cadrs_fs::read_to_string(emp).unwrap(),
     )
     .unwrap()
 }
@@ -29,8 +29,8 @@ fn vision() -> PcbBoard {
 fn secondary() -> PcbBoard {
     let (emn, emp) = fixture("secondary board", "secondary board");
     PcbBoard::read(
-        &std::fs::read_to_string(emn).unwrap(),
-        &std::fs::read_to_string(emp).unwrap(),
+        &cadrs_fs::read_to_string(emn).unwrap(),
+        &cadrs_fs::read_to_string(emp).unwrap(),
     )
     .unwrap()
 }
@@ -248,7 +248,7 @@ fn pcb_studio_survives_save_and_load() {
     assert_eq!(back, d);
     // Through the store.
     let root = std::env::temp_dir().join(format!("cadrs-pcb-store-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let _ = cadrs_fs::remove_dir_all(&root);
     let store = crate::Store::new(&root);
     let meta = crate::DocumentMeta::new("me", 0);
     store.save(&d, &meta).unwrap();
@@ -258,7 +258,7 @@ fn pcb_studio_survives_save_and_load() {
     assert_eq!(s.active_board().unwrap().name(), "secondary board");
     assert_eq!(s.settings, settings);
     assert_eq!(loaded, d);
-    let _ = std::fs::remove_dir_all(&root);
+    let _ = cadrs_fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -406,9 +406,9 @@ fn missing_emp_gives_placeholders_and_a_warning() {
 #[test]
 fn parse_errors_name_the_file() {
     let dir = std::env::temp_dir().join(format!("cadrs-pcb-import-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    cadrs_fs::create_dir_all(&dir).unwrap();
     let bad = dir.join("broken.emn");
-    std::fs::write(&bad, ".HEADER\nnot an idf file\n").unwrap();
+    cadrs_fs::write(&bad, ".HEADER\nnot an idf file\n").unwrap();
     let r = import_files(std::slice::from_ref(&bad));
     assert!(r.boards.is_empty());
     assert_eq!(r.errors.len(), 1);
@@ -417,18 +417,18 @@ fn parse_errors_name_the_file() {
         "{:?}",
         r.errors
     );
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = cadrs_fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn empty_board_name_falls_back_to_the_file_stem() {
     let (emn, emp) = fixture("vision controller", "Vision PCB");
-    let text = std::fs::read_to_string(emn)
+    let text = cadrs_fs::read_to_string(emn)
         .unwrap()
         .replace("\"Vision PCB\"", "\"\"");
     let r = read_board(
         &text,
-        Some(&std::fs::read_to_string(emp).unwrap()),
+        Some(&cadrs_fs::read_to_string(emp).unwrap()),
         "My board",
     )
     .unwrap();
@@ -442,8 +442,8 @@ fn empty_board_name_falls_back_to_the_file_stem() {
 fn keep_ids_are_stable_per_area() {
     let (emn, emp) = fixture("v2 sample", "v2 sample");
     let mut b = PcbBoard::read(
-        &std::fs::read_to_string(emn).unwrap(),
-        &std::fs::read_to_string(emp).unwrap(),
+        &cadrs_fs::read_to_string(emn).unwrap(),
+        &cadrs_fs::read_to_string(emp).unwrap(),
     )
     .unwrap();
     let before: Vec<(KeepKind, usize, ItemId)> = b

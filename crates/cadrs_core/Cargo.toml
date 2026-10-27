@@ -15,6 +15,7 @@ brep = []
 gpu = ["cadrs_kernel/gpu"]
 
 [dependencies]
+cadrs_fs.workspace = true
 cadrs_sketch.workspace = true
 cadrs_vars.workspace = true
 cadrs_cam.workspace = true
@@ -41,9 +42,10 @@ slotmap.workspace = true
 resvg.workspace = true
 
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
-tempfile = "3"
+web-time.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 tiny-skia.workspace = true
 serde_json.workspace = true
 

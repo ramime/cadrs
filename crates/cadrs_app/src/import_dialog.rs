@@ -231,7 +231,7 @@ pub fn pick_file(world: &mut World, path: &std::path::Path) {
         .and_then(|n| n.to_str())
         .unwrap_or("file")
         .to_string();
-    let bytes = match std::fs::read(path) {
+    let bytes = match cadrs_fs::read(path) {
         Ok(b) => b,
         Err(e) => {
             warn!("cannot import {}: {e}", path.display());

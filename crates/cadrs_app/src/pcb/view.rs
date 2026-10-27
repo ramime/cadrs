@@ -96,7 +96,7 @@ impl PcbMeshCache {
         {
             return m.clone();
         }
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let mesh = match cadrs_pcb::mesh::board_mesh(board) {
             Ok(m) => m,
             Err(e) => {

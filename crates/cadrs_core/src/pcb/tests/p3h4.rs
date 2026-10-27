@@ -400,8 +400,8 @@ fn rotating_turns_the_part_in_place() {
 
 fn temp_store(tag: &str) -> crate::Store {
     let root = std::env::temp_dir().join(format!("cadrs-pcb-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let _ = cadrs_fs::remove_dir_all(&root);
+    cadrs_fs::create_dir_all(&root).unwrap();
     crate::Store::new(root)
 }
 
@@ -485,7 +485,7 @@ fn workspace_settings_are_shared_by_every_pcb_studio() {
     let mut fresh = LibrarySync::default();
     fresh.sync(&mut b, &store);
     assert_eq!(studio(&b, idb).settings, PcbSettings::default());
-    let _ = std::fs::remove_dir_all(store.root());
+    let _ = cadrs_fs::remove_dir_all(store.root());
 }
 
 #[test]
@@ -574,5 +574,5 @@ fn mappings_live_in_the_library_document() {
         *load_library(&store, &none, &c).unwrap().get("SOT23"),
         Representation::None
     );
-    let _ = std::fs::remove_dir_all(store.root());
+    let _ = cadrs_fs::remove_dir_all(store.root());
 }

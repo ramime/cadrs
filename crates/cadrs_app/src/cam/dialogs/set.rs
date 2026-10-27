@@ -929,7 +929,7 @@ pub(super) fn export_library(world: &mut World, cam: &CamStudio) {
         return;
     };
     let path = cadrs_core::export::unique_path_ext(&dir, "cadrs-tool-library", "json");
-    match std::fs::write(&path, cam.library.to_json()) {
+    match cadrs_fs::write(&path, cam.library.to_json()) {
         Ok(()) => {
             let theme = world.resource::<Theme>().clone();
             let mut commands = world.commands();
@@ -953,7 +953,7 @@ pub(super) fn import_library(world: &mut World, path: std::path::PathBuf) {
     let Some((_, cam)) = active_cam_owned(world) else {
         return;
     };
-    let text = match std::fs::read_to_string(&path) {
+    let text = match cadrs_fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
             toast(world, &format!("Couldn't read {}: {e}", path.display()));

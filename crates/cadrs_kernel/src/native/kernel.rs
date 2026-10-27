@@ -1296,7 +1296,7 @@ impl Kernel for NativeKernel {
     }
 
     fn mass_properties(&self, body: BodyId) -> Result<MassProperties> {
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let m = super::mass::body_mass(self.get(body)?);
         slow("mass_properties", t, self.get(body)?);
         if t.elapsed().as_millis() > 500 {
@@ -1306,7 +1306,7 @@ impl Kernel for NativeKernel {
     }
 
     fn tessellate(&self, body: BodyId, quality: Tessellation) -> Result<TriMesh> {
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let m = self.tessellate_with(body, &tess::TessParams::try_from(quality)?)?;
         slow("tessellate", t, self.get(body)?);
         Ok(m)
@@ -1471,7 +1471,7 @@ impl NativeKernel {
 }
 
 /// With `CADRS_PROFILE` set, reports calls slower than 50 ms.
-fn slow(what: &str, t: std::time::Instant, b: &Body) {
+fn slow(what: &str, t: web_time::Instant, b: &Body) {
     let e = t.elapsed();
     if e.as_millis() >= 50 && std::env::var("CADRS_PROFILE").is_ok() {
         let nurbs = b
@@ -1487,7 +1487,7 @@ fn slow(what: &str, t: std::time::Instant, b: &Body) {
 }
 
 thread_local! {
-    static DUMP_T: std::cell::Cell<std::time::Instant> = std::cell::Cell::new(std::time::Instant::now());
+    static DUMP_T: std::cell::Cell<web_time::Instant> = std::cell::Cell::new(web_time::Instant::now());
 }
 
 /// With `CADRS_DUMP_DIR` set, writes an operation's input body (exact bytes) and its parameters
@@ -1496,7 +1496,7 @@ pub(crate) fn dump(op: &str, b: &Body, params: &str) {
     let Ok(dir) = std::env::var("CADRS_DUMP_DIR") else {
         return;
     };
-    DUMP_T.with(|t| t.set(std::time::Instant::now()));
+    DUMP_T.with(|t| t.set(web_time::Instant::now()));
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let base = std::path::Path::new(&dir).join(format!("{op}-{n:03}"));

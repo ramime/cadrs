@@ -1271,7 +1271,7 @@ pub fn mesh_face_with(
     es: &[(Vec<f64>, Vec<P3>)],
     p: &TessParams,
 ) -> FaceMesh {
-    let t_start = std::time::Instant::now();
+    let t_start = web_time::Instant::now();
     let prof = std::env::var("CADRS_TESS_PROFILE").is_ok();
     // The face's size, for its tolerances.
     let mut bb = (
@@ -1453,7 +1453,7 @@ struct Setup<'a> {
     scale: (f64, f64),
     extent: f64,
     tol: f64,
-    prof: Option<std::time::Instant>,
+    prof: Option<web_time::Instant>,
 }
 
 /// The constrained Delaunay triangulation of a face, refined to the controls when `refine`.

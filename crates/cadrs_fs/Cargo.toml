@@ -1,0 +1,14 @@
+[package]
+name = "cadrs_fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "std::fs for cadrs, also in a browser: a file tree in memory that the page keeps in IndexedDB"
+
+[dependencies]
+web-time.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+js-sys.workspace = true

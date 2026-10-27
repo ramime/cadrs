@@ -71,7 +71,7 @@ pub fn read_sketch(
             return Ok(crate::dxf_import::sketch_of(&d, units, file_origin));
         }
         VectorFormat::Svg => {
-            let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let bytes = cadrs_fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
             sketch_of_svg(&bytes)?
         }
         VectorFormat::PostScript | VectorFormat::Pdf => {
@@ -322,7 +322,7 @@ fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .flat_map(|d| [d.join(name), d.join(format!("{name}.exe"))])
-        .find(|f| f.is_file())
+        .find(|f| cadrs_fs::is_file(f))
 }
 
 fn run(mut c: std::process::Command, what: &str) -> Result<(), String> {
@@ -345,7 +345,7 @@ fn run(mut c: std::process::Command, what: &str) -> Result<(), String> {
 fn converted_svg(path: &Path, format: VectorFormat) -> Result<String, String> {
     let pdftocairo = which("pdftocairo").ok_or(CONVERTER_HINT)?;
     let dir = std::env::temp_dir().join(format!("cadrs-vector-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    cadrs_fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let result = (|| {
         let pdf = match format {
             VectorFormat::PostScript => {
@@ -374,9 +374,9 @@ fn converted_svg(path: &Path, format: VectorFormat) -> Result<String, String> {
         let mut c = std::process::Command::new(pdftocairo);
         c.args(["-svg", "-f", "1", "-l", "1"]).arg(&pdf).arg(&svg);
         run(c, "pdftocairo")?;
-        std::fs::read_to_string(&svg).map_err(|e| e.to_string())
+        cadrs_fs::read_to_string(&svg).map_err(|e| e.to_string())
     })();
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = cadrs_fs::remove_dir_all(&dir);
     result
 }
 

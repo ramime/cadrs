@@ -310,7 +310,7 @@ fn sync_separate(
 fn browse_folder(world: &mut World) {
     let typed = field(world, "flat-export-folder-field");
     let dir = PathBuf::from(typed.trim());
-    let dir = if dir.is_dir() {
+    let dir = if cadrs_fs::is_dir(&dir) {
         dir
     } else {
         std::env::current_dir().unwrap_or_default()

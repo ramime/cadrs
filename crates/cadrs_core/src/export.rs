@@ -68,12 +68,12 @@ pub fn sanitize(name: &str) -> String {
 /// `<dir>/<stem>.step`, or `<dir>/<stem> (2).step`, … if that file already exists.
 pub fn unique_path(dir: &Path, stem: &str) -> PathBuf {
     let first = dir.join(format!("{stem}.step"));
-    if !first.exists() {
+    if !cadrs_fs::exists(&first) {
         return first;
     }
     (2..)
         .map(|n| dir.join(format!("{stem} ({n}).step")))
-        .find(|p| !p.exists())
+        .find(|p| !cadrs_fs::exists(p))
         .expect("an unused name")
 }
 
@@ -81,12 +81,12 @@ pub fn unique_path(dir: &Path, stem: &str) -> PathBuf {
 /// other export formats).
 pub fn unique_path_ext(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let first = dir.join(format!("{stem}.{ext}"));
-    if !first.exists() {
+    if !cadrs_fs::exists(&first) {
         return first;
     }
     (2..)
         .map(|n| dir.join(format!("{stem} ({n}).{ext}")))
-        .find(|p| !p.exists())
+        .find(|p| !cadrs_fs::exists(p))
         .expect("an unused name")
 }
 
@@ -227,13 +227,13 @@ mod tests {
     #[test]
     fn unique_paths_do_not_overwrite() {
         let dir = std::env::temp_dir().join(format!("cadrs-export-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        cadrs_fs::create_dir_all(&dir).unwrap();
         assert_eq!(unique_path(&dir, "a"), dir.join("a.step"));
-        std::fs::write(dir.join("a.step"), "").unwrap();
+        cadrs_fs::write(dir.join("a.step"), "").unwrap();
         assert_eq!(unique_path(&dir, "a"), dir.join("a (2).step"));
-        std::fs::write(dir.join("a (2).step"), "").unwrap();
+        cadrs_fs::write(dir.join("a (2).step"), "").unwrap();
         assert_eq!(unique_path(&dir, "a"), dir.join("a (3).step"));
-        std::fs::remove_dir_all(&dir).unwrap();
+        cadrs_fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

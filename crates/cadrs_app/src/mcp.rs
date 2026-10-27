@@ -203,7 +203,7 @@ fn run_calls(world: &mut World) {
                         let paths: Vec<String> =
                             shots.iter().map(|p| p.display().to_string()).collect();
                         let caption = json!({ "screenshots": paths }).to_string();
-                        match shots.last().and_then(|p| std::fs::read(p).ok()) {
+                        match shots.last().and_then(|p| cadrs_fs::read(p).ok()) {
                             Some(png) => req.reply_image(png, caption),
                             None => req.reply(Ok(json!({ "screenshots": paths }))),
                         }
@@ -1829,7 +1829,7 @@ fn import_step(world: &mut World, path: &str) -> Result<Value, String> {
     let format = ImportFormat::of_path(path)
         .filter(|f| f.kernel().is_some())
         .ok_or("only STEP, IGES and BREP files can be imported")?;
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = cadrs_fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let data = String::from_utf8_lossy(&bytes).into_owned();
     let plan = cadrs_core::rebuild::exchange::plan_import(format, data.clone().into_bytes())
         .wait()
@@ -1887,7 +1887,7 @@ fn export_step(world: &mut World, p: &tools::ExportStep) -> Result<Value, String
     };
     let files = cadrs_core::rebuild::export_step(features, request).wait()?;
     let file = files.into_iter().next().ok_or("nothing was written")?;
-    std::fs::write(&p.path, &file.bytes).map_err(|e| format!("{}: {e}", p.path))?;
+    cadrs_fs::write(&p.path, &file.bytes).map_err(|e| format!("{}: {e}", p.path))?;
     Ok(
         json!({ "path": p.path, "bytes": file.bytes.len(), "parts": parts.iter().map(|p| p.name.clone()).collect::<Vec<_>>() }),
     )

@@ -10,6 +10,7 @@ pub mod analysis;
 pub mod appearance;
 pub mod applied;
 pub mod assembly;
+pub mod background;
 pub mod blob_store;
 pub mod blobs;
 pub mod brep;

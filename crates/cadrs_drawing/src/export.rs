@@ -1105,7 +1105,7 @@ pub fn write_files(
     dir: &std::path::Path,
     base: &str,
 ) -> Result<Vec<std::path::PathBuf>, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let base = file_safe(base);
     let ext = opts.format.extension();
     let path_for = |page: &Page| {
@@ -1116,7 +1116,7 @@ pub fn write_files(
         }
     };
     let write = |p: &std::path::Path, data: &[u8]| {
-        std::fs::write(p, data).map_err(|e| format!("{}: {e}", p.display()))
+        cadrs_fs::write(p, data).map_err(|e| format!("{}: {e}", p.display()))
     };
     let mut out = Vec::new();
     match opts.format {
@@ -1188,7 +1188,7 @@ pub fn block_from_file(path: &std::path::Path, at: P2) -> Result<sk::Block, Stri
             .ok_or(crate::dwg::INSTALL_HINT)?;
         crate::dwg::dwg_to_dxf(&conv, path)?
     } else {
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let bytes = cadrs_fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         String::from_utf8_lossy(&bytes).into_owned()
     };
     let d = crate::dxf::read_dxf(&text)?;
@@ -1343,7 +1343,7 @@ mod tests {
         );
         assert!((pages[0].width - 279.4).abs() < 1e-9 && (pages[0].height - 215.9).abs() < 1e-9);
         let dir = std::env::temp_dir().join(format!("cadrs-export-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = cadrs_fs::remove_dir_all(&dir);
         // Every sheet: a PDF holds them all; DXF writes a file per sheet, named for it.
         let pdf = write_files(&pages, &ExportOptions::default(), &dir, "Part: 1").unwrap();
         assert_eq!(pdf, vec![dir.join("Part_ 1.pdf")]);
@@ -1376,7 +1376,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(one, vec![dir.join("Part.dxf")]);
-        let r2000 = std::fs::read_to_string(&one[0]).unwrap();
+        let r2000 = cadrs_fs::read_to_string(&one[0]).unwrap();
         assert!(r2000.contains("AC1027"));
         let old = write_files(
             &pages[1..],
@@ -1389,8 +1389,12 @@ mod tests {
             "Old",
         )
         .unwrap();
-        assert!(std::fs::read_to_string(&old[0]).unwrap().contains("AC1015"));
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            cadrs_fs::read_to_string(&old[0])
+                .unwrap()
+                .contains("AC1015")
+        );
+        let _ = cadrs_fs::remove_dir_all(&dir);
     }
 
     #[test]

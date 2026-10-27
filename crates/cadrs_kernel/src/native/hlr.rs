@@ -1547,7 +1547,7 @@ mod tests {
             }],
         );
         let b = k.extrude(&profile, Extent::Blind(10.0)).unwrap().bodies[0];
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let p = k
             .project(&[b], &front(), &ProjectOptions::default())
             .unwrap();

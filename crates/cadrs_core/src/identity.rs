@@ -54,7 +54,7 @@ impl Identities {
     /// Reads the identities from a store root; just `first` when there is no file or it can't
     /// be read.
     pub fn load(root: &Path, first: Identity) -> Self {
-        std::fs::read_to_string(Self::path(root))
+        cadrs_fs::read_to_string(Self::path(root))
             .ok()
             .and_then(|s| ron::from_str::<Self>(&s).ok())
             .filter(|i| !i.list.is_empty())
@@ -69,11 +69,11 @@ impl Identities {
     pub fn save(&self, root: &Path) -> io::Result<()> {
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
             .map_err(io::Error::other)?;
-        std::fs::create_dir_all(root)?;
+        cadrs_fs::create_dir_all(root)?;
         let path = Self::path(root);
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path)
+        cadrs_fs::write(&tmp, text)?;
+        cadrs_fs::rename(&tmp, path)
     }
 
     pub fn active(&self) -> &Identity {
@@ -154,7 +154,7 @@ mod tests {
         let back = Identities::load(&dir, me());
         assert_eq!(back, ids);
         assert_eq!(back.key_path(&dir), dir.join("identities/work.key"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = cadrs_fs::remove_dir_all(&dir);
         // No file: just the first, with the key cadrs always had.
         let none = Identities::load(&dir, me());
         assert_eq!(none.key_path(&dir), dir.join(DEFAULT_KEY));

@@ -25,8 +25,11 @@ use cadrs_core::preferences::{
 use cadrs_ui::prelude::*;
 use cadrs_ui::{
     Button, DialogClose, NumberField, NumberFieldCommit, NumberFieldEdit, NumberFieldState, Select,
-    SelectChange, SelectState, SelectableText, Switch, SwitchState, form_row,
+    SelectChange, SelectState, SelectableText, SwitchState, form_row,
 };
+// The MCP server's switch (not in a page).
+#[cfg(not(target_arch = "wasm32"))]
+use cadrs_ui::Switch;
 
 use crate::{AppState, DocumentStore};
 
@@ -216,6 +219,7 @@ fn gesture_text(preset: MousePreset, action: ViewAction) -> String {
 /// Opens the Preferences dialog with the preferences in force.
 pub fn open_preferences(world: &mut World) {
     let preset = world.resource::<LocalPreferences>().mouse();
+    #[cfg(not(target_arch = "wasm32"))]
     let mcp = world.resource::<LocalPreferences>().0.mcp;
     let snap = world
         .resource::<LocalPreferences>()
@@ -226,6 +230,7 @@ pub fn open_preferences(world: &mut World) {
         .0
         .rotation_snap_tolerance_degrees();
     let ui_scale = world.resource::<LocalPreferences>().0.ui_scale;
+    #[cfg(not(target_arch = "wasm32"))]
     let endpoint = cadrs_mcp::url(std::net::SocketAddr::from((
         std::net::Ipv4Addr::LOCALHOST,
         mcp.port,
@@ -281,6 +286,9 @@ pub fn open_preferences(world: &mut World) {
                     t.text("Snap when within the tolerance of an increment. Hold Shift to disable snapping. Increment: 0–180° (0 disables). Tolerance: 0–90°.", t.font_sm, FontWeight::NORMAL, t.muted_foreground),
                     Node { width: Val::Px(400.0), margin: UiRect::top(Val::Px(6.0)), ..default() },
                 )).insert(TextLayout::default());
+                // A page can't serve one.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
                 b.spawn((
                     Name::new("pref-mcp-heading"),
                     t.text("AI assistants (MCP)", t.font_base, FontWeight::BOLD, t.foreground),
@@ -304,6 +312,7 @@ pub fn open_preferences(world: &mut World) {
                 ))
                 // Wrapped (the theme's text doesn't wrap).
                 .insert(TextLayout::default());
+                }
                 b.spawn((
                     Name::new("pref-collab-heading"),
                     t.text("Collaboration", t.font_base, FontWeight::BOLD, t.foreground),

@@ -124,7 +124,7 @@ pub fn insert_pictures(world: &mut World, paths: Vec<std::path::PathBuf>, at: Op
             .and_then(|n| n.to_str())
             .unwrap_or("picture")
             .to_string();
-        let bytes = match std::fs::read(&path) {
+        let bytes = match cadrs_fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
                 notes.push(format!("Cannot read {name}: {e}"));
