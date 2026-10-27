@@ -90,16 +90,21 @@ struct ImportDialog {
 #[derive(Component, Debug, Clone, Copy)]
 struct ChoiceButton(ImportAs);
 
-/// Where the picker starts: `$CADRS_IMPORT_DIR`, else the Downloads folder, else the working
-/// folder.
+/// Where the picker starts: `$CADRS_IMPORT_DIR`, else the user's Downloads folder, else their
+/// Documents, else the working folder. The folders come from the system (issue #136: Windows
+/// has no `$HOME`, so the picker had opened in the app's own folder).
 fn start_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("CADRS_IMPORT_DIR").filter(|d| !d.is_empty()) {
         return d.into();
     }
     // The Downloads folder (as exports use), not $CADRS_EXPORT_DIR.
-    std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join("Downloads"))
+    let user = directories::UserDirs::new();
+    let user = user.as_ref();
+    user.and_then(|u| u.download_dir())
+        .or_else(|| user.and_then(|u| u.document_dir()))
+        .map(|d| d.to_path_buf())
         .filter(|d| d.is_dir())
+        .or_else(|| user.map(|u| u.home_dir().to_path_buf()))
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default()
 }

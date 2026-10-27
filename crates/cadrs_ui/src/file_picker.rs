@@ -1,4 +1,9 @@
-//! An in-app file picker (P3C.7: Insert DXF/DWG and Insert image), a modal [`Dialog`] like
+//! File prompts: the system's own dialog in a person's runs ([`NativeFileDialogs`], issue #136:
+//! the Windows file dialog, the macOS Open panel, the desktop portal's on Linux), else this
+//! in-app picker, which scripted and headless runs use because a scenario can drive it. Either
+//! way the pick arrives as the same [`FilePicked`] or [`FilesPicked`] message.
+//!
+//! The in-app picker (P3C.7: Insert DXF/DWG and Insert image) is a modal [`Dialog`] like
 //! gpui-component's file prompt: the folder in an editable path field with an Up button, the
 //! folder's subfolders and the files of the wanted types in a scrolling list (folders first,
 //! then files by name), and a File name field. A click on a folder opens it; a click on a file
@@ -14,6 +19,8 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::mpsc;
 
 use bevy::prelude::*;
 use bevy::text::{EditableText, FontWeight, TextEdit};
@@ -32,10 +39,28 @@ impl Plugin for FilePickerPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<FilePicked>()
             .add_message::<FilesPicked>()
-            .add_systems(Update, rebuild_lists)
+            .init_resource::<NativeFileDialogs>()
+            .init_resource::<NativeJobs>()
+            .add_systems(Update, (rebuild_lists, take_native_picks))
             .add_observer(on_submit);
     }
 }
+
+/// Whether file prompts open the system's own dialog instead of the in-app picker. Off unless
+/// the app turns it on (`cadrs` does for a person's runs, not for scripted or headless ones).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeFileDialogs(pub bool);
+
+/// A system dialog open now: its answer (the picked paths, or none when cancelled) arrives on
+/// `answer` from the thread that waits for it.
+struct NativeJob {
+    tag: String,
+    multi: bool,
+    answer: Mutex<mpsc::Receiver<Option<Vec<PathBuf>>>>,
+}
+
+#[derive(Resource, Default)]
+struct NativeJobs(Vec<NativeJob>);
 
 /// A file was picked in the picker opened with `tag`.
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
@@ -217,6 +242,11 @@ pub fn open_folder_picker(
     );
 }
 
+/// The user's home folder (`USERPROFILE` on Windows, where `HOME` isn't set: issue #136).
+pub fn home_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
+}
+
 /// The folder as the picker shows it (P3E.2, P3E.1 judge: goldens mustn't depend on where the
 /// working folder is): relative to the working folder when inside it (`./target/…`), else with
 /// the home folder as `~`, else absolute.
@@ -231,12 +261,165 @@ pub fn display_dir(dir: &std::path::Path) -> String {
         })
     };
     rel(std::env::current_dir().ok(), ".")
-        .or_else(|| rel(std::env::var_os("HOME").map(PathBuf::from), "~"))
+        .or_else(|| rel(home_dir(), "~"))
         .unwrap_or_else(|| dir.display().to_string())
 }
 
+/// Opens the system's dialog or the in-app picker, as [`NativeFileDialogs`] says.
 #[allow(clippy::too_many_arguments)]
 fn open_picker(
+    commands: &mut Commands,
+    theme: &Theme,
+    name: String,
+    title: &str,
+    tag: &str,
+    dir: PathBuf,
+    extensions: &[&str],
+    folders_only: bool,
+    multi: bool,
+) {
+    let theme = theme.clone();
+    let (title, tag) = (title.to_string(), tag.to_string());
+    let extensions: Vec<String> = extensions.iter().map(|e| e.to_string()).collect();
+    commands.queue(move |world: &mut World| {
+        if world.resource::<NativeFileDialogs>().0 {
+            open_native(world, &title, tag, dir, &extensions, folders_only, multi);
+            return;
+        }
+        let extensions: Vec<&str> = extensions.iter().map(String::as_str).collect();
+        let mut commands = world.commands();
+        spawn_in_app_picker(
+            &mut commands,
+            &theme,
+            name,
+            &title,
+            &tag,
+            dir,
+            &extensions,
+            folders_only,
+            multi,
+        );
+        world.flush();
+    });
+}
+
+/// Opens the system's file dialog on a thread of its own and keeps its answer coming
+/// ([`take_native_picks`]). A second prompt for the same `tag` while one is open is ignored.
+#[allow(clippy::too_many_arguments)]
+fn open_native(
+    world: &mut World,
+    title: &str,
+    tag: String,
+    dir: PathBuf,
+    extensions: &[String],
+    folders_only: bool,
+    multi: bool,
+) {
+    if world
+        .resource::<NativeJobs>()
+        .0
+        .iter()
+        .any(|j| j.tag == tag)
+    {
+        return;
+    }
+    let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+    if dir.is_dir() {
+        dialog = dialog.set_directory(&dir);
+    }
+    if !folders_only && !extensions.is_empty() {
+        // Both cases: on Linux the portal's patterns are case-sensitive (PART.STEP).
+        let mut patterns: Vec<String> = extensions.to_vec();
+        patterns.extend(extensions.iter().map(|e| e.to_uppercase()));
+        let name = extensions
+            .iter()
+            .map(|e| e.to_uppercase())
+            .collect::<Vec<_>>()
+            .join(", ");
+        dialog = dialog.add_filter(name, &patterns);
+    }
+    // On Windows the dialog belongs to the app's window: it stays in front and the window waits
+    // for it.
+    #[cfg(windows)]
+    {
+        let mut q = world
+            .query_filtered::<&bevy::window::RawHandleWrapper, With<bevy::window::PrimaryWindow>>();
+        if let Some(handle) = q.iter(world).next() {
+            // SAFETY: the handle is only read here, to give the dialog its owner window.
+            dialog = dialog.set_parent(&unsafe { handle.get_handle() });
+        }
+    }
+    let (tx, rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("file-dialog".into())
+        .spawn(move || {
+            let picked = bevy::tasks::block_on(async move {
+                let path = |h: rfd::FileHandle| h.path().to_path_buf();
+                if folders_only {
+                    dialog.pick_folder().await.map(|h| vec![path(h)])
+                } else if multi {
+                    dialog
+                        .pick_files()
+                        .await
+                        .map(|v| v.into_iter().map(path).collect())
+                } else {
+                    dialog.pick_file().await.map(|h| vec![path(h)])
+                }
+            });
+            let _ = tx.send(picked);
+        });
+    if let Err(e) = spawned {
+        warn!("cannot open the file dialog: {e}");
+        return;
+    }
+    world.resource_mut::<NativeJobs>().0.push(NativeJob {
+        tag,
+        multi,
+        answer: Mutex::new(rx),
+    });
+}
+
+/// Turns a system dialog's answer into the same message the in-app picker sends; a cancelled
+/// dialog sends nothing.
+fn take_native_picks(
+    mut jobs: ResMut<NativeJobs>,
+    mut one: MessageWriter<FilePicked>,
+    mut many: MessageWriter<FilesPicked>,
+) {
+    if jobs.0.is_empty() {
+        return;
+    }
+    jobs.0.retain(|job| {
+        let answer = match job.answer.lock() {
+            Ok(rx) => rx.try_recv(),
+            Err(_) => return false,
+        };
+        match answer {
+            Err(mpsc::TryRecvError::Empty) => true,
+            Ok(Some(paths)) if job.multi => {
+                many.write(FilesPicked {
+                    tag: job.tag.clone(),
+                    paths,
+                });
+                false
+            }
+            Ok(Some(paths)) => {
+                if let Some(path) = paths.into_iter().next() {
+                    one.write(FilePicked {
+                        tag: job.tag.clone(),
+                        path,
+                    });
+                }
+                false
+            }
+            Ok(None) | Err(mpsc::TryRecvError::Disconnected) => false,
+        }
+    });
+}
+
+/// The in-app picker's dialog.
+#[allow(clippy::too_many_arguments)]
+fn spawn_in_app_picker(
     commands: &mut Commands,
     theme: &Theme,
     name: String,
@@ -545,10 +728,8 @@ fn on_submit(
             commands.queue(move |w: &mut World| {
                 // "~/…" is the home folder (as the field shows it, [`display_dir`]).
                 let v = value.trim();
-                let p = match (v.strip_prefix('~'), std::env::var_os("HOME")) {
-                    (Some(rest), Some(home)) => {
-                        PathBuf::from(home).join(rest.trim_start_matches('/'))
-                    }
+                let p = match (v.strip_prefix('~'), home_dir()) {
+                    (Some(rest), Some(home)) => home.join(rest.trim_start_matches(['/', '\\'])),
                     _ => PathBuf::from(v),
                 };
                 if p.is_dir() {
