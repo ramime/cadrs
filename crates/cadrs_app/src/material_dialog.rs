@@ -865,7 +865,11 @@ fn material_dialog(t: &Theme, s: &MaterialSession, units: Units) -> impl Bundle 
                         BackgroundColor(t.popover),
                         BorderColor::all(t.border),
                         BoxShadow::new(t.shadow, Val::ZERO, Val::Px(2.0), Val::ZERO, Val::Px(8.0)),
-                        GlobalZIndex(cadrs_ui::z::MENU),
+                        // Over the dialog, but under a menu opened while it is open (the
+                        // library select's) and that menu's dismiss layer.
+                        GlobalZIndex(cadrs_ui::z::MENU - 2),
+                        // Over the dialog's scrolling body, not clipped by it, as a menu.
+                        OverrideClip,
                     ))
                     .with_children(|pop| {
                         pop.spawn(
