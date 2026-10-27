@@ -2456,6 +2456,7 @@ dependencies = [
  "bevy",
  "bevy_iroh",
  "cadrs_core",
+ "cadrs_sketch",
  "data-encoding",
  "n0-future",
  "postcard",

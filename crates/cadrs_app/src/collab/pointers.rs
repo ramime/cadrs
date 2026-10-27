@@ -502,7 +502,7 @@ fn badge(t: &Theme, id: &str, label: &str, model: bool) -> impl Bundle {
                         label.to_string(),
                         t.font_sm,
                         FontWeight::MEDIUM,
-                        Color::WHITE
+                        cadrs_ui::Avatar::ink_on(color)
                     ),
                     Pickable::IGNORE,
                 )],
@@ -541,23 +541,32 @@ fn camera_chip(t: &Theme, id: &str, name: &str) -> impl Bundle {
                 cadrs_ui::Avatar::initials(name),
                 t.font_xs,
                 FontWeight::BOLD,
-                Color::WHITE
+                cadrs_ui::Avatar::ink_on(color_of(id))
             ),
             Pickable::IGNORE,
         )],
     )
 }
 
-/// Someone's name, and what they have open (`Alex · Extrude 1`), once their presence says it
-/// (a pointer can come first: the start of their cadrs ID until then).
+/// Someone's name, what they have open and what they do (`Alex · Sketch 1 · Line`), once
+/// their presence says it (a pointer can come first: the start of their cadrs ID until then).
 fn label_of(people: &People, doc: Option<&ActiveDocument>, id: &str) -> String {
     let Some(p) = people.by_id.get(id) else {
         return id.chars().take(8).collect();
     };
-    match doc.and_then(|d| super::presence::editing_name(d, &p.presence)) {
-        Some(f) => format!("{} · {f}", p.presence.name),
-        None => p.presence.name.clone(),
+    let mut label = p.presence.name.clone();
+    if let Some(f) = doc.and_then(|d| super::presence::editing_name(d, &p.presence)) {
+        label.push_str(&format!(" · {f}"));
     }
+    if let Some(d) = people
+        .doing
+        .get(id)
+        .map(|a| &a.what)
+        .filter(|d| !d.is_empty())
+    {
+        label.push_str(&format!(" · {d}"));
+    }
+    label
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]

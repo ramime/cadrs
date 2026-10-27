@@ -4,16 +4,19 @@
 //!   tab, the feature whose dialog or sketch they have open, their 3D view and whom they
 //!   follow; a few times a second while it changes, and every few seconds regardless.
 //! - Each collaborator has a colour of their own ([`color_of`]). Their **avatars** sit in the
-//!   top bar beside **Share**; a tab someone is in carries a dot in their colour (several for
-//!   several people), and so does the feature someone is editing in the feature list.
-//! - **Follow mode**: double-clicking an avatar follows that person: their tab and their view.
-//!   The graphics area is outlined in their colour; they see the follower's avatar outlined. A
-//!   click, a scroll or a key stops it, as does their leaving.
+//!   top bar beside this user's own; a click opens a card: where they are, what they are doing
+//!   ([`Doing`]), **Follow** and **Go to**. A tab someone is in carries a chip with their
+//!   initials in their colour (several for several people), and so does the feature someone is
+//!   editing in the feature list.
+//! - **Follow mode**: **Follow** follows that person: their tab and their view. The graphics
+//!   area is outlined in their colour, with **Stop following** at its top; they see the
+//!   follower's avatar outlined. A click, a scroll or a key stops it, as does their leaving.
 //! - With voice (the `voice` feature, `super::voice`): **Join voice** beside the avatars, then
 //!   mute and leave; an avatar is outlined green while that person speaks.
 
 use std::collections::BTreeMap;
 
+use bevy::ecs::spawn::SpawnWith;
 use bevy::ecs::system::SystemState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::MouseWheel;
@@ -23,9 +26,10 @@ use cadrs_core::{DocumentId, ElementId, FeatureId};
 use cadrs_net::bevy_iroh::Iroh;
 use cadrs_net::bevy_iroh::iroh::EndpointId;
 use cadrs_net::bevy_iroh::prelude::{NetSender, PeerLeft, Received};
-use cadrs_net::{Presence, View};
+use cadrs_net::{Doing, Picked, Presence, View};
+use cadrs_ui::menu::{MenuAction, MenuHeader, MenuItem, open_menu};
 use cadrs_ui::prelude::*;
-use cadrs_ui::{Avatar, DoubleClick, DoubleClickable, IconButton};
+use cadrs_ui::{Avatar, IconButton};
 
 use super::live::Live;
 use crate::camera::{RenderMode, ViewState};
@@ -39,21 +43,29 @@ const HEARTBEAT: f64 = 4.0;
 /// Someone not heard from this long is gone.
 const FORGET_AFTER: f64 = 15.0;
 
-/// Collaborator colours, as Onshape's social cues: strong enough to tell apart at a dot, and
-/// none the app's own (its teal accent, the selection's orange), so a person never reads as a
-/// control or a selection.
-const PALETTE: [&str; 8] = [
-    "#2f80ed", "#e53935", "#2e7d32", "#8e24aa", "#d81b60", "#3949ab", "#6d4c41", "#546e7a",
+/// Collaborator colours, as Onshape's social cues: hues far apart (blue, magenta, lime, rose,
+/// violet and a warm grey), strong on the dark scheme and the light, and none the app's own
+/// (its teal accent, the hover and selection orange), so a person never reads as a control or
+/// a selection.
+const PALETTE: [&str; 6] = [
+    "#3b82f6", "#d946ef", "#84cc16", "#f43f5e", "#8b5cf6", "#a8a29e",
 ];
+/// How often what this user is doing goes out at most while it changes, and at least while it
+/// doesn't.
+const DOING_EVERY: f64 = 0.25;
+const DOING_HEARTBEAT: f64 = 3.0;
 
 pub(super) fn plugin(app: &mut App) {
     app.add_message::<Received<Presence>>()
+        .add_message::<Received<Doing>>()
         .add_message::<PeerLeft>()
         .init_resource::<People>()
         .init_resource::<VoiceUi>()
         .add_systems(
             Update,
-            (hear, tell, follow).chain().run_if(resource_exists::<Iroh>),
+            (hear, tell, tell_doing, follow, apply_go_to_view)
+                .chain()
+                .run_if(resource_exists::<Iroh>),
         )
         .add_systems(
             Update,
@@ -65,7 +77,8 @@ pub(super) fn plugin(app: &mut App) {
             )
                 .after(follow),
         )
-        .add_observer(on_avatar_double_click)
+        .add_observer(on_avatar_click)
+        .add_observer(on_person_action)
         .add_observer(on_voice_button)
         .add_observer(stop_on_press);
 }
@@ -111,9 +124,18 @@ impl Person {
 pub struct People {
     document: Option<DocumentId>,
     pub by_id: BTreeMap<String, Person>,
+    /// What each is doing ([`Doing`]), by cadrs ID.
+    pub doing: BTreeMap<String, Activity>,
     /// When this document's room was first heard from: who is there by then was already
     /// there ("is here"), anyone after it joined.
     since: f64,
+}
+
+/// What someone is doing: in a few words, and what they have selected in their tab.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Activity {
+    pub what: String,
+    pub selected: Vec<Picked>,
 }
 
 /// How long after opening a shared document the people heard were already there.
@@ -155,10 +177,13 @@ fn now(world: &World) -> f64 {
     world.resource::<Time<Real>>().elapsed_secs_f64()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn hear(
     mut rx: MessageReader<Received<Presence>>,
+    mut doing: MessageReader<Received<Doing>>,
     mut left: MessageReader<PeerLeft>,
     live: Option<Res<Live>>,
+    doc: Option<Res<ActiveDocument>>,
     mut people: ResMut<People>,
     time: Res<Time<Real>>,
     theme: Res<Theme>,
@@ -170,15 +195,27 @@ fn hear(
             *people = People::default();
         }
         rx.clear();
+        doing.clear();
         left.clear();
         return;
     };
     if people.document != Some(live.document) {
         *people = People {
             document: Some(live.document),
-            by_id: BTreeMap::new(),
             since: t,
+            ..default()
         };
+    }
+    for m in doing.read() {
+        if m.msg.document == live.document {
+            people.doing.insert(
+                m.from.to_string(),
+                Activity {
+                    what: m.msg.what.clone(),
+                    selected: m.msg.selected.clone(),
+                },
+            );
+        }
     }
     let mut toasts = Vec::new();
     for m in rx.read() {
@@ -191,7 +228,15 @@ fn hear(
             } else {
                 "joined"
             };
-            toasts.push(format!("{} {how}", m.msg.name));
+            // Where they are, as the avatar says it.
+            let at = m
+                .msg
+                .tab
+                .and_then(|t| doc.as_ref()?.doc.element(t).map(|e| e.name.clone()));
+            toasts.push(match at {
+                Some(at) => format!("{} {how}, in {at}", m.msg.name),
+                None => format!("{} {how}", m.msg.name),
+            });
         }
         people.by_id.insert(
             m.from.to_string(),
@@ -206,6 +251,7 @@ fn hear(
         if l.room == live.room()
             && let Some(p) = people.by_id.remove(&l.id.to_string())
         {
+            people.doing.remove(&l.id.to_string());
             toasts.push(format!("{} left", p.presence.name));
         }
     }
@@ -216,6 +262,7 @@ fn hear(
         .map(|(k, _)| k.clone())
         .collect();
     for k in stale {
+        people.doing.remove(&k);
         if let Some(p) = people.by_id.remove(&k) {
             toasts.push(format!("{} left", p.presence.name));
         }
@@ -311,6 +358,191 @@ fn tell(world: &mut World, mut last: Local<Option<(Presence, f64)>>) {
     *last = Some((p, t));
 }
 
+/// What this user is doing, in a few words, for the others' cues: the sketch tool, the
+/// schematic's or layout's tool or move, the drawing's view tool, else how much is selected;
+/// empty while nothing in particular.
+fn doing_now(world: &World) -> String {
+    use crate::eda::Mode;
+    use crate::eda::layout_tools::{DrawKind, LayoutState, Tool as LayTool};
+    use crate::eda::schematic_tools::{SchState, Tool as SchTool};
+    let selected = |n: usize| match n {
+        0 => String::new(),
+        n => format!("{n} selected"),
+    };
+    if world.contains_resource::<crate::sketch::SketchSession>()
+        && let Some(t) = world.get_resource::<crate::sketch::ActiveSketchTool>()
+        && t.tool != crate::sketch::SketchTool::Select
+    {
+        return t.tool.label().to_string();
+    }
+    let mode = world
+        .get_resource::<crate::eda::Eda2d>()
+        .and_then(|e| e.0)
+        .map(|(_, _, m)| m);
+    match mode {
+        Some(Mode::Schematic) => {
+            let Some(s) = world.get_resource::<SchState>() else {
+                return String::new();
+            };
+            if s.moving.is_some() {
+                return "Moving".into();
+            }
+            return match &s.tool {
+                SchTool::Select => selected(s.selection.len()),
+                SchTool::Place(sym) => {
+                    let name = sym.id.rsplit(':').next().unwrap_or(&sym.id);
+                    format!("Placing {name}")
+                }
+                SchTool::Wire(_) => "Wiring".into(),
+                SchTool::Label(_) | SchTool::GlobalLabel(_) => "Placing a label".into(),
+                SchTool::NoConnect => "Marking no-connects".into(),
+                SchTool::Paste(_) => "Pasting".into(),
+                SchTool::Text(_) => "Placing text".into(),
+            };
+        }
+        Some(Mode::Layout) => {
+            let Some(s) = world.get_resource::<LayoutState>() else {
+                return String::new();
+            };
+            return match &s.tool {
+                LayTool::Select => selected(s.selection.len()),
+                LayTool::Outline(_) => "Drawing the outline".into(),
+                LayTool::Route { net, .. } if net.is_empty() => "Routing".into(),
+                LayTool::Route { net, .. } => format!("Routing {net}"),
+                LayTool::Zone { net, .. } => format!("Drawing a {net} zone"),
+                LayTool::Draw { kind, .. } => match kind {
+                    DrawKind::Line => "Drawing a line".into(),
+                    DrawKind::Rect => "Drawing a rectangle".into(),
+                    DrawKind::Circle => "Drawing a circle".into(),
+                },
+                LayTool::Polygon(_) => "Drawing a polygon".into(),
+                LayTool::Text(_) => "Placing text".into(),
+                LayTool::Graphic(_) => "Placing artwork".into(),
+                LayTool::Keepout { .. } => "Drawing a keep-out".into(),
+                LayTool::Measure { .. } => "Measuring".into(),
+            };
+        }
+        _ => {}
+    }
+    if let Some(ui) = world.get_resource::<crate::drawing::DrawingUi>()
+        && *world.resource::<crate::viewport::ActiveKind>() == crate::viewport::ActiveKind::Drawing
+    {
+        use crate::drawing::view_tools::ViewTool;
+        let what = match &ui.tool {
+            ViewTool::None => None,
+            ViewTool::Insert => Some("Inserting a view"),
+            ViewTool::Projected { .. } => Some("Projecting a view"),
+            ViewTool::Auxiliary { .. } => Some("Adding an auxiliary view"),
+            ViewTool::Section { .. } => Some("Adding a section view"),
+            _ => Some("Editing views"),
+        };
+        if let Some(w) = what {
+            return w.into();
+        }
+    }
+    selected(
+        world
+            .get_resource::<crate::viewport::Selection>()
+            .map_or(0, |s| s.0.len()),
+    )
+}
+
+/// The most picks a selection travels with (a box selection can hold thousands).
+const MAX_PICKED: usize = 64;
+
+/// What this user has selected in their tab, as it travels: the 3D selection (features, parts,
+/// faces, edges, vertices), or the schematic's or layout's items.
+fn selected_now(world: &World) -> Vec<Picked> {
+    use crate::eda::Mode;
+    use crate::viewport::Pick;
+    let mode = world
+        .get_resource::<crate::eda::Eda2d>()
+        .and_then(|e| e.0)
+        .map(|(_, _, m)| m);
+    let mut out: Vec<Picked> = match mode {
+        Some(Mode::Schematic) => world
+            .get_resource::<crate::eda::schematic_tools::SchState>()
+            .map(|s| {
+                use cadrs_eda::sch_edit::SchItem as I;
+                s.selection
+                    .iter()
+                    .map(|i| match i {
+                        I::Symbol(u)
+                        | I::Field(u, _)
+                        | I::Wire(u)
+                        | I::Bus(u)
+                        | I::Junction(u)
+                        | I::NoConnect(u)
+                        | I::Label(u)
+                        | I::Note(u)
+                        | I::Drawing(u) => Picked::Item(u.as_u128()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Some(Mode::Layout) => world
+            .get_resource::<crate::eda::layout_tools::LayoutState>()
+            .map(|s| {
+                s.selection
+                    .iter()
+                    .map(|i| Picked::Item(i.id().as_u128()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => world
+            .get_resource::<crate::viewport::Selection>()
+            .map(|s| {
+                s.0.iter()
+                    .filter_map(|p| match *p {
+                        Pick::Feature(f) => Some(Picked::Feature(f)),
+                        Pick::Part(p) => Some(Picked::Part(p)),
+                        Pick::Face(p, n) => Some(Picked::Face(p, n)),
+                        Pick::Edge(p, n) => Some(Picked::Edge(p, n)),
+                        Pick::Vertex(p, n) => Some(Picked::Vertex(p, n)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    out.truncate(MAX_PICKED);
+    out
+}
+
+/// What this user is doing ([`doing_now`], [`selected_now`]), to the room: when it changes (at
+/// most every [`DOING_EVERY`]) and every [`DOING_HEARTBEAT`].
+fn tell_doing(world: &mut World, mut last: Local<Option<(Activity, f64)>>) {
+    let Some((document, room)) = world.get_resource::<Live>().map(|l| (l.document, l.room()))
+    else {
+        *last = None;
+        return;
+    };
+    let what = Activity {
+        what: doing_now(world),
+        selected: selected_now(world),
+    };
+    let t = now(world);
+    let due = match &*last {
+        None => true,
+        Some((prev, at)) => (*prev != what && t - at >= DOING_EVERY) || t - at >= DOING_HEARTBEAT,
+    };
+    if !due {
+        return;
+    }
+    let mut state = SystemState::<NetSender>::new(world);
+    if let Ok(net) = state.get(world) {
+        net.broadcast(
+            room,
+            &Doing {
+                document,
+                what: what.what.clone(),
+                selected: what.selected.clone(),
+            },
+        );
+    }
+    *last = Some((what, t));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Follow mode
 
@@ -325,6 +557,53 @@ pub fn toggle_follow(world: &mut World, id: String) {
     }
     let since = now(world);
     world.insert_resource(Following { leader: id, since });
+}
+
+/// Takes this user to where `id` is, once (not following): their tab and their view.
+pub fn go_to(world: &mut World, id: &str) {
+    let Some(p) = world
+        .resource::<People>()
+        .by_id
+        .get(id)
+        .map(|p| p.presence.clone())
+    else {
+        return;
+    };
+    if let Some(tab) = p.tab {
+        let mut d = world.resource_mut::<ActiveDocument>();
+        if d.active != Some(tab) && d.doc.element(tab).is_some() {
+            d.set_active(tab);
+        }
+    }
+    if let Some(v) = &p.view {
+        let to = view_state(v);
+        let mut vv = world.resource_mut::<ViewportView>();
+        if vv.element == p.tab {
+            vv.view = to;
+            vv.animation = None;
+        } else {
+            // The tab's view is made when it opens: start it at theirs.
+            world.insert_resource(GoToView(p.tab, to));
+        }
+    }
+}
+
+/// A view [`go_to`] gives the tab it opened, once that tab's view is there.
+#[derive(Resource)]
+struct GoToView(Option<ElementId>, ViewState);
+
+fn apply_go_to_view(world: &mut World) {
+    let Some(GoToView(tab, to)) = world.remove_resource::<GoToView>() else {
+        return;
+    };
+    let mut vv = world.resource_mut::<ViewportView>();
+    if vv.element == tab {
+        vv.view = to;
+        vv.animation = None;
+    } else if world.resource::<ActiveDocument>().active == tab {
+        // Not there yet: next frame.
+        world.insert_resource(GoToView(tab, to));
+    }
 }
 
 /// Follows whoever's cadrs ID starts with `prefix` (the `follow` script command).
@@ -372,8 +651,14 @@ fn follow(world: &mut World) {
     }
     if let Some(tab) = leader.tab {
         let mut d = world.resource_mut::<ActiveDocument>();
-        if d.active != Some(tab) && d.doc.element(tab).is_some() {
+        if d.active != Some(tab)
+            && let Some(name) = d.doc.element(tab).map(|e| e.name.clone())
+        {
             d.set_active(tab);
+            // Not the switch that follows the start.
+            if t - f.since > 0.5 {
+                crate::linked::toast(world, format!("Following {} to {name}", leader.name));
+            }
         }
     }
     if let Some(v) = &leader.view {
@@ -409,13 +694,21 @@ struct BarState(
     (bool, bool, bool),
 );
 
-fn describe(doc: &ActiveDocument, p: &Presence) -> String {
-    let mut text = p.name.clone();
+/// Where someone is and what they do, for their card and tooltip: "In Part Studio 1, editing
+/// Extrude 1 · Line".
+pub(crate) fn whereabouts(doc: &ActiveDocument, p: &Presence, doing: Option<&str>) -> String {
+    let mut text = String::new();
     if let Some(e) = p.tab.and_then(|t| doc.doc.element(t)) {
-        text.push_str(&format!(" · in {}", e.name));
+        text.push_str(&format!("In {}", e.name));
     }
     if let Some(f) = editing_name(doc, p) {
         text.push_str(&format!(", editing {f}"));
+    }
+    if let Some(d) = doing.filter(|d| !d.is_empty()) {
+        if !text.is_empty() {
+            text.push_str(" · ");
+        }
+        text.push_str(d);
     }
     text
 }
@@ -480,10 +773,16 @@ fn sync_people_bar(
             let follows_me = p.presence.following.as_deref() == Some(me.as_str());
             let i_follow = leader.as_deref() == Some(key.as_str());
             let speaking = voice.speaking.contains(&key);
+            let doing = people.doing.get(&key).map(|a| a.what.as_str());
+            let mut tip = p.presence.name.clone();
+            let place = whereabouts(&doc, &p.presence, doing);
+            if !place.is_empty() {
+                tip.push_str(&format!(" · {place}"));
+            }
             (
                 key,
                 p.presence.name.clone(),
-                describe(&doc, &p.presence),
+                tip,
                 follows_me,
                 i_follow,
                 speaking,
@@ -542,14 +841,14 @@ fn sync_people_bar(
             let color = color_of(key);
             let outlined = *follows_me || *i_follow;
             let tip = if *i_follow {
-                format!("{tip}. Following: click anywhere to stop")
+                format!("{tip}. Following: click for more")
             } else {
-                format!("{tip}. Double-click to follow")
+                format!("{tip}. Click to follow or go to them")
             };
             b.spawn((
                 Name::new(format!("collab-avatar-{}", &key[..8.min(key.len())])),
                 PersonAvatar(key.clone()),
-                DoubleClickable,
+                bevy::picking::hover::Hovered::default(),
                 Node {
                     padding: UiRect::all(Val::Px(1.0)),
                     border: UiRect::all(Val::Px(2.0)),
@@ -568,9 +867,10 @@ fn sync_people_bar(
             .with_children(|a| {
                 a.spawn((
                     Avatar::new(format!("collab-avatar-face-{key}"), name.clone())
-                        .size(22.0)
+                        .size(24.0)
                         .color(color)
                         .build(t),
+                    cadrs_ui::color_scheme::KeepFill,
                     Pickable::IGNORE,
                 ));
             });
@@ -578,76 +878,155 @@ fn sync_people_bar(
     });
 }
 
-fn on_avatar_double_click(ev: On<DoubleClick>, q: Query<&PersonAvatar>, mut commands: Commands) {
-    if let Ok(a) = q.get(ev.entity) {
-        let id = a.0.clone();
-        commands.queue(move |w: &mut World| toggle_follow(w, id));
+/// A click on an avatar opens its card: who, where they are and what they are doing, then
+/// **Follow** (or **Stop following**) and **Go to**.
+fn on_avatar_click(ev: On<Pointer<Click>>, q: Query<&PersonAvatar>, mut commands: Commands) {
+    let Ok(a) = q.get(ev.entity) else {
+        return;
+    };
+    let (anchor, id) = (ev.entity, a.0.clone());
+    commands.queue(move |world: &mut World| {
+        let Some(p) = world.resource::<People>().by_id.get(&id).cloned() else {
+            return;
+        };
+        let doing = world
+            .resource::<People>()
+            .doing
+            .get(&id)
+            .map(|a| a.what.clone());
+        let place = world
+            .get_resource::<ActiveDocument>()
+            .map(|d| whereabouts(d, &p.presence, doing.as_deref()))
+            .unwrap_or_default();
+        let following = world
+            .get_resource::<Following>()
+            .is_some_and(|f| f.leader == id);
+        let name = p.presence.name.clone();
+        let mut header = MenuHeader::new(name.clone()).avatar_colored(color_of(&id));
+        if !place.is_empty() {
+            header = header.subtitle(place);
+        }
+        let follow = if following {
+            MenuItem::new("collab-person-follow", "Stop following").icon("close")
+        } else {
+            MenuItem::new("collab-person-follow", format!("Follow {name}"))
+                .icon("visible")
+                .tooltip("See their tab and their view as they move")
+        };
+        let menu = cadrs_ui::Menu::new("collab-person-menu")
+            .align_end()
+            .min_width(240.0)
+            .header(header)
+            .separator()
+            .item(follow)
+            .item(
+                MenuItem::new("collab-person-goto", "Go to")
+                    .icon("location")
+                    .tooltip("Open their tab and view, once"),
+            );
+        let theme = world.resource::<Theme>().clone();
+        open_menu(&mut world.commands(), anchor, menu.build(&theme));
+        world.flush();
+    });
+}
+
+fn on_person_action(ev: On<MenuAction>, q: Query<&PersonAvatar>, mut commands: Commands) {
+    let Ok(a) = q.get(ev.entity) else {
+        return;
+    };
+    let id = a.0.clone();
+    match ev.item.as_str() {
+        "collab-person-follow" => commands.queue(move |w: &mut World| toggle_follow(w, id)),
+        "collab-person-goto" => commands.queue(move |w: &mut World| go_to(w, &id)),
+        _ => {}
     }
 }
 
-/// The dots on tabs and feature rows: whose colours they show.
+/// The chips on tabs and feature rows: whose (cadrs ID and name) they show.
 #[derive(Component, PartialEq)]
-struct Marker(Vec<String>);
+struct Marker(Vec<(String, String)>);
 
-fn marker(colors: Vec<String>) -> impl Bundle {
-    (
-        Marker(colors.clone()),
+/// A chip with each person's initials in their colour: after a tab's name (in its row), or at
+/// a feature row's right end.
+fn marker(people: Vec<(String, String)>, on_tab: bool, t: &Theme) -> impl Bundle {
+    const CHIP: f32 = 16.0;
+    let node = if on_tab {
+        Node {
+            margin: UiRect::left(Val::Px(2.0)),
+            column_gap: Val::Px(2.0),
+            flex_shrink: 0.0,
+            ..default()
+        }
+    } else {
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(3.0),
-            right: Val::Px(4.0),
+            right: Val::Px(6.0),
+            top: Val::Px(0.0),
+            bottom: Val::Px(0.0),
+            align_items: AlignItems::Center,
             column_gap: Val::Px(2.0),
             ..default()
-        },
+        }
+    };
+    let t = t.clone();
+    (
+        Name::new("collab-marker"),
+        Marker(people.clone()),
+        node,
         Pickable::IGNORE,
-        Children::spawn(SpawnIter(colors.into_iter().map(|id| {
-            (
-                Node {
-                    width: Val::Px(7.0),
-                    height: Val::Px(7.0),
-                    border_radius: BorderRadius::all(Val::Px(4.0)),
-                    ..default()
-                },
-                BackgroundColor(color_of(&id)),
-                Pickable::IGNORE,
-            )
-        }))),
+        Children::spawn(SpawnWith(move |p: &mut ChildSpawner| {
+            for (id, name) in people {
+                p.spawn((
+                    Avatar::new(format!("collab-marker-{}", &id[..8.min(id.len())]), name)
+                        .size(CHIP)
+                        .color(color_of(&id))
+                        .build(&t),
+                    cadrs_ui::color_scheme::KeepFill,
+                    Pickable::IGNORE,
+                ));
+            }
+        })),
     )
 }
 
-/// Puts each collaborator's dot on the tab they are in and the feature they edit.
+/// Puts each collaborator's chip on the tab they are in and the feature they edit.
 fn sync_markers(
     people: Res<People>,
     tabs: Query<(Entity, &TabButton)>,
     rows: Query<(Entity, &FeatureRow)>,
     markers: Query<(Entity, &Marker, &ChildOf)>,
+    theme: Res<Theme>,
     mut commands: Commands,
 ) {
-    let mut want: BTreeMap<Entity, Vec<String>> = BTreeMap::new();
+    let mut want: BTreeMap<Entity, (Vec<(String, String)>, bool)> = BTreeMap::new();
     for p in people.by_id.values() {
+        let who = (p.key(), p.presence.name.clone());
         if let Some(tab) = p.presence.tab
             && let Some((e, _)) = tabs.iter().find(|(_, b)| b.0 == tab)
         {
-            want.entry(e).or_default().push(p.key());
+            want.entry(e)
+                .or_insert((Vec::new(), true))
+                .0
+                .push(who.clone());
         }
         if let Some((_, f)) = p.presence.editing
             && let Some((e, _)) = rows.iter().find(|(_, r)| r.0 == f)
         {
-            want.entry(e).or_default().push(p.key());
+            want.entry(e).or_insert((Vec::new(), false)).0.push(who);
         }
     }
     let mut have: BTreeMap<Entity, Entity> = BTreeMap::new();
     for (m, Marker(ids), parent) in &markers {
         match want.get(&parent.parent()) {
-            Some(w) if w == ids => {
+            Some((w, _)) if w == ids => {
                 have.insert(parent.parent(), m);
             }
             _ => commands.entity(m).despawn(),
         }
     }
-    for (e, ids) in want {
+    for (e, (ids, on_tab)) in want {
         if !have.contains_key(&e) {
-            commands.entity(e).with_child(marker(ids));
+            commands.entity(e).with_child(marker(ids, on_tab, &theme));
         }
     }
 }
@@ -696,24 +1075,74 @@ fn sync_follow_outline(
         BorderColor::all(color),
         Pickable::IGNORE,
         children![(
+            Name::new("follow-banner"),
             Node {
                 margin: UiRect::top(Val::Px(6.0)),
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(3.0)),
-                border_radius: BorderRadius::all(Val::Px(t.radius)),
-                height: Val::Px(22.0),
+                padding: UiRect::new(Val::Px(4.0), Val::Px(4.0), Val::Px(3.0), Val::Px(3.0)),
+                border_radius: BorderRadius::all(Val::Px(t.radius + 2.0)),
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
+                height: Val::Px(30.0),
                 ..default()
             },
             BackgroundColor(color),
+            cadrs_ui::color_scheme::KeepFill,
             Pickable::IGNORE,
-            children![(
-                t.text(
-                    format!("Following {name}: click anywhere to stop"),
-                    t.font_sm,
-                    FontWeight::MEDIUM,
-                    Color::WHITE
+            children![
+                (
+                    Avatar::new("follow-banner-avatar", name.clone())
+                        .size(22.0)
+                        .color(color.mix(&Color::BLACK, 0.25))
+                        .build(t),
+                    cadrs_ui::color_scheme::KeepFill,
+                    Pickable::IGNORE,
                 ),
-                Pickable::IGNORE,
-            )],
+                (
+                    t.text(
+                        format!("Following {name}"),
+                        t.font_sm,
+                        FontWeight::SEMIBOLD,
+                        Avatar::ink_on(color)
+                    ),
+                    Pickable::IGNORE,
+                ),
+                // Any click stops following (`stop_on_press`), so this one does too; Esc, as
+                // any key, as well.
+                (
+                    Name::new("follow-stop"),
+                    Node {
+                        padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)),
+                        border_radius: BorderRadius::all(Val::Px(t.radius)),
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(6.0),
+                        height: Val::Px(22.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.28)),
+                    cadrs_ui::color_scheme::KeepFill,
+                    Tooltip::new("Stop following (Esc, or click anywhere)"),
+                    children![
+                        (
+                            t.text("Stop", t.font_sm, FontWeight::MEDIUM, Color::WHITE),
+                            Pickable::IGNORE,
+                        ),
+                        (
+                            Node {
+                                padding: UiRect::axes(Val::Px(4.0), Val::Px(0.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                border_radius: BorderRadius::all(Val::Px(3.0)),
+                                ..default()
+                            },
+                            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.6)),
+                            Pickable::IGNORE,
+                            children![(
+                                t.text("Esc", t.font_xs, FontWeight::MEDIUM, Color::WHITE),
+                                Pickable::IGNORE,
+                            )],
+                        ),
+                    ],
+                ),
+            ],
         )],
     ));
 }

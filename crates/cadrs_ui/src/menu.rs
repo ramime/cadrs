@@ -208,6 +208,8 @@ pub struct MenuHeader {
     pub title: String,
     pub subtitle: Option<String>,
     pub avatar: bool,
+    /// The avatar's colour, rather than one picked from the title (a collaborator's).
+    pub avatar_color: Option<Color>,
 }
 
 impl MenuHeader {
@@ -216,6 +218,7 @@ impl MenuHeader {
             title: title.into(),
             subtitle: None,
             avatar: false,
+            avatar_color: None,
         }
     }
 
@@ -226,6 +229,13 @@ impl MenuHeader {
 
     pub fn avatar(mut self) -> Self {
         self.avatar = true;
+        self
+    }
+
+    /// The avatar, in this colour.
+    pub fn avatar_colored(mut self, c: Color) -> Self {
+        self.avatar = true;
+        self.avatar_color = Some(c);
         self
     }
 }
@@ -250,6 +260,8 @@ pub struct MenuItem {
     tooltip: Option<String>,
     /// A colour dot in the icon column (a label's colour, P3E.2).
     dot: Option<Color>,
+    /// A person's avatar in the icon column: their name and colour (a collaborator).
+    avatar: Option<(String, Color)>,
     /// Not built yet: left out of the menu (issue #13).
     planned: bool,
 }
@@ -267,6 +279,7 @@ impl MenuItem {
             checked: false,
             tooltip: None,
             dot: None,
+            avatar: None,
             planned: false,
         }
     }
@@ -275,6 +288,12 @@ impl MenuItem {
     /// shown), but the code keeps its place for when it is.
     pub fn planned(mut self) -> Self {
         self.planned = true;
+        self
+    }
+
+    /// Shows a person's avatar (their initials on their colour) in the icon column.
+    pub fn avatar(mut self, user: impl Into<String>, c: Color) -> Self {
+        self.avatar = Some((user.into(), c));
         self
     }
 
@@ -587,12 +606,12 @@ fn header_bundle(theme: &Theme, h: MenuHeader) -> impl Bundle {
         },
         Children::spawn(SpawnWith(move |p: &mut ChildSpawner| {
             if h.avatar {
-                p.spawn((
-                    crate::avatar::Avatar::new("menu-header-avatar", h.title.clone())
-                        .size(32.0)
-                        .build(&t),
-                    Pickable::IGNORE,
-                ));
+                let mut avatar =
+                    crate::avatar::Avatar::new("menu-header-avatar", h.title.clone()).size(32.0);
+                if let Some(c) = h.avatar_color {
+                    avatar = avatar.color(c);
+                }
+                p.spawn((avatar.build(&t), Pickable::IGNORE));
             }
             p.spawn((
                 Node {
@@ -708,12 +727,14 @@ fn item_bundle(
         checked,
         tooltip: _,
         dot,
+        avatar,
         planned: _,
     } = item;
     let check_color = theme.primary;
     let check_name = format!("{name}-check");
     // Onshape's menus indent icons 16 px (`screens/02`).
     let pad = if icon_column { theme.space[6] } else { 14.0 };
+    let avatar_theme = theme.clone();
     (
         Name::new(name.to_string()),
         MenuItemState {
@@ -753,6 +774,25 @@ fn item_bundle(
             // Reserve the icon column so labels line up, as Onshape does.
             match icon_name {
                 _ if !icon_column => {}
+                _ if avatar.is_some() => {
+                    let (user, c) = avatar.unwrap_or_default();
+                    p.spawn((
+                        Node {
+                            width: Val::Px(look.icon_size.max(18.0)),
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ))
+                    .with_child((
+                        crate::avatar::Avatar::new("menu-item-avatar", user)
+                            .size(18.0)
+                            .color(c)
+                            .build(&avatar_theme),
+                        crate::color_scheme::KeepFill,
+                        Pickable::IGNORE,
+                    ));
+                }
                 _ if dot.is_some() => {
                     p.spawn((
                         Node {

@@ -265,21 +265,20 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
     let anchor = a.entity;
     commands.queue(move |world: &mut World| {
         let state = NetState::of(world);
-        // Who else is in the shared document open now, and the tab each is in.
-        let people: Vec<(String, String)> = world
+        // Who else is in the shared document open now: their name, and where they are and
+        // what they do.
+        let people: Vec<(String, String, String)> = world
             .get_resource::<crate::collab::presence::People>()
             .map(|p| {
                 let doc = world.get_resource::<crate::ActiveDocument>();
                 p.by_id
                     .iter()
                     .map(|(id, person)| {
-                        let tab = person
-                            .presence
-                            .tab
-                            .zip(doc)
-                            .and_then(|(t, d)| d.doc.element(t))
-                            .map_or_else(String::new, |e| format!(" · {}", e.name));
-                        (id.clone(), format!("{}{tab}", person.presence.name))
+                        let doing = p.doing.get(id).map(|a| a.what.as_str());
+                        let place = doc.map_or_else(String::new, |d| {
+                            crate::collab::presence::whereabouts(d, &person.presence, doing)
+                        });
+                        (id.clone(), person.presence.name.clone(), place)
                     })
                     .collect()
             })
@@ -287,8 +286,13 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
         let (title, subtitle) = match state {
             NetState::Online { .. } => {
                 let stats = world.get_resource::<NetStats>().and_then(|s| s.0.clone());
+                // The rates on a line of their own.
                 let rates = stats.map_or_else(String::new, |s| {
-                    format!(" · ↑ {} ↓ {}", rate(s.tx_rate), rate(s.rx_rate))
+                    format!(
+                        "\nSending {} · receiving {}",
+                        rate(s.tx_rate),
+                        rate(s.rx_rate)
+                    )
                 });
                 let who = match people.len() {
                     0 => "No one else in this document".to_string(),
@@ -319,24 +323,44 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
             .min_width(260.0)
             .header(MenuHeader::new(title).subtitle(subtitle))
             .separator();
-        // Each person: a click follows them (again: stops).
-        for (id, label) in &people {
-            let tip = if following.as_ref() == Some(id) {
-                "Following: click to stop"
+        // Each person: their avatar and where they are; Follow (or Stop following) and Go to.
+        for (id, name, place) in &people {
+            let following_them = following.as_ref() == Some(id);
+            let label = if place.is_empty() {
+                name.clone()
             } else {
-                "Click to follow their view"
+                format!("{name} · {place}")
+            };
+            let follow = if following_them {
+                MenuItem::new(format!("network-follow-{id}"), "Stop following").icon("close")
+            } else {
+                MenuItem::new(format!("network-follow-{id}"), format!("Follow {name}"))
+                    .icon("visible")
             };
             menu = menu.item(
-                MenuItem::new(format!("network-person-{id}"), label.clone())
-                    .dot(crate::collab::presence::color_of(id))
-                    .checked(following.as_ref() == Some(id))
-                    .tooltip(tip),
+                MenuItem::new(format!("network-person-{id}"), label)
+                    .avatar(name.clone(), crate::collab::presence::color_of(id))
+                    .checked(following_them)
+                    .submenu(vec![
+                        follow.into(),
+                        MenuItem::new(format!("network-goto-{id}"), "Go to")
+                            .icon("location")
+                            .into(),
+                    ]),
             );
         }
-        if !people.is_empty() {
-            menu = menu.separator();
+        // An invitation: the Share dialog (link sharing, or people by their cadrs ID).
+        if matches!(state, NetState::Online { .. })
+            && world.get_resource::<crate::ActiveDocument>().is_some()
+        {
+            menu = menu.item(
+                MenuItem::new("network-invite", "Invite people…")
+                    .icon("share")
+                    .tooltip("Share this document: by link, or with people by their cadrs ID"),
+            );
         }
-        let menu = menu.item(toggle).item(
+        // (A separator twice in a row shows as one.)
+        let menu = menu.separator().item(toggle).item(
             MenuItem::new("network-autoconnect", "Connect when cadrs starts").checked(autoconnect),
         );
         let theme = world.resource::<Theme>().clone();
@@ -358,10 +382,17 @@ fn on_menu_action(ev: On<MenuAction>, q: Query<(), With<NetButton>>, mut command
             let on = !w.resource::<LocalPreferences>().0.autoconnect_p2p;
             crate::preferences_ui::set_autoconnect_p2p(w, on);
         }),
+        "network-invite" => commands.queue(crate::collab::open_share),
         item => {
-            if let Some(id) = item.strip_prefix("network-person-") {
+            if let Some(id) = item
+                .strip_prefix("network-follow-")
+                .or_else(|| item.strip_prefix("network-person-"))
+            {
                 let id = id.to_string();
                 commands.queue(move |w: &mut World| crate::collab::presence::toggle_follow(w, id));
+            } else if let Some(id) = item.strip_prefix("network-goto-") {
+                let id = id.to_string();
+                commands.queue(move |w: &mut World| crate::collab::presence::go_to(w, &id));
             }
         }
     }

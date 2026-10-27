@@ -536,18 +536,7 @@ fn top_bar(root: &mut ChildSpawnerCommands, t: &Theme, doc_name: &str, profile: 
             ))
             .entry::<Node>()
             .and_modify(|mut n| n.margin = UiRect::right(Val::Px(6.0)));
-            // The collaborators' avatars (`crate::collab::presence`), then Share
-            // (`crate::collab`).
-            r.spawn((
-                Name::new("collab-people"),
-                crate::collab::presence::PeopleBar,
-                Node {
-                    align_items: AlignItems::Center,
-                    column_gap: Val::Px(2.0),
-                    margin: UiRect::right(Val::Px(6.0)),
-                    ..default()
-                },
-            ));
+            // Share (`crate::collab`).
             r.spawn((
                 Button::new("document-share")
                     .label("Share")
@@ -562,6 +551,17 @@ fn top_bar(root: &mut ChildSpawnerCommands, t: &Theme, doc_name: &str, profile: 
             .entry::<Node>()
             .and_modify(|mut n| n.margin = UiRect::right(Val::Px(6.0)));
             crate::notifications::spawn_bell(r, t);
+            // The collaborators' avatars (`crate::collab::presence`), beside this user's own.
+            r.spawn((
+                Name::new("collab-people"),
+                crate::collab::presence::PeopleBar,
+                Node {
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(2.0),
+                    margin: UiRect::left(Val::Px(4.0)),
+                    ..default()
+                },
+            ));
             crate::identity::spawn_identity_button(r, t, profile);
         });
     });

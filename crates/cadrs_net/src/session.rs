@@ -8,7 +8,8 @@ use bevy_iroh::message::MessageAppExt;
 use bevy_iroh::prelude::Room;
 use cadrs_core::collab::comments::CommentOp;
 use cadrs_core::collab::{self, Access, sync::Change};
-use cadrs_core::{DocumentId, ElementId, FeatureId};
+use cadrs_core::{DocumentId, ElementId, FeatureId, PartId};
+use cadrs_sketch::{EdgeName, FaceName, VertexName};
 use serde::{Deserialize, Serialize};
 
 use crate::link::ShareLink;
@@ -123,6 +124,31 @@ pub enum PointerAt {
     Sheet { sheet: u128, at: [f32; 2] },
 }
 
+/// What someone is doing in a shared document: in a few words ("Line", "Wiring",
+/// "Routing GND", "2 selected"; empty while nothing in particular), and what they have
+/// selected in their tab, so the others see it in their colour. Sent when it changes and every
+/// few seconds. Peers from before it ignore it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Doing {
+    pub document: DocumentId,
+    pub what: String,
+    pub selected: Vec<Picked>,
+}
+
+/// Something selected, as it travels: by the persistent names every peer's rebuild gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Picked {
+    /// A feature (its row in the feature list).
+    Feature(FeatureId),
+    /// A whole part.
+    Part(PartId),
+    Face(PartId, FaceName),
+    Edge(PartId, EdgeName),
+    Vertex(PartId, VertexName),
+    /// An item of a PCB Studio's schematic or board (a symbol, wire, footprint, track…), by id.
+    Item(u128),
+}
+
 /// What a PCB Studio's 2D view shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EdaOf {
@@ -199,7 +225,8 @@ pub(crate) fn register(app: &mut App) {
         .add_net_message::<CommentChanged>()
         .add_net_message::<VersionCreated>()
         .add_net_message::<LocksChanged>()
-        .add_net_message::<Pointer>();
+        .add_net_message::<Pointer>()
+        .add_net_message::<Doing>();
 }
 
 /// The owner's room for a document shared in `topic`: always the same topic, so links keep
@@ -264,6 +291,14 @@ mod tests {
         };
         let back: Presence = postcard::from_bytes(&postcard::to_stdvec(&p).unwrap()).unwrap();
         assert_eq!(back, p);
+
+        let d = Doing {
+            document,
+            what: "Routing GND".into(),
+            selected: vec![Picked::Feature(FeatureId::new()), Picked::Item(7)],
+        };
+        let back: Doing = postcard::from_bytes(&postcard::to_stdvec(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
 
         let a = AccessChanged {
             document,
