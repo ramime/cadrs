@@ -7,7 +7,7 @@ goes to the releases page (its badge counts pre-releases) until a full release h
 build; then link it to https://github.com/rvdende/cadrs/releases/latest/download/cadrs-universal-macos.dmg like the others. -->
 <p>
   <a href="https://github.com/rvdende/cadrs/releases/latest/download/cadrs-x86_64-windows.zip"><img alt="Download for Windows" src="https://img.shields.io/github/v/release/rvdende/cadrs?style=for-the-badge&label=Windows&color=0078d4&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHBhdGggZmlsbD0nd2hpdGUnIGQ9J00yIDQuNCAxMC4zIDMuM3Y4SDJ6TTExLjMgMy4xIDIyIDEuN3Y5LjZIMTEuM3pNMiAxMi40aDguM3Y4LjJMMiAxOS41ek0xMS4zIDEyLjRIMjJ2OS45bC0xMC43LTEuNXonLz48L3N2Zz4="></a>
-  <a href="https://github.com/rvdende/cadrs/releases"><img alt="Download for macOS" src="https://img.shields.io/github/v/release/rvdende/cadrs?style=for-the-badge&include_prereleases&label=macOS&color=444444&logo=apple"></a>
+  <a href="https://github.com/rvdende/cadrs/releases/latest/download/cadrs-universal-macos.dmg"><img alt="Download for macOS" src="https://img.shields.io/github/v/release/rvdende/cadrs?style=for-the-badge&include_prereleases&label=macOS&color=444444&logo=apple"></a>
   <a href="https://github.com/rvdende/cadrs/releases/latest/download/cadrs-x86_64-linux.tar.gz"><img alt="Download for Linux" src="https://img.shields.io/github/v/release/rvdende/cadrs?style=for-the-badge&label=Linux&color=e95420&logo=linux&logoColor=white"></a>
 </p>
 
