@@ -99,6 +99,7 @@ fn invalid_packages_leave_no_partial_documents() {
         "corrupt-asset",
         "future",
         "future-document",
+        "future-kind",
         "missing-document",
     ] {
         let bad = temp.path().join(format!("{mode}.cadrs"));
@@ -112,11 +113,22 @@ fn invalid_packages_leave_no_partial_documents() {
                 file.version = 999;
                 Some(ron::to_string(&file).unwrap().into_bytes())
             }
+            // A tab kind a newer cadrs added within this schema version.
+            "future-kind" if name == "document.ron" => Some(
+                String::from_utf8(bytes)
+                    .unwrap()
+                    .replacen("PartStudio(", "FutureStudio(", 1)
+                    .into_bytes(),
+            ),
             "missing-document" if name == "document.ron" => None,
             _ => Some(bytes),
         });
         let target = Store::new(temp.path().join(mode));
-        assert!(native::import(&bad, &target, "a", 2).is_err(), "{mode}");
+        let e = native::import(&bad, &target, "a", 2).unwrap_err();
+        // One saved by a newer cadrs says so, and to update.
+        if mode.starts_with("future") {
+            assert_eq!(e, cadrs_core::store::newer_reason(), "{mode}");
+        }
         assert!(!target.root().exists());
     }
     let unsafe_path = temp.path().join("unsafe.cadrs");

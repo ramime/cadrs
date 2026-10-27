@@ -829,7 +829,7 @@ pub fn open_document(world: &mut World, id: DocumentId) {
     let mut file = match store.load(id) {
         Ok(f) => f,
         Err(e) => {
-            linked::error_toast(world, e.to_string());
+            crate::landing::open_failed(world, id, &e);
             return;
         }
     };

@@ -1585,7 +1585,7 @@ pub(crate) fn open_document(world: &mut World, id: DocumentId) {
     let mut file = match store.load(id) {
         Ok(f) => f,
         Err(e) => {
-            error!("cannot open document {id}: {e}");
+            open_failed(world, id, &e);
             return;
         }
     };
@@ -1604,6 +1604,33 @@ pub(crate) fn open_document(world: &mut World, id: DocumentId) {
     world
         .resource_mut::<NextState<AppState>>()
         .set(AppState::Document);
+}
+
+/// Tells the person why stored document `id` didn't open: one saved by a newer cadrs is a
+/// warning to update cadrs (it isn't opened, as saving it here would lose what this cadrs
+/// doesn't know), anything else an error.
+pub(crate) fn open_failed(world: &mut World, id: DocumentId, e: &cadrs_core::StoreError) {
+    error!("cannot open document {id}: {e}");
+    let name = world
+        .resource::<DocLibrary>()
+        .lib
+        .get(id)
+        .map_or_else(|| "the document".to_string(), |d| format!("\"{}\"", d.name));
+    let note = if e.is_newer() {
+        cadrs_ui::Notification::warning(format!(
+            "Can't open {name}: {}.",
+            cadrs_core::store::newer_reason()
+        ))
+    } else {
+        cadrs_ui::Notification::error(format!("Can't open {name}: {e}"))
+    };
+    let theme = world.resource::<Theme>().clone();
+    cadrs_ui::show_notification(
+        &mut world.commands(),
+        &theme,
+        note.name("open-document-toast"),
+    );
+    world.flush();
 }
 
 /// Creates a document with Part Studio 1 and Assembly 1 and opens it.
