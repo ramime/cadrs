@@ -136,8 +136,11 @@ async fn repository_assets_and_the_not_found_page_are_served() {
 
     // The page shows the README's screenshots and the app icon from the repository itself.
     for uri in [
-        "/images/part-studio.png",
-        "/images/pcb-demo.gif",
+        "/images/part-studio-light.webp",
+        "/images/part-studio-dark.webp",
+        "/images/documents-light.webp",
+        "/images/schematic-dark.webp",
+        "/images/render.png",
         "/icons/cadrs.png",
     ] {
         assert_eq!(get(uri).await.unwrap().status(), StatusCode::OK, "{uri}");
