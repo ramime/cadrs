@@ -56,6 +56,12 @@ pub const SHORTCUTS: &[(usize, &str, &str, u8)] = &[
     (0, "Ctrl+Y / Ctrl+Shift+Z", "Redo", LOCKED),
     (0, "`", "Select other", OFF),
     (0, "Alt+C", "Search tools", 0),
+    (
+        0,
+        "Alt+click",
+        "Look here: point it out to everyone in a shared document",
+        LOCKED,
+    ),
     (0, "S", "Shortcut toolbar", OFF),
     (0, "Alt+T", "Tab manager", OFF),
     (0, "Ctrl+Space", "Cycle recent tabs", OFF),

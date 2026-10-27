@@ -128,11 +128,48 @@ pub enum PointerAt {
 /// "Routing GND", "2 selected"; empty while nothing in particular), and what they have
 /// selected in their tab, so the others see it in their colour. Sent when it changes and every
 /// few seconds. Peers from before it ignore it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Doing {
     pub document: DocumentId,
     pub what: String,
     pub selected: Vec<Picked>,
+    /// The shape they are drawing, not made yet.
+    pub draft: Option<Draft>,
+    /// The plane of the sketch they have open.
+    pub plane: Option<SketchPlane>,
+}
+
+/// A shape someone is drawing: the points placed so far, its last piece running to their
+/// pointer (which travels on its own, many times a second).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Draft {
+    /// A chain (a sketch line, a spline, an arc's points so far), in model mm.
+    Chain(Vec<[f32; 3]>),
+    /// A rectangle from this corner (or round this centre) to the pointer, on their sketch's
+    /// plane (model mm).
+    Rect { first: [f32; 3], centered: bool },
+    /// A circle round this centre through the pointer, on their sketch's plane (model mm).
+    Circle([f32; 3]),
+    /// A chain on a PCB Studio's 2D view (design nm): a wire, a route, a zone's corners.
+    Design(Vec<[i64; 2]>),
+}
+
+/// A sketch's plane: its origin and axes (model mm), and half its drawn size along them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SketchPlane {
+    pub origin: [f32; 3],
+    pub u: [f32; 3],
+    pub v: [f32; 3],
+    pub half: [f32; 2],
+}
+
+/// "Look here": someone pinged a point in their tab, for everyone to see. Peers from before it
+/// ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Ping {
+    pub document: DocumentId,
+    pub tab: ElementId,
+    pub at: PointerAt,
 }
 
 /// Something selected, as it travels: by the persistent names every peer's rebuild gives.
@@ -226,7 +263,8 @@ pub(crate) fn register(app: &mut App) {
         .add_net_message::<VersionCreated>()
         .add_net_message::<LocksChanged>()
         .add_net_message::<Pointer>()
-        .add_net_message::<Doing>();
+        .add_net_message::<Doing>()
+        .add_net_message::<Ping>();
 }
 
 /// The owner's room for a document shared in `topic`: always the same topic, so links keep
@@ -296,6 +334,13 @@ mod tests {
             document,
             what: "Routing GND".into(),
             selected: vec![Picked::Feature(FeatureId::new()), Picked::Item(7)],
+            draft: Some(Draft::Design(vec![[1, 2], [3, 4]])),
+            plane: Some(SketchPlane {
+                origin: [0.0; 3],
+                u: [1.0, 0.0, 0.0],
+                v: [0.0, 1.0, 0.0],
+                half: [50.0, 40.0],
+            }),
         };
         let back: Doing = postcard::from_bytes(&postcard::to_stdvec(&d).unwrap()).unwrap();
         assert_eq!(back, d);

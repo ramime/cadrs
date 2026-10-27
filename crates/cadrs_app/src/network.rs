@@ -216,8 +216,13 @@ fn sync_buttons(world: &mut World) {
     }
     let theme = world.resource::<Theme>().clone();
     let mut visuals: Visuals = visuals_for(&theme, ButtonVariant::Ghost);
-    if state == NetState::Failed {
-        visuals.foreground = StateColors::all(theme.danger);
+    match state {
+        NetState::Failed => visuals.foreground = StateColors::all(theme.danger),
+        // Online reads as on while quiet too: both arrows in a softer accent, the lit one full.
+        NetState::Online { .. } => {
+            visuals.foreground = StateColors::all(theme.primary.with_alpha(0.65))
+        }
+        _ => {}
     }
     for (button, children) in stale {
         let mut e = world.entity_mut(button);
@@ -275,9 +280,24 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
                     .iter()
                     .map(|(id, person)| {
                         let doing = p.doing.get(id).map(|a| a.what.as_str());
+                        let idle = p.idle_minutes(
+                            id,
+                            world.resource::<Time<Real>>().elapsed_secs_f64(),
+                            world
+                                .get_resource::<crate::collab::pointers::Pointers>()
+                                .and_then(|ps| ps.moved_at(id)),
+                        );
                         let place = doc.map_or_else(String::new, |d| {
-                            crate::collab::presence::whereabouts(d, &person.presence, doing)
+                            crate::collab::presence::with_idle(
+                                crate::collab::presence::whereabouts(d, &person.presence, doing),
+                                idle,
+                            )
                         });
+                        // After the name, lower case: "Alex · in PCB Studio 1".
+                        let place = match place.strip_prefix("In ") {
+                            Some(rest) => format!("in {rest}"),
+                            None => place,
+                        };
                         (id.clone(), person.presence.name.clone(), place)
                     })
                     .collect()
@@ -343,7 +363,7 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
                     .checked(following_them)
                     .submenu(vec![
                         follow.into(),
-                        MenuItem::new(format!("network-goto-{id}"), "Go to")
+                        MenuItem::new(format!("network-goto-{id}"), format!("Go to {name}'s view"))
                             .icon("location")
                             .into(),
                     ]),

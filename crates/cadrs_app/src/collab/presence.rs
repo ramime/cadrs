@@ -26,7 +26,7 @@ use cadrs_core::{DocumentId, ElementId, FeatureId};
 use cadrs_net::bevy_iroh::Iroh;
 use cadrs_net::bevy_iroh::iroh::EndpointId;
 use cadrs_net::bevy_iroh::prelude::{NetSender, PeerLeft, Received};
-use cadrs_net::{Doing, Picked, Presence, View};
+use cadrs_net::{Doing, Draft, Picked, Presence, SketchPlane, View};
 use cadrs_ui::menu::{MenuAction, MenuHeader, MenuItem, open_menu};
 use cadrs_ui::prelude::*;
 use cadrs_ui::{Avatar, IconButton};
@@ -111,6 +111,8 @@ pub struct Person {
     pub presence: Presence,
     /// When they were last heard (seconds on the real clock).
     heard: f64,
+    /// When what they told last changed (where they are, their view, what they do).
+    pub active: f64,
 }
 
 impl Person {
@@ -136,6 +138,23 @@ pub struct People {
 pub struct Activity {
     pub what: String,
     pub selected: Vec<Picked>,
+    pub draft: Option<Draft>,
+    pub plane: Option<SketchPlane>,
+}
+
+/// Someone who has done nothing for this long (seconds) shows as idle: their avatar and chips
+/// faded, "idle 3 min" on their card.
+pub const IDLE_AFTER: f64 = 120.0;
+
+impl People {
+    /// How long `id` has been idle, in whole minutes, once they are ([`IDLE_AFTER`]); their
+    /// pointer's last move (`moved`) counts as activity.
+    pub fn idle_minutes(&self, id: &str, now: f64, moved: Option<f64>) -> Option<u32> {
+        let p = self.by_id.get(id)?;
+        let since = moved.map_or(p.active, |m| m.max(p.active));
+        let idle = now - since;
+        (idle > IDLE_AFTER).then(|| (idle / 60.0) as u32)
+    }
 }
 
 /// How long after opening a shared document the people heard were already there.
@@ -184,12 +203,14 @@ fn hear(
     mut left: MessageReader<PeerLeft>,
     live: Option<Res<Live>>,
     doc: Option<Res<ActiveDocument>>,
+    iroh: Option<Res<Iroh>>,
     mut people: ResMut<People>,
     time: Res<Time<Real>>,
     theme: Res<Theme>,
     mut commands: Commands,
 ) {
     let t = time.elapsed_secs_f64();
+    let me = iroh.map(|i| i.id().to_string());
     let Some(live) = live else {
         if people.document.is_some() || !people.by_id.is_empty() {
             *people = People::default();
@@ -207,14 +228,21 @@ fn hear(
         };
     }
     for m in doing.read() {
-        if m.msg.document == live.document {
-            people.doing.insert(
-                m.from.to_string(),
-                Activity {
-                    what: m.msg.what.clone(),
-                    selected: m.msg.selected.clone(),
-                },
-            );
+        if m.msg.document != live.document {
+            continue;
+        }
+        let key = m.from.to_string();
+        let a = Activity {
+            what: m.msg.what.clone(),
+            selected: m.msg.selected.clone(),
+            draft: m.msg.draft.clone(),
+            plane: m.msg.plane,
+        };
+        if people.doing.get(&key) != Some(&a) {
+            if let Some(p) = people.by_id.get_mut(&key) {
+                p.active = t;
+            }
+            people.doing.insert(key, a);
         }
     }
     let mut toasts = Vec::new();
@@ -238,12 +266,28 @@ fn hear(
                 None => format!("{} {how}", m.msg.name),
             });
         }
+        let before = people.by_id.get(&m.from.to_string());
+        // Someone starting (or stopping) to follow this user says so.
+        let follows = |p: Option<&Presence>| {
+            me.is_some() && p.and_then(|p| p.following.as_ref()) == me.as_ref()
+        };
+        let (was, is) = (follows(before.map(|b| &b.presence)), follows(Some(&m.msg)));
+        if is && !was {
+            toasts.push(format!("{} is following you", m.msg.name));
+        } else if was && !is {
+            toasts.push(format!("{} stopped following you", m.msg.name));
+        }
+        let active = match before {
+            Some(b) if b.presence == m.msg => b.active,
+            _ => t,
+        };
         people.by_id.insert(
             m.from.to_string(),
             Person {
                 id: m.from,
                 presence: m.msg.clone(),
                 heard: t,
+                active,
             },
         );
     }
@@ -447,6 +491,102 @@ fn doing_now(world: &World) -> String {
     )
 }
 
+/// The plane of the sketch this user has open, as it travels.
+fn plane_now(world: &World) -> Option<SketchPlane> {
+    let s = world.get_resource::<crate::sketch::SketchSession>()?;
+    let map = world
+        .get_resource::<crate::sketch_tools::SketchScreen>()?
+        .active?;
+    let f = map.plane.frame();
+    let v = |p: [f64; 3]| [p[0] as f32, p[1] as f32, p[2] as f32];
+    Some(SketchPlane {
+        origin: v(f.origin),
+        u: v(f.u),
+        v: v(f.v),
+        half: s.plane_extent.to_array(),
+    })
+}
+
+/// The shape this user is drawing, not made yet: a sketch tool's points so far (model mm), or
+/// the schematic's wire or the layout's route, zone or outline so far (design nm).
+fn draft_now(world: &World) -> Option<Draft> {
+    use crate::eda::Mode;
+    use crate::sketch_tools::{DrawState as S, SVec2, SketchDraw, SketchScreen};
+    if world.contains_resource::<crate::sketch::SketchSession>() {
+        let f = world.get_resource::<SketchScreen>()?.active?.plane.frame();
+        let to = |p: SVec2| -> [f32; 3] {
+            std::array::from_fn(|i| (f.origin[i] + f.u[i] * p.x + f.v[i] * p.y) as f32)
+        };
+        let chain = |pts: &[Option<SVec2>]| {
+            Some(Draft::Chain(pts.iter().flatten().map(|p| to(*p)).collect()))
+        };
+        let d = world.get_resource::<SketchDraw>()?;
+        return match d.state {
+            S::Idle | S::BoxSelect { .. } => None,
+            S::Line { start, .. } | S::TangentArc { start, .. } => chain(&[Some(start)]),
+            S::MidLine { mid } => chain(&[Some(mid)]),
+            S::Rect { first, centered } => Some(Draft::Rect {
+                first: to(first),
+                centered,
+            }),
+            S::TextBox { first } => Some(Draft::Rect {
+                first: to(first),
+                centered: false,
+            }),
+            S::Circle { center }
+            | S::Ellipse { center, .. }
+            | S::Polygon { center, .. }
+            | S::CenterArc { center, .. } => Some(Draft::Circle(to(center))),
+            S::Arc { start, end } => chain(&[Some(start), end]),
+            S::AlignedRect { p0, p1 } => chain(&[Some(p0), p1]),
+            S::Circle3 { p1, p2 } => chain(&[Some(p1), p2]),
+            S::Bezier { pts, n } => chain(
+                &pts[..n.min(3) as usize]
+                    .iter()
+                    .map(|p| Some(*p))
+                    .collect::<Vec<_>>(),
+            ),
+            S::Spline { .. } => Some(Draft::Chain(
+                d.pending_points().into_iter().map(to).collect(),
+            )),
+        };
+    }
+    let mode = world
+        .get_resource::<crate::eda::Eda2d>()
+        .and_then(|e| e.0)
+        .map(|(_, _, m)| m);
+    let design = |pts: &[cadrs_eda::units::Pt]| {
+        (!pts.is_empty()).then(|| Draft::Design(pts.iter().map(|p| [p.x, p.y]).collect()))
+    };
+    match mode {
+        Some(Mode::Schematic) => {
+            use crate::eda::schematic_tools::{SchState, Tool};
+            match &world.get_resource::<SchState>()?.tool {
+                Tool::Wire(pts) => design(pts),
+                _ => None,
+            }
+        }
+        Some(Mode::Layout) => {
+            use crate::eda::layout_tools::{LayoutState, Tool};
+            match &world.get_resource::<LayoutState>()?.tool {
+                Tool::Route { runs, .. } => {
+                    let pts: Vec<_> = runs.iter().flat_map(|(_, p)| p.iter().copied()).collect();
+                    design(&pts)
+                }
+                Tool::Zone { pts, .. } | Tool::Polygon(pts) | Tool::Keepout { pts, .. } => {
+                    design(pts)
+                }
+                Tool::Outline(Some(p)) | Tool::Draw { start: Some(p), .. } => design(&[*p]),
+                Tool::Measure { a: Some(a), b } => {
+                    design(&[Some(*a), *b].into_iter().flatten().collect::<Vec<_>>())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The most picks a selection travels with (a box selection can hold thousands).
 const MAX_PICKED: usize = 64;
 
@@ -520,6 +660,8 @@ fn tell_doing(world: &mut World, mut last: Local<Option<(Activity, f64)>>) {
     let what = Activity {
         what: doing_now(world),
         selected: selected_now(world),
+        draft: draft_now(world),
+        plane: plane_now(world),
     };
     let t = now(world);
     let due = match &*last {
@@ -537,6 +679,8 @@ fn tell_doing(world: &mut World, mut last: Local<Option<(Activity, f64)>>) {
                 document,
                 what: what.what.clone(),
                 selected: what.selected.clone(),
+                draft: what.draft.clone(),
+                plane: what.plane,
             },
         );
     }
@@ -685,14 +829,30 @@ pub struct PeopleBar;
 struct PersonAvatar(String);
 
 /// What the avatars show, to rebuild them only when it changes: each person (id, name, where
-/// they are, follows me, I follow them, speaking), the status, and voice (built in, joined,
-/// muted).
+/// they are, (follows me, I follow them, speaking), idle minutes), the status, and voice (built
+/// in, joined, muted).
 #[derive(PartialEq, Clone, Default)]
-struct BarState(
-    Vec<(String, String, String, bool, bool, bool)>,
-    Option<String>,
-    (bool, bool, bool),
-);
+struct BarState(Vec<BarPerson>, Option<String>, (bool, bool, bool));
+
+/// One avatar: id, name, tooltip, (follows me, I follow them, speaking), idle minutes.
+type BarPerson = (String, String, String, (bool, bool, bool), Option<u32>);
+
+/// "In Part Studio 1 · Line", with "idle 3 min" after it once they are idle.
+pub(crate) fn with_idle(text: String, idle: Option<u32>) -> String {
+    let Some(m) = idle else {
+        return text;
+    };
+    let idle = if m < 1 {
+        "idle".to_string()
+    } else {
+        format!("idle {m} min")
+    };
+    if text.is_empty() {
+        idle
+    } else {
+        format!("{text} · {idle}")
+    }
+}
 
 /// Where someone is and what they do, for their card and tooltip: "In Part Studio 1, editing
 /// Extrude 1 · Line".
@@ -748,6 +908,8 @@ fn colour_own_avatar(
 #[allow(clippy::too_many_arguments)]
 fn sync_people_bar(
     people: Res<People>,
+    pointers: Res<super::pointers::Pointers>,
+    time: Res<Time<Real>>,
     following: Option<Res<Following>>,
     voice: Res<VoiceUi>,
     doc: Option<Res<ActiveDocument>>,
@@ -774,18 +936,21 @@ fn sync_people_bar(
             let i_follow = leader.as_deref() == Some(key.as_str());
             let speaking = voice.speaking.contains(&key);
             let doing = people.doing.get(&key).map(|a| a.what.as_str());
+            let idle = people.idle_minutes(&key, time.elapsed_secs_f64(), pointers.moved_at(&key));
             let mut tip = p.presence.name.clone();
-            let place = whereabouts(&doc, &p.presence, doing);
+            let place = with_idle(whereabouts(&doc, &p.presence, doing), idle);
             if !place.is_empty() {
                 tip.push_str(&format!(" · {place}"));
+            }
+            if follows_me {
+                tip.push_str(" · following you");
             }
             (
                 key,
                 p.presence.name.clone(),
                 tip,
-                follows_me,
-                i_follow,
-                speaking,
+                (follows_me, i_follow, speaking),
+                idle,
             )
         })
         .collect();
@@ -837,8 +1002,13 @@ fn sync_people_bar(
             .entry::<Node>()
             .and_modify(|mut n| n.margin = UiRect::right(Val::Px(4.0)));
         }
-        for (key, name, tip, follows_me, i_follow, speaking) in &state.0 {
-            let color = color_of(key);
+        for (key, name, tip, (follows_me, i_follow, speaking), idle) in &state.0 {
+            // Faded while they are idle.
+            let color = if idle.is_some() {
+                color_of(key).mix(&t.control, 0.6)
+            } else {
+                color_of(key)
+            };
             let outlined = *follows_me || *i_follow;
             let tip = if *i_follow {
                 format!("{tip}. Following: click for more")
@@ -873,6 +1043,35 @@ fn sync_people_bar(
                     cadrs_ui::color_scheme::KeepFill,
                     Pickable::IGNORE,
                 ));
+                // Following this user: an eye on their avatar.
+                if *follows_me {
+                    a.spawn((
+                        Name::new(format!(
+                            "collab-avatar-follows-you-{}",
+                            &key[..8.min(key.len())]
+                        )),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(-6.0),
+                            bottom: Val::Px(-6.0),
+                            width: Val::Px(16.0),
+                            height: Val::Px(16.0),
+                            border: UiRect::all(Val::Px(1.5)),
+                            border_radius: BorderRadius::MAX,
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(color_of(key)),
+                        BorderColor::all(Color::WHITE),
+                        cadrs_ui::color_scheme::KeepFill,
+                        Pickable::IGNORE,
+                        children![(
+                            cadrs_ui::icon("visible", 10.0, Avatar::ink_on(color_of(key))),
+                            Pickable::IGNORE
+                        )],
+                    ));
+                }
             });
         }
     });
@@ -894,9 +1093,14 @@ fn on_avatar_click(ev: On<Pointer<Click>>, q: Query<&PersonAvatar>, mut commands
             .doing
             .get(&id)
             .map(|a| a.what.clone());
+        let idle = world.resource::<People>().idle_minutes(
+            &id,
+            now(world),
+            world.resource::<super::pointers::Pointers>().moved_at(&id),
+        );
         let place = world
             .get_resource::<ActiveDocument>()
-            .map(|d| whereabouts(d, &p.presence, doing.as_deref()))
+            .map(|d| with_idle(whereabouts(d, &p.presence, doing.as_deref()), idle))
             .unwrap_or_default();
         let following = world
             .get_resource::<Following>()
@@ -920,7 +1124,7 @@ fn on_avatar_click(ev: On<Pointer<Click>>, q: Query<&PersonAvatar>, mut commands
             .separator()
             .item(follow)
             .item(
-                MenuItem::new("collab-person-goto", "Go to")
+                MenuItem::new("collab-person-goto", format!("Go to {name}'s view"))
                     .icon("location")
                     .tooltip("Open their tab and view, once"),
             );
@@ -1009,10 +1213,26 @@ fn sync_markers(
                 .0
                 .push(who.clone());
         }
-        if let Some((_, f)) = p.presence.editing
-            && let Some((e, _)) = rows.iter().find(|(_, r)| r.0 == f)
+        // The feature they edit, and the features they have selected.
+        let selected = people.doing.get(&p.key()).into_iter().flat_map(|a| {
+            a.selected.iter().filter_map(|s| match s {
+                Picked::Feature(f) => Some(*f),
+                _ => None,
+            })
+        });
+        for f in p
+            .presence
+            .editing
+            .map(|(_, f)| f)
+            .into_iter()
+            .chain(selected)
         {
-            want.entry(e).or_insert((Vec::new(), false)).0.push(who);
+            if let Some((e, _)) = rows.iter().find(|(_, r)| r.0 == f) {
+                let chips = &mut want.entry(e).or_insert((Vec::new(), false)).0;
+                if !chips.contains(&who) {
+                    chips.push(who.clone());
+                }
+            }
         }
     }
     let mut have: BTreeMap<Entity, Entity> = BTreeMap::new();

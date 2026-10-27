@@ -26,8 +26,8 @@ use bevy_iroh::{Identity, Iroh, IrohPlugin, Relays, StartError, StartIroh, StopI
 pub use bevy_iroh;
 pub use link::ShareLink;
 pub use session::{
-    AccessChanged, CommentChanged, Doing, EdaOf, LocksChanged, Picked, Pointer, PointerAt,
-    Presence, Sequenced, VersionCreated, View,
+    AccessChanged, CommentChanged, Doing, Draft, EdaOf, LocksChanged, Picked, Ping, Pointer,
+    PointerAt, Presence, Sequenced, SketchPlane, VersionCreated, View,
 };
 
 /// A question to another peer on its way: polled from a system until the answer (or why

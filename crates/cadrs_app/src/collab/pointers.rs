@@ -20,10 +20,10 @@ use bevy::ecs::system::SystemState;
 use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 use bevy::text::FontWeight;
-use cadrs_core::{DocumentId, ElementId};
+use cadrs_core::{DocumentId, ElementId, PartId};
 use cadrs_net::bevy_iroh::Iroh;
 use cadrs_net::bevy_iroh::prelude::{NetSender, PeerLeft, Received};
-use cadrs_net::{EdaOf, Pointer, PointerAt};
+use cadrs_net::{Draft, EdaOf, Picked, Ping, Pointer, PointerAt, SketchPlane};
 use cadrs_ui::prelude::*;
 
 use super::live::Live;
@@ -50,22 +50,34 @@ const ARROW_TIP: Vec2 = Vec2::new(5.0 / 24.0 * ARROW, 2.5 / 24.0 * ARROW);
 const IDLE_AFTER: f64 = 10.0;
 /// The 3D pointer's dot and the camera chip (px), and the camera's length on this screen.
 const DOT: f32 = 12.0;
-const CHIP: f32 = 18.0;
+const CHIP: f32 = 20.0;
 const CAMERA_PX: f32 = 34.0;
+/// How long a ping pulses (seconds), and each pulse.
+const PING_FOR: f64 = 2.7;
+const PING_PULSE: f64 = 0.9;
 
 pub(super) fn plugin(app: &mut App) {
     // Registered here as well: without the network the systems below still need the message.
     app.add_message::<Received<Pointer>>()
+        .add_message::<Received<Ping>>()
         .add_message::<PeerLeft>()
         .init_resource::<Pointers>()
+        .init_resource::<Pings>()
         .init_gizmo_group::<CollabGizmos>()
         .init_gizmo_group::<CollabHiddenGizmos>()
+        .init_gizmo_group::<CollabPickGizmos>()
         .add_systems(Startup, configure_gizmos)
         .add_systems(
             Update,
             (
-                (tell, hear).run_if(resource_exists::<Iroh>),
-                (smooth, sync_badges, draw_gizmos),
+                (tell, hear, hear_pings).run_if(resource_exists::<Iroh>),
+                (
+                    smooth,
+                    sync_badges,
+                    sync_overlays,
+                    draw_gizmos,
+                    sync_pick_tints,
+                ),
             )
                 .chain(),
         );
@@ -80,6 +92,10 @@ pub struct CollabGizmos;
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct CollabHiddenGizmos;
 
+/// What a collaborator has selected: its outlines, wide, over the part's own edges.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct CollabPickGizmos;
+
 fn configure_gizmos(mut store: ResMut<GizmoConfigStore>) {
     let (config, _) = store.config_mut::<CollabGizmos>();
     config.line.width = 2.0;
@@ -87,6 +103,9 @@ fn configure_gizmos(mut store: ResMut<GizmoConfigStore>) {
     config.line.width = 1.5;
     config.depth_bias = -1.0;
     config.render_layers = bevy::camera::visibility::RenderLayers::layer(OVERLAY_LAYER);
+    let (config, _) = store.config_mut::<CollabPickGizmos>();
+    config.line.width = 4.0;
+    config.depth_bias = -0.02;
 }
 
 /// Someone else's pointer.
@@ -112,6 +131,13 @@ impl Remote {
 pub struct Pointers {
     document: Option<DocumentId>,
     by_id: BTreeMap<String, Remote>,
+}
+
+impl Pointers {
+    /// When `id`'s pointer last moved (seconds on the real clock).
+    pub fn moved_at(&self, id: &str) -> Option<f64> {
+        self.by_id.get(id).map(|r| r.moved)
+    }
 }
 
 fn now(world: &World) -> f64 {
@@ -169,6 +195,16 @@ fn here(world: &mut World) -> Option<PointerAt> {
     }
     if !three_d(kind) || !over_view(world) {
         return None;
+    }
+    // Sketching: on the sketch's plane, where the sketch tools put it (snapped).
+    if world.contains_resource::<crate::sketch::SketchSession>()
+        && let Some(map) = world.resource::<crate::sketch_tools::SketchScreen>().active
+        && let Some(c) = world.resource::<crate::sketch_tools::SketchDraw>().cursor
+    {
+        let f = map.plane.frame();
+        return Some(PointerAt::Model(std::array::from_fn(|i| {
+            (f.origin[i] + f.u[i] * c.x + f.v[i] * c.y) as f32
+        })));
     }
     let offset = world
         .resource::<ViewportRect>()
@@ -236,6 +272,96 @@ fn tell(world: &mut World, mut last: Local<Option<(Pointer, f64)>>) {
         net.broadcast(room, &p);
     }
     *last = Some((p, t));
+}
+
+/// The pings pulsing now: whose, in which tab, where, and since when.
+#[derive(Resource, Default)]
+struct Pings(Vec<(String, ElementId, PointerAt, f64)>);
+
+/// "Look here" (Alt+click in a shared document): where this user points, pulsing for
+/// everyone in their colour. False when there is no shared session or nowhere to point.
+pub fn ping(world: &mut World) -> bool {
+    let Some((document, room)) = world.get_resource::<Live>().map(|l| (l.document, l.room()))
+    else {
+        return false;
+    };
+    let Some(tab) = world
+        .get_resource::<ActiveDocument>()
+        .and_then(|d| d.active)
+    else {
+        return false;
+    };
+    let Some(at) = here(world) else {
+        return false;
+    };
+    let mut state = SystemState::<NetSender>::new(world);
+    if let Ok(net) = state.get(world) {
+        net.broadcast(room, &Ping { document, tab, at });
+    }
+    let me = world
+        .get_resource::<Iroh>()
+        .map(|i| i.id().to_string())
+        .unwrap_or_default();
+    let t = now(world);
+    world.resource_mut::<Pings>().0.push((me, tab, at, t));
+    true
+}
+
+/// The others' pings: shown where they are when this user is in the same tab, else a toast
+/// that takes them there.
+#[allow(clippy::too_many_arguments)]
+fn hear_pings(
+    mut rx: MessageReader<Received<Ping>>,
+    live: Option<Res<Live>>,
+    doc: Option<Res<ActiveDocument>>,
+    people: Res<People>,
+    mut pings: ResMut<Pings>,
+    time: Res<Time<Real>>,
+    theme: Res<Theme>,
+    mut commands: Commands,
+) {
+    let t = time.elapsed_secs_f64();
+    pings.0.retain(|p| t - p.3 < PING_FOR);
+    let Some(live) = live else {
+        rx.clear();
+        return;
+    };
+    for m in rx.read() {
+        if m.msg.document != live.document {
+            continue;
+        }
+        let id = m.from.to_string();
+        pings.0.push((id.clone(), m.msg.tab, m.msg.at, t));
+        let here = doc.as_ref().and_then(|d| d.active);
+        if here == Some(m.msg.tab) {
+            continue;
+        }
+        let name = people
+            .by_id
+            .get(&id)
+            .map_or_else(|| "Someone".to_string(), |p| p.presence.name.clone());
+        let place = doc
+            .as_ref()
+            .and_then(|d| d.doc.element(m.msg.tab))
+            .map_or_else(String::new, |e| format!(" in {}", e.name));
+        let toast = cadrs_ui::show_notification(
+            &mut commands,
+            &theme,
+            cadrs_ui::Notification::info(format!("{name} wants you to look here{place}"))
+                .name("collab-ping-toast")
+                .seconds(8.0),
+        );
+        let link = cadrs_ui::toast_action(&mut commands, &theme, toast, "collab-ping-go", "Go to");
+        commands
+            .entity(link)
+            .observe(move |_: On<Activate>, mut commands: Commands| {
+                let id = id.clone();
+                commands.queue(move |w: &mut World| {
+                    cadrs_ui::close_toasts(w);
+                    super::presence::go_to(w, &id);
+                });
+            });
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -353,8 +479,28 @@ struct Here<'a> {
 }
 
 impl Here<'_> {
-    /// Where a pointer is on this screen (logical px), and whether it is a 3D one.
+    /// Where a pointer is on this screen (logical px), and whether it is a 3D one, when it is
+    /// on the tab's view.
     fn screen(&self, tab: ElementId, at: PointerAt) -> Option<(Vec2, bool)> {
+        self.screen_any(tab, at)
+            .filter(|(p, _)| self.rect.contains(*p))
+    }
+
+    /// A design point of the 2D view `at` (a pointer) is on, on this screen.
+    fn design(&self, at: PointerAt, p: [i64; 2]) -> Option<Vec2> {
+        let PointerAt::Design { of, mode, .. } = at else {
+            return None;
+        };
+        let (subject, m, view) = self.eda?;
+        if eda_of(subject) != of || mode_code(m) != mode {
+            return None;
+        }
+        let s = view.to_screen([p[0] as f64, p[1] as f64]);
+        Some(self.rect.min + Vec2::new(s[0] as f32, s[1] as f32))
+    }
+
+    /// As [`Self::screen`], also off the view's edges (where an edge arrow points).
+    fn screen_any(&self, tab: ElementId, at: PointerAt) -> Option<(Vec2, bool)> {
         if self.tab != Some(tab) {
             return None;
         }
@@ -385,7 +531,7 @@ impl Here<'_> {
                 )
             }
         };
-        self.rect.contains(p).then_some((p, model))
+        p.is_finite().then_some((p, model))
     }
 }
 
@@ -714,6 +860,342 @@ fn sync_badges(
     }
 }
 
+/// A piece of a collaborator's draft on a 2D view, their pointer off the view's edge, a ping's
+/// ring: made again each frame.
+#[derive(Component)]
+struct Overlay;
+
+/// A straight piece from `a` to `b` (local px), `width` wide.
+fn segment(a: Vec2, b: Vec2, width: f32, color: Color) -> impl Bundle {
+    let d = b - a;
+    let (len, mid) = (d.length(), (a + b) / 2.0);
+    (
+        Overlay,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(mid.x - len / 2.0),
+            top: Val::Px(mid.y - width / 2.0),
+            width: Val::Px(len),
+            height: Val::Px(width),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        bevy::ui::UiTransform {
+            rotation: Rot2::radians(d.y.atan2(d.x)),
+            ..default()
+        },
+        BackgroundColor(color),
+        GlobalZIndex(4),
+        Pickable::IGNORE,
+    )
+}
+
+/// A collaborator's pointer beyond the view's edge: their initials there, an arrow pointing
+/// out toward it.
+fn edge_chip(t: &Theme, id: &str, name: &str, at: Vec2) -> impl Bundle {
+    let color = color_of(id);
+    let short: String = id.chars().take(8).collect();
+    (
+        Overlay,
+        Name::new(format!("collab-edge-{short}")),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(at.x - 18.0),
+            top: Val::Px(at.y - 18.0),
+            width: Val::Px(36.0),
+            height: Val::Px(36.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        GlobalZIndex(7),
+        Pickable::IGNORE,
+        children![(
+            Node {
+                padding: UiRect::all(Val::Px(2.0)),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(Color::WHITE),
+            cadrs_ui::color_scheme::KeepFill,
+            Pickable::IGNORE,
+            children![(
+                cadrs_ui::Avatar::new(format!("collab-edge-{short}-face"), name.to_string())
+                    .size(24.0)
+                    .color(color)
+                    .build(t),
+                cadrs_ui::color_scheme::KeepFill,
+                Pickable::IGNORE,
+            )],
+        ),],
+    )
+}
+
+/// The arrow beside an [`edge_chip`], at `at` (local px), pointing along `angle` (radians,
+/// clockwise from the right, as on screen).
+fn edge_arrow(id: &str, at: Vec2, angle: f32) -> impl Bundle {
+    (
+        Overlay,
+        // (The caret fills about a third of its box.)
+        cadrs_ui::icon::icon_in(
+            "caret-up-filled",
+            34.0,
+            color_of(id),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(at.x - 17.0),
+                top: Val::Px(at.y - 17.0),
+                ..default()
+            },
+        ),
+        // The caret points up: turned to point at them.
+        bevy::ui::UiTransform {
+            rotation: Rot2::radians(angle + std::f32::consts::FRAC_PI_2),
+            ..default()
+        },
+        GlobalZIndex(7),
+        Pickable::IGNORE,
+    )
+}
+
+/// A small pill of text beside a mark (local px): "Alex's view", "Look here".
+fn mark_label(t: &Theme, text: String, at: Vec2, color: Color) -> impl Bundle {
+    (
+        Overlay,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(at.x),
+            top: Val::Px(at.y),
+            padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+            border_radius: BorderRadius::all(Val::Px(t.radius)),
+            ..default()
+        },
+        BackgroundColor(color),
+        GlobalZIndex(6),
+        Pickable::IGNORE,
+        children![(
+            t.text(
+                text,
+                t.font_sm,
+                FontWeight::MEDIUM,
+                cadrs_ui::Avatar::ink_on(color)
+            ),
+            Pickable::IGNORE,
+        )],
+    )
+}
+
+/// A ring (local px), `width` wide.
+fn ring(at: Vec2, radius: f32, width: f32, color: Color) -> impl Bundle {
+    (
+        Overlay,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(at.x - radius),
+            top: Val::Px(at.y - radius),
+            width: Val::Px(radius * 2.0),
+            height: Val::Px(radius * 2.0),
+            border: UiRect::all(Val::Px(width)),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BorderColor::all(color),
+        GlobalZIndex(6),
+        Pickable::IGNORE,
+    )
+}
+
+/// On 2D views, what the collaborators draw (a wire, a route so far, to their pointer); on
+/// every view, an arrow at the edge toward a pointer beyond it, and the pings' rings.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn sync_overlays(
+    pointers: Res<Pointers>,
+    people: Res<People>,
+    pings: Res<Pings>,
+    (doc, kind, eda, eda_ui, drawing): (
+        Option<Res<ActiveDocument>>,
+        Res<ActiveKind>,
+        Res<Eda2d>,
+        Res<EdaUi>,
+        Option<Res<crate::drawing::DrawingUi>>,
+    ),
+    (view, rect, time): (Res<ViewportView>, Res<ViewportRect>, Res<Time<Real>>),
+    area: Query<Entity, With<ViewportArea>>,
+    old: Query<Entity, With<Overlay>>,
+    theme: Res<Theme>,
+    mut commands: Commands,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let Ok(area) = area.single() else {
+        return;
+    };
+    let here = here_of(
+        doc.as_deref(),
+        *kind,
+        &eda,
+        &eda_ui,
+        drawing.as_deref(),
+        &view,
+        &rect,
+    );
+    let t = time.elapsed_secs_f64();
+    let local = |p: Vec2| p - rect.0.min;
+    let mut spawned = Vec::new();
+    // What they draw on this 2D view.
+    for (id, a) in &people.doing {
+        let (Some(Draft::Design(pts)), Some(r)) = (&a.draft, pointers.by_id.get(id)) else {
+            continue;
+        };
+        let Some(at) = r.shown.or(r.at) else {
+            continue;
+        };
+        let mut screen: Vec<Vec2> = pts.iter().filter_map(|p| here.design(at, *p)).collect();
+        if screen.len() != pts.len() {
+            continue;
+        }
+        screen.extend(here.screen(r.tab, at).map(|(p, _)| p));
+        let color = color_of(id).with_alpha(0.85);
+        for w in screen.windows(2) {
+            spawned.push(
+                commands
+                    .spawn(segment(local(w[0]), local(w[1]), 3.0, color))
+                    .id(),
+            );
+        }
+    }
+    // Pointers beyond the view's edges.
+    let inset = rect.0.inflate(-60.0);
+    for (id, r) in &pointers.by_id {
+        let Some((p, _)) = r
+            .shown
+            .filter(|_| !r.idle(t))
+            .and_then(|at| here.screen_any(r.tab, at))
+        else {
+            continue;
+        };
+        if rect.0.contains(p) || inset.width() <= 0.0 || inset.height() <= 0.0 {
+            continue;
+        }
+        let c = inset.center();
+        let d = p - c;
+        let reach = |half: f32, d: f32| {
+            if d.abs() > 1e-3 {
+                half / d.abs()
+            } else {
+                f32::MAX
+            }
+        };
+        let k = reach(inset.half_size().x, d.x).min(reach(inset.half_size().y, d.y));
+        let name = people
+            .by_id
+            .get(id)
+            .map_or_else(String::new, |p| p.presence.name.clone());
+        let at = local(c + d * k);
+        let dir = d.normalize_or_zero();
+        spawned.push(commands.spawn(edge_chip(&theme, id, &name, at)).id());
+        spawned.push(
+            commands
+                .spawn(edge_arrow(id, at + dir * 22.0, d.y.atan2(d.x)))
+                .id(),
+        );
+    }
+    // In 3D, someone whose mouse is off their view: a ring where they look (its centre).
+    if here.tab.is_some() && three_d(here.kind) && here.eda.is_none_or(|e| e.1 == Mode::ThreeD) {
+        for (id, person) in &people.by_id {
+            let pointing = pointers
+                .by_id
+                .get(id)
+                .is_some_and(|r| r.at.is_some() && !r.idle(t) && Some(r.tab) == here.tab);
+            if person.presence.tab != here.tab || pointing {
+                continue;
+            }
+            let Some(v) = person.presence.view.as_ref() else {
+                continue;
+            };
+            let p = rect.0.center() + view.view.project(Vec3::from_array(v.focus));
+            if !rect.0.contains(p) {
+                continue;
+            }
+            let color = color_of(id);
+            let at = local(p);
+            spawned.push(
+                commands
+                    .spawn(ring(at, 16.0, 2.5, color.with_alpha(0.85)))
+                    .id(),
+            );
+            spawned.push(commands.spawn(ring(at, 3.0, 3.0, color)).id());
+            let label = format!("{}'s view", person.presence.name);
+            spawned.push(
+                commands
+                    .spawn(mark_label(
+                        &theme,
+                        label,
+                        at + Vec2::new(18.0, 10.0),
+                        color.with_alpha(0.85),
+                    ))
+                    .id(),
+            );
+        }
+    }
+    // Pings: rings growing out of the point, one after another, and "Look here".
+    for (id, tab, at, start) in &pings.0 {
+        let Some((p, _)) = here.screen(*tab, *at) else {
+            continue;
+        };
+        let color = color_of(id);
+        let age = t - start;
+        let left = (1.0 - (age / PING_FOR) as f32).clamp(0.0, 1.0);
+        for k in [0.0, 0.33, 0.66] {
+            let phase = (age / PING_PULSE + k).fract() as f32;
+            let radius = 8.0 + 46.0 * phase;
+            let fade = (1.0 - phase).powf(0.7) * left;
+            spawned.push(
+                commands
+                    .spawn(ring(local(p), radius, 4.0, color.with_alpha(fade)))
+                    .id(),
+            );
+        }
+        let name = people
+            .by_id
+            .get(id)
+            .map(|p| format!("{}: look here", p.presence.name))
+            .unwrap_or_else(|| "Look here".into());
+        spawned.push(
+            commands
+                .spawn(mark_label(
+                    &theme,
+                    name,
+                    local(p) + Vec2::new(14.0, -30.0),
+                    color.with_alpha(left.max(0.3)),
+                ))
+                .id(),
+        );
+        let at = local(p);
+        spawned.push(
+            commands
+                .spawn((
+                    Overlay,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(at.x - 5.0),
+                        top: Val::Px(at.y - 5.0),
+                        width: Val::Px(10.0),
+                        height: Val::Px(10.0),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(color),
+                    GlobalZIndex(6),
+                    Pickable::IGNORE,
+                ))
+                .id(),
+        );
+    }
+    commands.entity(area).add_children(&spawned);
+}
+
 fn here_of<'a>(
     doc: Option<&ActiveDocument>,
     kind: ActiveKind,
@@ -758,6 +1240,7 @@ fn draw_gizmos(
     time: Res<Time<Real>>,
     mut shown: Gizmos<CollabGizmos>,
     mut hidden: Gizmos<CollabHiddenGizmos>,
+    mut picked: Gizmos<CollabPickGizmos>,
 ) {
     let tab = doc.as_deref().and_then(|d| d.active);
     if tab.is_none() || !three_d(*kind) || eda.0.is_some_and(|e| e.2 != Mode::ThreeD) {
@@ -767,9 +1250,34 @@ fn draw_gizmos(
     let mine = &view.view;
     let px = |p: Vec3| mine.scale / mine.magnification(p);
     for (id, person) in &people.by_id {
+        if person.presence.tab != tab {
+            continue;
+        }
+        let color = color_of(id);
+        // What they have selected, their sketch's plane and what they are drawing on it.
+        if let Some(a) = people.doing.get(id) {
+            draw_picks(&mut picked, &cache, &a.selected, color, &px);
+            if let Some(plane) = a.plane {
+                draw_plane(&mut shown, plane, color.with_alpha(0.5));
+                draw_plane(&mut hidden, plane, color.with_alpha(0.2));
+            }
+            if let Some(d) = &a.draft {
+                let at = pointers
+                    .by_id
+                    .get(id)
+                    .filter(|r| Some(r.tab) == tab)
+                    .and_then(|r| match r.shown {
+                        Some(PointerAt::Model(p)) => Some(Vec3::from_array(p)),
+                        _ => None,
+                    });
+                draw_draft(&mut shown, d, a.plane, at, color.with_alpha(0.9), mine);
+                // Where a part hides it (a sketch on a face it is drawn under), faint over it.
+                draw_draft(&mut hidden, d, a.plane, at, color.with_alpha(0.45), mine);
+            }
+        }
         // Their camera, while they look at this tab in 3D (not whoever this user follows:
         // that camera is this view).
-        if person.presence.tab != tab || following.as_ref().is_some_and(|f| f.leader == *id) {
+        if following.as_ref().is_some_and(|f| f.leader == *id) {
             continue;
         }
         let Some(theirs) = person
@@ -780,7 +1288,6 @@ fn draw_gizmos(
         else {
             continue;
         };
-        let color = color_of(id);
         let faint = color.with_alpha(0.3);
         let eye = eye_of(&theirs, &cache);
         let pointer = pointers
@@ -797,7 +1304,232 @@ fn draw_gizmos(
         if let Some(p) = pointer {
             shown.line(eye, p, color.with_alpha(0.6));
             hidden.line(eye, p, color.with_alpha(0.15));
+        } else {
+            // Their mouse is off their view: a line to where they look (its ring is a badge,
+            // `sync_overlays`).
+            shown.line(eye, theirs.focus, color.with_alpha(0.35));
+            hidden.line(eye, theirs.focus, color.with_alpha(0.12));
         }
+    }
+}
+
+/// A collaborator's selection, outlined in their colour: a face's boundary, an edge, a vertex,
+/// a whole part's edges. (Features show on their rows.)
+fn draw_picks(
+    g: &mut Gizmos<CollabPickGizmos>,
+    cache: &crate::parts::PartCache,
+    picks: &[Picked],
+    color: Color,
+    px: &impl Fn(Vec3) -> f32,
+) {
+    let part = |id: PartId| cache.shown().find(|p| p.id == id);
+    for pick in picks {
+        match *pick {
+            Picked::Face(id, name) => {
+                let Some(f) = part(id).and_then(|p| p.solid.faces.iter().find(|f| f.name == name))
+                else {
+                    continue;
+                };
+                for l in &f.loops {
+                    g.linestrip(l.iter().chain(l.first()).map(|p| m3(*p)), color);
+                }
+            }
+            Picked::Edge(id, name) => {
+                if let Some(e) =
+                    part(id).and_then(|p| p.solid.edges.iter().find(|e| e.name == name))
+                {
+                    g.linestrip(e.points.iter().map(|p| m3(*p)), color);
+                }
+            }
+            Picked::Vertex(id, name) => {
+                if let Some(v) =
+                    part(id).and_then(|p| p.solid.vertices.iter().find(|v| v.name == name))
+                {
+                    let at = m3(v.point);
+                    g.sphere(Isometry3d::from_translation(at), 5.0 * px(at), color);
+                }
+            }
+            Picked::Part(id) => {
+                if let Some(p) = part(id) {
+                    for e in &p.solid.edges {
+                        g.linestrip(e.points.iter().map(|p| m3(*p)), color);
+                    }
+                }
+            }
+            Picked::Feature(_) | Picked::Item(_) => {}
+        }
+    }
+}
+
+/// A collaborator's selected faces, tinted in their colour (over the part's own faces).
+#[derive(Component)]
+struct PickTint;
+
+/// Each collaborator's selected faces, for this tab, as last tinted (and the parts' generation).
+type TintKey = (u64, Vec<(String, Vec<Picked>)>);
+
+#[allow(clippy::too_many_arguments)]
+fn sync_pick_tints(
+    people: Res<People>,
+    doc: Option<Res<ActiveDocument>>,
+    kind: Res<ActiveKind>,
+    cache: Res<crate::parts::PartCache>,
+    q: Query<Entity, With<PickTint>>,
+    mut last: Local<Option<TintKey>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+) {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let tab = doc.as_deref().and_then(|d| d.active);
+    let want: Vec<(String, Vec<Picked>)> = if three_d(*kind) {
+        people
+            .by_id
+            .iter()
+            .filter(|(_, p)| p.presence.tab.is_some() && p.presence.tab == tab)
+            .filter_map(|(id, _)| {
+                let faces: Vec<Picked> = people
+                    .doing
+                    .get(id)?
+                    .selected
+                    .iter()
+                    .filter(|p| matches!(p, Picked::Face(..)))
+                    .copied()
+                    .collect();
+                (!faces.is_empty()).then(|| (id.clone(), faces))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let key = (cache.generation, want);
+    if last.as_ref() == Some(&key) {
+        return;
+    }
+    for e in &q {
+        commands.entity(e).try_despawn();
+    }
+    for (id, picks) in &key.1 {
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        for pick in picks {
+            let Picked::Face(pid, name) = *pick else {
+                continue;
+            };
+            let Some((s, face)) = cache.shown().find(|p| p.id == pid).and_then(|p| {
+                let f = p.solid.faces.iter().find(|f| f.name == name)?;
+                Some((&p.solid, f))
+            }) else {
+                continue;
+            };
+            let idx = &s.indices
+                [3 * face.first_triangle..3 * (face.first_triangle + face.triangle_count)];
+            positions.extend(idx.iter().map(|i| m3(s.positions[*i as usize]).to_array()));
+        }
+        if positions.is_empty() {
+            continue;
+        }
+        let indices: Vec<u32> = (0..positions.len() as u32).collect();
+        let mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_indices(Indices::U32(indices));
+        let material = materials.add(StandardMaterial {
+            base_color: color_of(id).with_alpha(0.22),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            cull_mode: None,
+            double_sided: true,
+            depth_bias: 1000.0,
+            ..default()
+        });
+        commands.spawn((
+            Name::new("collab-pick-tint"),
+            PickTint,
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material),
+            Transform::IDENTITY,
+            DespawnOnExit(crate::AppState::Document),
+        ));
+    }
+    *last = Some(key);
+}
+
+fn v3(p: [f32; 3]) -> Vec3 {
+    Vec3::from_array(p)
+}
+
+/// A model point of a part's mesh (f64) as drawn.
+fn m3(p: [f64; 3]) -> Vec3 {
+    Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32)
+}
+
+/// The plane of a collaborator's sketch: its drawn rectangle.
+fn draw_plane<G: GizmoConfigGroup>(g: &mut Gizmos<G>, plane: SketchPlane, color: Color) {
+    let (o, u, v) = (v3(plane.origin), v3(plane.u), v3(plane.v));
+    let (hx, hy) = (plane.half[0], plane.half[1]);
+    let c = [
+        o + u * hx + v * hy,
+        o - u * hx + v * hy,
+        o - u * hx - v * hy,
+        o + u * hx - v * hy,
+    ];
+    g.linestrip([c[0], c[1], c[2], c[3], c[0]], color);
+}
+
+/// What a collaborator is drawing: the points placed so far, the last piece to their pointer.
+fn draw_draft<G: GizmoConfigGroup>(
+    g: &mut Gizmos<G>,
+    draft: &Draft,
+    plane: Option<SketchPlane>,
+    pointer: Option<Vec3>,
+    color: Color,
+    view: &ViewState,
+) {
+    match draft {
+        Draft::Chain(pts) => {
+            let all: Vec<Vec3> = pts.iter().map(|p| v3(*p)).chain(pointer).collect();
+            if all.len() >= 2 {
+                g.linestrip(all, color);
+            }
+        }
+        Draft::Rect { first, centered } => {
+            let (Some(p), Some(plane)) = (pointer, plane) else {
+                return;
+            };
+            let (u, v, f) = (v3(plane.u), v3(plane.v), v3(*first));
+            let d = p - f;
+            let (a, b) = (u * d.dot(u), v * d.dot(v));
+            let c = if *centered {
+                [f + a + b, f - a + b, f - a - b, f + a - b]
+            } else {
+                [f, f + a, f + a + b, f + b]
+            };
+            g.linestrip([c[0], c[1], c[2], c[3], c[0]], color);
+        }
+        Draft::Circle(center) => {
+            let Some(p) = pointer else {
+                return;
+            };
+            let c = v3(*center);
+            let n = plane
+                .map(|pl| v3(pl.u).cross(v3(pl.v)))
+                .filter(|n| n.length_squared() > 1e-9)
+                .map_or(view.back(), Vec3::normalize);
+            let d = p - c;
+            let r = (d - n * d.dot(n)).length();
+            if r > 1e-6 {
+                g.circle(
+                    Isometry3d::new(c, Quat::from_rotation_arc(Vec3::Z, n)),
+                    r,
+                    color,
+                );
+            }
+        }
+        // On a 2D view (`sync_overlays`).
+        Draft::Design(_) => {}
     }
 }
 
@@ -829,7 +1561,8 @@ fn eye_of(v: &ViewState, cache: &crate::parts::PartCache) -> Vec3 {
     v.focus + v.back() * reach
 }
 
-/// A camera: a pyramid from the eye along its line of sight, with a mark on its top edge.
+/// A camera: a short cone of sight from the eye (where its chip is) the way they look, with a
+/// tick on its rim for their up.
 fn draw_camera<G: GizmoConfigGroup>(
     g: &mut Gizmos<G>,
     v: &ViewState,
@@ -839,20 +1572,18 @@ fn draw_camera<G: GizmoConfigGroup>(
 ) {
     let (f, r, u) = (-v.back(), v.right(), v.up());
     let base = eye + f * size;
-    let (w, h) = (size * 0.55, size * 0.38);
-    let c = [
-        base + r * w + u * h,
-        base - r * w + u * h,
-        base - r * w - u * h,
-        base + r * w - u * h,
-    ];
-    for i in 0..4 {
-        g.line(eye, c[i], color);
-        g.line(c[i], c[(i + 1) % 4], color);
+    let radius = size * 0.45;
+    g.circle(
+        Isometry3d::new(base, Quat::from_rotation_arc(Vec3::Z, f)),
+        radius,
+        color,
+    );
+    let spoke = color.with_alpha(color.alpha() * 0.6);
+    for i in 0..8 {
+        let a = i as f32 * std::f32::consts::TAU / 8.0;
+        g.line(eye, base + (r * a.cos() + u * a.sin()) * radius, spoke);
     }
-    let top = base + u * (h * 1.7);
-    g.line(c[0], top, color);
-    g.line(c[1], top, color);
+    g.line(base + u * radius, base + u * radius * 1.45, color);
 }
 
 #[cfg(test)]
