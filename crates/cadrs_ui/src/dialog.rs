@@ -2,6 +2,9 @@
 //! dialog: a dimmed backdrop, a white panel with a title and ✕, a body, and a footer with
 //! right-aligned buttons.
 //!
+//! The panel is at most 90% of the window's height. A body that doesn't fit (a small window, a
+//! large UI scale) scrolls, while the header and the footer stay in view (#142).
+//!
 //! The ✕ button is named `<name>-close`. Clicking it or pressing Escape triggers
 //! [`DialogClose`] on the dialog root and then despawns the dialog. Clicking the backdrop does
 //! nothing (the dialog is modal).
@@ -14,11 +17,12 @@ use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 use bevy::text::FontWeight;
-use bevy::ui_widgets::Activate;
+use bevy::ui_widgets::{Activate, ScrollArea};
 
 use crate::anim::FadeIn;
 use crate::button::IconButton;
 use crate::menu::MenuDismissLayer;
+use crate::scrollbar::vertical_scrollbar;
 use crate::theme::Theme;
 use crate::z;
 
@@ -182,6 +186,7 @@ impl Dialog {
                         p.spawn((
                             Node {
                                 height: Val::Px(header_height),
+                                flex_shrink: 0.0,
                                 padding: UiRect::new(
                                     Val::Px(theme.space[4]),
                                     Val::Px(theme.space[3]),
@@ -213,23 +218,49 @@ impl Dialog {
                                 DialogCloseButton(root),
                             ));
                         });
-                        // Body.
+                        // Body: it shrinks to what the header and footer leave, and scrolls.
                         p.spawn(Node {
                             flex_direction: FlexDirection::Column,
-                            padding: UiRect::all(Val::Px(theme.space[4])),
-                            row_gap: Val::Px(theme.space[4]),
+                            min_height: Val::Px(0.0),
                             ..default()
                         })
-                        .with_children(|b| {
-                            if let Some(f) = body {
-                                f(b);
-                            }
+                        .with_children(|a| {
+                            let body_area = a
+                                .spawn((
+                                    Name::new("dialog-body"),
+                                    ScrollArea,
+                                    Node {
+                                        flex_direction: FlexDirection::Column,
+                                        min_height: Val::Px(0.0),
+                                        overflow: Overflow::scroll_y(),
+                                        ..default()
+                                    },
+                                ))
+                                .with_children(|s| {
+                                    // At its full height (its rows would shrink to fit, not
+                                    // scroll).
+                                    s.spawn(Node {
+                                        flex_direction: FlexDirection::Column,
+                                        flex_shrink: 0.0,
+                                        padding: UiRect::all(Val::Px(theme.space[4])),
+                                        row_gap: Val::Px(theme.space[4]),
+                                        ..default()
+                                    })
+                                    .with_children(|b| {
+                                        if let Some(f) = body {
+                                            f(b);
+                                        }
+                                    });
+                                })
+                                .id();
+                            a.spawn(vertical_scrollbar(&theme, "dialog-scrollbar", body_area));
                         });
                         // Footer.
                         if let Some(f) = footer {
                             p.spawn((
                                 Node {
                                     height: Val::Px(52.0),
+                                    flex_shrink: 0.0,
                                     padding: UiRect::horizontal(Val::Px(theme.space[4])),
                                     align_items: AlignItems::Center,
                                     justify_content: JustifyContent::FlexEnd,

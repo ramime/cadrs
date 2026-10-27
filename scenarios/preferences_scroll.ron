@@ -1,0 +1,42 @@
+// #142: Preferences on a small screen, or at a large UI scale on one: an 800×500 window (as
+// 1600×1000 at 200%), where the dialog doesn't fit. Its body scrolls, while the header and the
+// footer (OK, Cancel) stay in view, so the scale can always be changed back.
+// 01 the dialog is 90% of the window's height; its body is cut off, with a scrollbar on its
+//    right, and Preferences, ✕, OK and Cancel are all in view.
+// 02 the UI scale's list, opened from the scrolling body: whole.
+// 03 90%, then the wheel over the body: scrolled to Collaboration at the bottom.
+// 04 OK, then Preferences again: UI scale 90% (OK was there to click).
+Scenario(
+    start: Some("document"),
+    window_size: Some((800, 500)),
+    steps: [
+        WaitFor("document-shell"),
+        Click(ui("app-menu")),
+        WaitFor("app-preferences"),
+        Click(ui("app-preferences")),
+        WaitFor("preferences-dialog"),
+        MoveTo(790, 490),
+        Wait(3),
+        Screenshot("01-preferences-cut-off"),
+        Click(ui("pref-ui-scale")),
+        WaitFor("pref-ui-scale-option-1"),
+        Wait(3),
+        Screenshot("02-scale-list"),
+        Click(ui("pref-ui-scale-option-1")),
+        Scroll(ui("pref-interface-heading"), -20.0),
+        MoveTo(790, 490),
+        Wait(3),
+        Screenshot("03-scrolled-to-the-bottom"),
+        Click(ui("pref-ok")),
+        Wait(5),
+        Click(ui("app-menu")),
+        WaitFor("app-preferences"),
+        Click(ui("app-preferences")),
+        WaitFor("preferences-dialog"),
+        ExpectText("pref-ui-scale", "90%"),
+        MoveTo(790, 490),
+        Wait(3),
+        Screenshot("04-saved-at-90"),
+        Click(ui("pref-cancel")),
+    ],
+)

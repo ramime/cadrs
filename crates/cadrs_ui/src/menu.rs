@@ -505,8 +505,15 @@ impl Menu {
             },
             // Wheel scrolling for a capped menu (`max_height`).
             bevy::ui_widgets::ScrollArea,
+            // Over its anchor's scroll areas, not clipped by them (a select in a dialog body).
+            OverrideClip,
             Node {
                 position_type: PositionType::Absolute,
+                // Laid out up and left from the anchor's bottom-right corner, so it never runs
+                // past the anchor and makes a scroll area it sits in scrollable; the popover
+                // then moves it to its place.
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
                 flex_direction: FlexDirection::Column,
                 max_height: max_height.map_or(Val::Auto, Val::Px),
                 overflow: if max_height.is_some() {
