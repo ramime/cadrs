@@ -307,13 +307,16 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
             NetState::Online { .. } => {
                 let stats = world.get_resource::<NetStats>().and_then(|s| s.0.clone());
                 // The rates on a line of their own.
-                let rates = stats.map_or_else(String::new, |s| {
-                    format!(
-                        "\nSending {} · receiving {}",
-                        rate(s.tx_rate),
-                        rate(s.rx_rate)
-                    )
-                });
+                // Not while nothing moves (zeros read as a stalled connection).
+                let rates = stats
+                    .filter(|s| s.tx_rate >= 1.0 || s.rx_rate >= 1.0)
+                    .map_or_else(String::new, |s| {
+                        format!(
+                            "\nSending {} · receiving {}",
+                            rate(s.tx_rate),
+                            rate(s.rx_rate)
+                        )
+                    });
                 let who = match people.len() {
                     0 => "No one else in this document".to_string(),
                     1 => "1 other person here".to_string(),

@@ -729,7 +729,7 @@ fn label_of(people: &People, doc: Option<&ActiveDocument>, id: &str) -> String {
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn sync_badges(
-    (pointers, pings): (Res<Pointers>, Res<Pings>),
+    (pointers, pings, iroh): (Res<Pointers>, Res<Pings>, Option<Res<Iroh>>),
     people: Res<People>,
     (doc, kind, eda, eda_ui, drawing): (
         Option<Res<ActiveDocument>>,
@@ -830,12 +830,16 @@ fn sync_badges(
         commands.entity(area).add_child(e);
     }
 
-    // The chips at their cameras (in 3D, not whoever this user follows).
+    // The chips at their cameras (in 3D).
+    let me = iroh.as_ref().map(|i| i.id().to_string());
     let mut cams: BTreeMap<&str, Vec2> = BTreeMap::new();
     if here.tab.is_some() && three_d(here.kind) && here.eda.is_none_or(|e| e.1 == Mode::ThreeD) {
         for (id, person) in &people.by_id {
+            // (Not whoever this user follows, nor whoever follows this user: that camera is
+            // this view.)
             if person.presence.tab != here.tab
                 || following.as_ref().is_some_and(|f| f.leader == *id)
+                || (me.is_some() && person.presence.following == me)
             {
                 continue;
             }
@@ -940,10 +944,6 @@ struct EdgeChip {
     label: String,
 }
 
-/// The arrow of an [`EdgeChip`].
-#[derive(Component)]
-struct EdgeArrow;
-
 fn edge_chip(t: &Theme, id: &str, name: &str, label: &str) -> impl Bundle {
     let color = color_of(id);
     let short: String = id.chars().take(8).collect();
@@ -962,21 +962,6 @@ fn edge_chip(t: &Theme, id: &str, name: &str, label: &str) -> impl Bundle {
         GlobalZIndex(7),
         Pickable::IGNORE,
         children![
-            (
-                EdgeArrow,
-                // (The caret fills about a third of its box.)
-                cadrs_ui::icon::icon_in(
-                    "caret-up-filled",
-                    40.0,
-                    color,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        ..default()
-                    },
-                ),
-                bevy::ui::UiTransform::default(),
-                Pickable::IGNORE,
-            ),
             (
                 Name::new(format!("collab-edge-{short}-chip")),
                 Node {
@@ -1039,8 +1024,7 @@ fn sync_edge_chips(
     ),
     (view, rect, time): (Res<ViewportView>, Res<ViewportRect>, Res<Time<Real>>),
     area: Query<Entity, With<ViewportArea>>,
-    mut chips: Query<(Entity, &EdgeChip, &mut Node, &Children), Without<EdgeArrow>>,
-    mut arrows: Query<(&mut Node, &mut bevy::ui::UiTransform), With<EdgeArrow>>,
+    mut chips: Query<(Entity, &EdgeChip, &mut Node)>,
     theme: Res<Theme>,
     mut commands: Commands,
 ) {
@@ -1067,23 +1051,13 @@ fn sync_edge_chips(
         }
     }
     let local = |at: Vec2| at - rect.0.min;
-    for (e, chip, mut node, children) in &mut chips {
+    for (e, chip, mut node) in &mut chips {
         let label = label_of(&people, doc.as_deref(), &chip.id);
         match want.remove(chip.id.as_str()) {
-            Some((at, dir)) if label == chip.label => {
+            Some((at, _)) if label == chip.label => {
                 let at = local(at);
                 node.left = Val::Px(at.x);
                 node.top = Val::Px(at.y);
-                for c in children.iter() {
-                    if let Ok((mut n, mut tf)) = arrows.get_mut(c) {
-                        // The caret points up: turned toward them, ahead of the chip.
-                        let ahead = dir * 26.0 - Vec2::splat(20.0);
-                        n.left = Val::Px(ahead.x);
-                        n.top = Val::Px(ahead.y);
-                        tf.rotation =
-                            Rot2::radians(dir.y.atan2(dir.x) + std::f32::consts::FRAC_PI_2);
-                    }
-                }
             }
             // Gone, or its label changed (made again below).
             _ => commands.entity(e).despawn(),
@@ -1228,6 +1202,7 @@ fn sync_overlays(
     ),
     area: Query<Entity, With<ViewportArea>>,
     old: Query<Entity, With<Overlay>>,
+    views: Option<Res<crate::drawing::views::ViewCache>>,
     theme: Res<Theme>,
     mut commands: Commands,
 ) {
@@ -1257,21 +1232,129 @@ fn sync_overlays(
         let Some(at) = r.shown.or(r.at) else {
             continue;
         };
-        let mut screen: Vec<Vec2> = pts.iter().filter_map(|p| here.design(at, *p)).collect();
+        let screen: Vec<Vec2> = pts.iter().filter_map(|p| here.design(at, *p)).collect();
         if screen.len() != pts.len() {
             continue;
         }
-        screen.extend(here.screen(r.tab, at).map(|(p, _)| p));
-        let color = color_of(id).with_alpha(0.85);
+        let color = color_of(id);
         for w in screen.windows(2) {
             spawned.push(
                 commands
-                    .spawn(segment(local(w[0]), local(w[1]), 3.0, color))
+                    .spawn(segment(local(w[0]), local(w[1]), 4.0, color))
+                    .id(),
+            );
+        }
+        // A dot at each point placed.
+        for p in &screen {
+            spawned.push(commands.spawn(ring(local(*p), 4.5, 4.5, color)).id());
+        }
+        // The piece not placed yet, to their pointer: dashed.
+        if let (Some(last), Some((to, _))) = (screen.last().copied(), here.screen(r.tab, at)) {
+            let (len, dir) = ((to - last).length(), (to - last).normalize_or_zero());
+            let mut d = 0.0;
+            while d < len {
+                let (a, b) = (last + dir * d, last + dir * (d + 8.0).min(len));
+                spawned.push(
+                    commands
+                        .spawn(segment(local(a), local(b), 4.0, color.with_alpha(0.8)))
+                        .id(),
+                );
+                d += 14.0;
+            }
+        }
+    }
+    let me = iroh.map(|i| i.id().to_string());
+    // The arrows of the edge chips (`sync_edge_chips`): a chevron on the chip's side toward
+    // the pointer, aimed at it.
+    for (id, r) in &pointers.by_id {
+        if let Some((p, _)) = r
+            .shown
+            .filter(|_| !r.idle(t))
+            .and_then(|at| here.screen_any(r.tab, at))
+            && !rect.0.contains(p)
+            && let Some((at, dir)) = edge_point(rect.0, p)
+        {
+            let color = color_of(id);
+            let tip = at + dir * 36.0;
+            let side = Vec2::new(-dir.y, dir.x) * 10.0;
+            let back = tip - dir * 12.0;
+            for wing in [back + side, back - side] {
+                spawned.push(
+                    commands
+                        .spawn(segment(local(wing), local(tip), 4.5, color))
+                        .id(),
+                );
+            }
+        }
+    }
+    // On a drawing: the view someone points at, tinted faintly in their colour, with its name.
+    if let (Some((sheet_id, sv, area_rect)), Some(doc), Some(ui), Some(views)) = (
+        here.sheet,
+        doc.as_deref(),
+        drawing.as_deref(),
+        views.as_deref(),
+    ) && let Some((did, d)) = crate::drawing::active_drawing(doc)
+    {
+        let index = ui.sheet_index(did, d);
+        for (id, r) in &pointers.by_id {
+            let Some(PointerAt::Sheet { sheet, at }) = r.shown.filter(|_| !r.idle(t)) else {
+                continue;
+            };
+            if sheet != sheet_id || Some(r.tab) != here.tab {
+                continue;
+            }
+            let Some(v) =
+                crate::drawing::views::view_at(d, index, views, Vec2::from_array(at), 2.0)
+                    .and_then(|vid| d.sheets.get(index)?.views.iter().find(|v| v.id == vid))
+            else {
+                continue;
+            };
+            let (lo, hi) = crate::drawing::views::sheet_bounds(v, views.geometry(v).as_deref());
+            let corner = |c: [f64; 2]| {
+                crate::drawing::sheet_to_screen(sv, area_rect, Vec2::new(c[0] as f32, c[1] as f32))
+            };
+            let (a, b) = (corner(lo), corner(hi));
+            let (min, max) = (a.min(b) - Vec2::splat(6.0), a.max(b) + Vec2::splat(6.0));
+            let color = color_of(id);
+            let at = local(min);
+            spawned.push(
+                commands
+                    .spawn((
+                        Overlay,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(at.x),
+                            top: Val::Px(at.y),
+                            width: Val::Px(max.x - min.x),
+                            height: Val::Px(max.y - min.y),
+                            border: UiRect::all(Val::Px(1.5)),
+                            border_radius: BorderRadius::all(Val::Px(4.0)),
+                            ..default()
+                        },
+                        BackgroundColor(color.with_alpha(0.08)),
+                        BorderColor::all(color.with_alpha(0.6)),
+                        GlobalZIndex(3),
+                        Pickable::IGNORE,
+                    ))
+                    .id(),
+            );
+            let name = people
+                .by_id
+                .get(id)
+                .map_or_else(String::new, |p| p.presence.name.clone());
+            let label = format!("{name} · {}", v.name);
+            spawned.push(
+                commands
+                    .spawn(mark_label(
+                        &theme,
+                        label,
+                        at + Vec2::new(0.0, -22.0),
+                        color.with_alpha(0.9),
+                    ))
                     .id(),
             );
         }
     }
-    let me = iroh.map(|i| i.id().to_string());
     // In 3D, someone whose mouse is off their view: a ring where they look (its centre).
     if here.tab.is_some() && three_d(here.kind) && here.eda.is_none_or(|e| e.1 == Mode::ThreeD) {
         for (id, person) in &people.by_id {
