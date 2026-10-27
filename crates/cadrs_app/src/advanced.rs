@@ -503,7 +503,9 @@ pub fn references(kind: &FeatureKind, cache: &PartCache, features: &[Feature]) -
                 out.extend(match e {
                     PlaneEntity::Plane(p) => crate::viewport::plane_pick(*p),
                     PlaneEntity::Face(f) => face_pick(cache, f),
-                    PlaneEntity::Edge(r) => edge_pick(cache, r),
+                    PlaneEntity::Edge(r) | PlaneEntity::EdgePoint { edge: r, .. } => {
+                        edge_pick(cache, r)
+                    }
                     PlaneEntity::Vertex(v) => cache
                         .parts
                         .iter()

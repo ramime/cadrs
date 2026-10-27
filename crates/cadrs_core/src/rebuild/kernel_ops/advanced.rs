@@ -133,6 +133,17 @@ fn vertex_point(state: &State, v: &crate::document::VertexRef) -> Option<[f64; 3
     })
 }
 
+/// The edge a reference names, in its part (else in whichever part has it now).
+fn edge_of<'s>(
+    state: &'s State,
+    r: &crate::document::EdgeRef,
+) -> Option<&'s crate::solid::SolidEdge> {
+    state
+        .part(r.part)
+        .and_then(|p| p.part.solid.edge(&r.edge))
+        .or_else(|| state.parts.iter().find_map(|p| p.part.solid.edge(&r.edge)))
+}
+
 impl Rebuilder {
     // -----------------------------------------------------------------------------------------
     // Plane
@@ -260,18 +271,11 @@ impl Rebuilder {
                     }
                 }
             }
+            PlaneEntity::EdgePoint { edge, t } => {
+                RefGeom::Point(edge_of(state, edge).ok_or_else(lost)?.point_at(*t))
+            }
             PlaneEntity::Edge(r) => {
-                let part = state
-                    .part(r.part)
-                    .filter(|p| p.part.solid.edge(&r.edge).is_some())
-                    .or_else(|| {
-                        state
-                            .parts
-                            .iter()
-                            .find(|p| p.part.solid.edge(&r.edge).is_some())
-                    })
-                    .ok_or_else(lost)?;
-                let edge = part.part.solid.edge(&r.edge).ok_or_else(lost)?;
+                let edge = edge_of(state, r).ok_or_else(lost)?;
                 // The kernel's exact curve where it has one.
                 if let Some(c) = edge.circle {
                     return Ok(RefGeom::Circle {

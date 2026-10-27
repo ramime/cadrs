@@ -695,6 +695,22 @@ impl<'a> PartStudio<'a> {
         self.built.as_ref()?.1.connectors.get(&c).copied()
     }
 
+    /// The plane a pick is: a default plane, or a Plane feature imported before
+    /// (`<feature>.planeOp`) where the model as built so far has it.
+    pub(crate) fn plane_ref(&mut self, pick: &Pick) -> Option<PlaneRef> {
+        if let Some(p) = pick.default_plane() {
+            return Some(p);
+        }
+        let Pick::Query(q) = pick else { return None };
+        let op = q.get("operationId")?.as_str()?;
+        let id = *self.features.get(op.strip_suffix(".planeOp")?)?;
+        self.parts();
+        let frame = *self.built.as_ref()?.1.planes.get(&id)?;
+        Some(PlaneRef::Feature(cadrs_sketch::FeaturePlane::new(
+            id.0, frame,
+        )))
+    }
+
     /// A query in brief, for debugging: `TYPE:QUERY(op feature, imported?)` with what it was
     /// derived from.
     pub(crate) fn describe(&self, q: &crate::query::Value) -> String {
@@ -1124,6 +1140,7 @@ impl<'a> PartStudio<'a> {
                 "mirror" => self.mirror(f, &fid, &mut fr),
                 "linearPattern" | "circularPattern" => self.pattern(f, &fid, &mut fr),
                 "mateConnector" => self.mate_connector(f, &fid, &mut fr),
+                "cPlane" => self.plane(f, &fid, &mut fr),
                 "deleteBodies" => self.delete_bodies(f, &fid, &mut fr),
                 "loft" => self.loft(f, &fid, &mut fr),
                 "hole" => self.hole(f, &fid, &mut fr),
@@ -1273,8 +1290,29 @@ impl<'a> PartStudio<'a> {
                 // A face the query names that is parallel and close, if none is exact (a model
                 // a little off from Onshape's): the sketch still lands where Onshape's is.
                 let mut near = None;
+                // Why a Plane feature it names can't take it, if one can't.
+                let mut plane_problem = None;
                 for p in refs::picks(param(f, "sketchPlane")) {
+                    // A Plane feature: as cadrs builds it, if that is where Onshape has it.
+                    if let Some(pl) = self.plane_ref(&p) {
+                        if plane_matches(&pl, n, o) {
+                            by_query = Some(pl);
+                            break;
+                        }
+                        if near.is_none() && plane_near(&pl, n, o, 1.0) {
+                            near = Some(pl);
+                        }
+                        plane_problem = Some("its Plane feature is not where Onshape has it");
+                        continue;
+                    }
                     let Pick::Query(q) = p else { continue };
+                    if q.get("operationId")
+                        .and_then(crate::query::Value::as_str)
+                        .is_some_and(|op| op.ends_with(".planeOp"))
+                    {
+                        plane_problem = Some("its Plane feature was not imported");
+                        continue;
+                    }
                     // A region of another sketch: that sketch's plane.
                     if let Some(op) = q.get("operationId").and_then(crate::query::Value::as_str)
                         && let Some((map, _)) = self.sketches.get(refs::op_feature(op))
@@ -1376,7 +1414,9 @@ impl<'a> PartStudio<'a> {
                     .or_else(|| self.face_plane(&solved, in_context))
                     .or(near)
                     .ok_or_else(|| {
-                        CommandError::Invalid(if in_context {
+                        CommandError::Invalid(if let Some(why) = plane_problem {
+                            format!("sketch plane: {why}")
+                        } else if in_context {
                             "sketch plane is a face of an assembly context that isn't there (or has moved since)".into()
                         } else {
                             "sketch plane is not a default plane or a planar face of the model".into()
@@ -1657,8 +1697,8 @@ impl<'a> PartStudio<'a> {
                 x.flip = !x.flip;
             }
         }
-        // Up to a default plane (cadrs goes up to faces, parts and vertices): the same as blind to
-        // where the plane is.
+        // Up to a default plane or a Plane feature (cadrs goes up to faces, parts and vertices):
+        // the same as blind to where the plane is.
         if end == "UP_TO_SURFACE"
             && x.up_to.is_none()
             && let Some((d, flip)) = self.depth_to_plane(&x, f, "endBoundEntityFace", x.flip)
@@ -1668,7 +1708,7 @@ impl<'a> PartStudio<'a> {
             x.flip = flip;
             fr.notes
                 .retain(|n| !n.starts_with("up-to face not translated"));
-            fr.notes.push("up to a default plane: blind to it".into());
+            fr.notes.push("up to a plane: blind to it".into());
         }
         if flag("hasOffset")
             && let Some(v) = eval_expr(&expr("offsetDistance"), Quantity::Length, &self.vars)
@@ -1690,6 +1730,15 @@ impl<'a> PartStudio<'a> {
                         flip: flag("startOffsetOppositeDirection"),
                     });
                 }
+            } else if let Some(t) = self.start_offset_to(&x, f) {
+                // Up to a plane or a face parallel to the sketch: blind to where it is.
+                x.start_offset = Some(Offset {
+                    value: t.abs(),
+                    expr: format!("{} mm", t.abs()),
+                    flip: t < 0.0,
+                });
+                fr.notes
+                    .push("start offset up to an entity: blind to it".into());
             } else {
                 fr.notes
                     .push("start offset to an entity not imported".into());
@@ -2009,11 +2058,67 @@ impl<'a> PartStudio<'a> {
         Some(b)
     }
 
-    /// For an end "up to" a default plane (parameter `key`): the blind depth from the extrude's
-    /// sketch plane to it along its direction (`flip`: against the sketch normal), and the
-    /// direction that reaches it.
+    /// For a start offset up to an entity (a plane, or a flat face parallel to the sketch): how
+    /// far its plane is from the sketch plane along the extrude's direction.
+    fn start_offset_to(&mut self, x: &ExtrudeFeature, f: &Value) -> Option<f64> {
+        let sketch = x
+            .regions
+            .first()
+            .map(|r| r.sketch)
+            .or_else(|| x.sketches.first().copied())?;
+        let from = self
+            .s
+            .doc
+            .element(self.el)?
+            .feature(sketch)?
+            .sketch()?
+            .plane?
+            .frame();
+        let n = cross(from.u, from.v);
+        let n = if x.flip { [-n[0], -n[1], -n[2]] } else { n };
+        let pick = refs::picks(param(f, "startOffsetEntity"))
+            .into_iter()
+            .next()?;
+        let targets = match self.plane_ref(&pick) {
+            Some(p) => vec![p.frame()],
+            None => {
+                let Pick::Query(q) = pick else { return None };
+                let parts = self.parts();
+                self.model(&parts)
+                    .eval(&q)
+                    .into_iter()
+                    .filter_map(|e| match e {
+                        crate::eval::Ent::Face(pi, fi) => parts[pi].solid.faces[fi].plane,
+                        crate::eval::Ent::Edge(..) => None,
+                    })
+                    .collect()
+            }
+        };
+        // Every face the query could mean in the one plane.
+        let mut t = None;
+        for to in targets {
+            if dot(cross(to.u, to.v), n).abs() < 1.0 - 1e-9 {
+                return None;
+            }
+            let d = [
+                to.origin[0] - from.origin[0],
+                to.origin[1] - from.origin[1],
+                to.origin[2] - from.origin[2],
+            ];
+            let here = dot(d, n);
+            if t.is_some_and(|t: f64| (t - here).abs() > 1e-6) {
+                return None;
+            }
+            t = Some(here);
+        }
+        t
+    }
+
+    /// For an end "up to" a default plane or a Plane feature (parameter `key`): the blind depth
+    /// from the extrude's sketch plane to it along its direction (`flip`: against the sketch
+    /// normal), and the direction that reaches it.
     fn depth_to_plane(
-        &self,
+        &mut self,
         x: &ExtrudeFeature,
         f: &Value,
         key: &str,
@@ -2021,7 +2126,7 @@ impl<'a> PartStudio<'a> {
     ) -> Option<(f64, bool)> {
         let target = refs::picks(param(f, key))
             .into_iter()
-            .find_map(|p| p.default_plane())?;
+            .find_map(|p| self.plane_ref(&p))?;
         let sketch = x
             .regions
             .first()

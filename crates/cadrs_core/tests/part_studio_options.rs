@@ -1473,6 +1473,66 @@ fn a_sketch_on_an_offset_plane_regenerates_where_the_rebuild_puts_the_plane() {
     );
 }
 
+#[test]
+fn a_plane_through_an_edge_point_follows_the_edge() {
+    // A 40 × 10 × 20 box; a Plane point plane: Right's axes through the midpoint of the top edge
+    // along X at y = 0, from (0, 0, 20) to (40, 0, 20): origin (20, 0, 20), normal X. The box
+    // made 30 high takes the edge, and the plane's origin, to z = 30.
+    let mut d = Doc::new();
+    let x = d.block(0.0, 0.0, 40.0, 10.0, 20.0);
+    let edge = edge_at(&d.parts()[0], [20.0, 0.0, 20.0]);
+    let plane = d.add(AddFeature {
+        element: d.el,
+        feature: FeatureId::new(),
+        base_name: "Plane".into(),
+        kind: FeatureKind::Plane(PlaneFeature {
+            kind: PlaneType::PlanePoint,
+            entities: vec![
+                PlaneEntity::Plane(PlaneRef::Right),
+                PlaneEntity::EdgePoint { edge, t: 0.5 },
+            ],
+            ..PlaneFeature::default()
+        }),
+    });
+    let frame = |d: &Doc| {
+        let b = d.build();
+        assert!(b.errors.is_empty(), "rebuild errors: {:?}", b.errors);
+        b.planes[&plane]
+    };
+    let f = frame(&d);
+    for (got, want) in f.origin.iter().zip([20.0, 0.0, 20.0]) {
+        close(*got, want, 1e-9);
+    }
+    close(f.normal()[0], 1.0, 1e-9);
+    // The edge's feature is the plane's parent.
+    let features = d.features();
+    assert!(
+        features
+            .iter()
+            .find(|f| f.id == plane)
+            .unwrap()
+            .parents()
+            .contains(&x)
+    );
+    let mut e = match &features.iter().find(|f| f.id == x).unwrap().kind {
+        FeatureKind::Extrude(e) => e.clone(),
+        _ => unreachable!(),
+    };
+    e.depth = 30.0;
+    e.depth_expr = "30 mm".into();
+    d.h.execute(
+        &mut d.d,
+        &SetExtrude {
+            element: d.el,
+            feature: x,
+            extrude: e,
+            label: "Depth".into(),
+        },
+    )
+    .unwrap();
+    close(frame(&d).origin[2], 30.0, 1e-9);
+}
+
 fn c_ref(d: &Doc, plane: FeatureId) -> PlaneRef {
     cadrs_core::parts::plane_feature_ref(&d.features(), plane).unwrap()
 }
