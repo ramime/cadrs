@@ -83,19 +83,62 @@ fn release() -> &'static Release {
 struct Feature {
     title: &'static str,
     body: &'static str,
-    /// A screenshot shown beside the text, with its size.
-    shot: Option<(&'static str, u32, u32)>,
+    /// A screenshot beside the text, for the light and the dark theme, with its size.
+    shot: Option<Shot>,
     /// Grid classes for the feature's card in the bento layout.
     class: &'static str,
 }
+
+/// A screenshot of the app in each theme; the page shows the one matching its own.
+#[derive(Clone, Copy)]
+struct Shot {
+    light: &'static str,
+    dark: &'static str,
+    width: u32,
+    height: u32,
+    alt: &'static str,
+}
+
+const PART_STUDIO: Shot = Shot {
+    light: "/images/part-studio-light.webp",
+    dark: "/images/part-studio-dark.webp",
+    width: 1920,
+    height: 1050,
+    alt: "A house in a cadrs Part Studio: 1,681 features and 628 parts in the feature list beside the 3D view",
+};
+
+const DOCUMENTS: Shot = Shot {
+    light: "/images/documents-light.webp",
+    dark: "/images/documents-dark.webp",
+    width: 1920,
+    height: 1049,
+    alt: "The documents page: a folder of documents with thumbnails, sorted by when they were modified",
+};
+
+const SCHEMATIC: Shot = Shot {
+    light: "/images/schematic-light.webp",
+    dark: "/images/schematic-dark.webp",
+    width: 1600,
+    height: 1000,
+    alt: "A schematic in a PCB Studio: a battery, a resistor and an LED between VCC and GND",
+};
+
+/// The render isn't of the app's chrome, so one image serves both themes.
+const RENDER: Shot = Shot {
+    light: "/images/render.png",
+    dark: "/images/render.png",
+    width: 1920,
+    height: 1080,
+    alt: "A path-traced render of a two-part lever",
+};
 
 /// The bento grid of features, in reading order: three columns from `lg`.
 const FEATURES: &[Feature] = &[
     Feature {
         title: "Part Studios",
         body: "Extrude, revolve, sweep, loft, fillet, chamfer, shell, draft, holes, patterns and booleans. Every feature stays editable, and the part rebuilds.",
-        shot: Some(("/images/part-studio.png", 1600, 1000)),
-        class: "overflow-hidden md:col-span-2",
+        shot: None,
+        class: "",
     },
     Feature {
         title: "Sketching",
@@ -110,42 +153,95 @@ const FEATURES: &[Feature] = &[
         class: "",
     },
     Feature {
-        title: "Rendering and simulation",
-        body: "A path-traced renderer, linear static FEA, and measurement and mass properties.",
-        shot: Some(("/images/render.png", 1920, 1080)),
+        title: "PCB Studio",
+        body: "Schematic, board layout and routing in the same document as the enclosure. Gerber and drill files for the board house, IDF to and from other EDA tools.",
+        shot: Some(SCHEMATIC),
         class: "overflow-hidden md:col-span-2",
     },
     Feature {
         title: "Drawings",
-        body: "Standard and projected views, sections, dimensions, annotations, callouts and BOM tables.",
+        body: "Standard and projected views, sections, details, dimensions, annotations, callouts and BOM tables.",
         shot: None,
         class: "",
     },
     Feature {
-        title: "PCB Studio",
-        body: "Schematic, board layout and routing in the same document as the enclosure, with IDF import and export.",
-        shot: None,
-        class: "",
-    },
-    Feature {
-        title: "Onshape import",
-        body: "Bring your Onshape documents across with their feature history, instead of dead STEP geometry.",
-        shot: None,
-        class: "",
-    },
-    Feature {
-        title: "A whole cylinder, one document",
-        body: "Instances, subassemblies and fasteners, put together with mates and listed in a bill of materials.",
-        shot: Some(("/images/assembly.png", 1600, 1000)),
+        title: "Rendering and simulation",
+        body: "A path-traced renderer, linear static FEA, and measurement and mass properties.",
+        shot: Some(RENDER),
         class: "overflow-hidden md:col-span-2",
     },
     Feature {
-        title: "Files in, files out",
-        body: "STEP, IGES and STL import and export. Drop an SVG, DXF, DWG, PDF or EPS drawing onto a sketch to get editable curves. Versions, history and a variable table come with every document.",
+        title: "Versions and branches",
+        body: "Every document keeps its history: name a version, branch from it to try an idea, merge the branch back. Link a part into another document at a version.",
+        shot: None,
+        class: "",
+    },
+    Feature {
+        title: "Your documents, on your computer",
+        body: "Folders, labels, search, a trash you can restore from, and thumbnails. Documents live in a folder you own; nothing is uploaded.",
+        shot: Some(DOCUMENTS),
+        class: "overflow-hidden md:col-span-2",
+    },
+    Feature {
+        title: "Sharing, peer to peer",
+        body: "Share a document with someone by their cadrs ID and edit it together, with comments and Follow mode. The two apps connect directly; no server keeps a copy.",
         shot: None,
         class: "",
     },
 ];
+
+/// A screenshot in both themes, linking to the full-size image.
+fn shot_classes(shot: &Shot) -> (&'static str, &'static str) {
+    if shot.light == shot.dark {
+        ("block h-auto w-full", "hidden")
+    } else {
+        (
+            "block h-auto w-full dark:hidden",
+            "hidden h-auto w-full dark:block",
+        )
+    }
+}
+
+struct ShotImages {
+    shot: Shot,
+    /// The first image on the page loads at once; the others when scrolled to.
+    eager: bool,
+}
+
+impl<L: DataLoader> WebRenderSync<L> for ShotImages {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        let shot = self.shot;
+        let (light_class, dark_class) = shot_classes(&shot);
+        let loading = if self.eager { "eager" } else { "lazy" };
+        html_sync! {
+            <img
+                src={cx.request().url(shot.light)}
+                width={shot.width}
+                height={shot.height}
+                alt={shot.alt}
+                loading={loading}
+                class={light_class}
+                data-shot="light"
+            />
+        }
+        .render(cx)?;
+        if shot.light != shot.dark {
+            html_sync! {
+                <img
+                    src={cx.request().url(shot.dark)}
+                    width={shot.width}
+                    height={shot.height}
+                    alt={shot.alt}
+                    loading={loading}
+                    class={dark_class}
+                    data-shot="dark"
+                />
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
 
 struct Features;
 
@@ -165,7 +261,7 @@ impl<L: DataLoader> WebRenderSync<L> for Features {
                 }}
             };
             match feature.shot {
-                Some((image, width, height)) => {
+                Some(shot) => {
                     html_sync! {
                         {Card {
                             class: Some(feature.class),
@@ -173,17 +269,10 @@ impl<L: DataLoader> WebRenderSync<L> for Features {
                                 <div class="grid h-full gap-2 xl:grid-cols-[0.75fr_1.25fr]">
                                     <div class="flex flex-col justify-center">{header}</div>
                                     <a
-                                        href={cx.request().url(image)}
-                                        class="block self-end px-6 pb-6 xl:px-0 xl:pt-6 xl:pb-0"
+                                        href={cx.request().url(shot.light)}
+                                        class="block self-end overflow-hidden px-6 pb-6 xl:px-0 xl:pt-6 xl:pb-0 [&>img]:rounded-lg [&>img]:border [&>img]:border-border xl:[&>img]:rounded-tr-none xl:[&>img]:rounded-b-none xl:[&>img]:border-r-0 xl:[&>img]:border-b-0"
                                     >
-                                        <img
-                                            src={cx.request().url(image)}
-                                            width={width}
-                                            height={height}
-                                            alt={feature.title}
-                                            loading="lazy"
-                                            class="block h-auto w-full rounded-lg border border-border xl:rounded-tr-none xl:rounded-b-none xl:border-r-0 xl:border-b-0"
-                                        />
+                                        {ShotImages { shot, eager: false }}
                                     </a>
                                 </div>
                             }),
@@ -313,21 +402,435 @@ impl<L: DataLoader> WebRenderSync<L> for Downloads {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The page's sections, as data the HTML and the Markdown both render.
+
+/// A titled paragraph: a step, a point or an answer.
+struct Item {
+    title: &'static str,
+    body: &'static str,
+}
+
+/// "Get started": what to do first, in order, each with where on the page it goes on.
+const STEPS: &[(Item, &str, &str)] = &[
+    (
+        Item {
+            title: "Download cadrs",
+            body: "Archives for Windows and Linux, a universal app for macOS. No account and no sign-in: your documents stay on your computer.",
+        },
+        "Downloads",
+        "#download",
+    ),
+    (
+        Item {
+            title: "Make your first part",
+            body: "Sketch a rectangle, extrude it, then change one dimension and watch the part rebuild.",
+        },
+        "The walkthrough",
+        "#first-part",
+    ),
+    (
+        Item {
+            title: "Connect an AI assistant",
+            body: "Turn on the MCP server, and Claude, Cursor or another assistant can sketch, extrude and take screenshots in the open document.",
+        },
+        "MCP setup",
+        "#mcp",
+    ),
+];
+
+/// "How it works": parametric modeling in four points.
+const HOW: &[Item] = &[
+    Item {
+        title: "A sketch on a plane",
+        body: "Lines, arcs and circles on a plane or a face. Constraints (horizontal, tangent, coincident and more) and dimensions pin down their shape.",
+    },
+    Item {
+        title: "Features make solids",
+        body: "Extrude, revolve, sweep and loft turn sketches into parts; fillet, chamfer, shell, holes and patterns finish them.",
+    },
+    Item {
+        title: "A history you can edit",
+        body: "The feature list keeps every step in order. Double-click one to change it and everything after it rebuilds; drag the rollback bar to see the part as it was.",
+    },
+    Item {
+        title: "One document, many tabs",
+        body: "Part Studios, assemblies, drawings, PCB Studios, renders and CAM jobs sit side by side as tabs, with versions and branches for the whole document.",
+    },
+];
+
+/// "Your first part": the steps of the walkthrough.
+const FIRST_PART: &[Item] = &[
+    Item {
+        title: "Start a document",
+        body: "New document on the documents page opens a Part Studio with the Top, Front and Right planes.",
+    },
+    Item {
+        title: "Sketch a rectangle",
+        body: "Sketch (Shift+S), then pick the Top plane. Draw a corner rectangle (G) and dimension it (D): 40 mm wide and 30 mm deep. Accept the sketch with its check mark.",
+    },
+    Item {
+        title: "Extrude it",
+        body: "Extrude (Shift+E), pick the rectangle's region, set the depth to 10 mm and accept.",
+    },
+    Item {
+        title: "Change one dimension",
+        body: "Double-click Sketch 1 in the feature list, double-click the 40 mm dimension, type 60 and press Enter. Accept the sketch: the extrude follows it. The same features make a longer block.",
+    },
+];
+
+/// "Ways to use it": (how, what it takes, what to know).
+const WAYS: &[(&str, &str, &str)] = &[
+    (
+        "Desktop app",
+        "Windows and Linux on 64-bit x86; macOS universal (beta).",
+        "Documents are files in a folder on your computer, and it works offline.",
+    ),
+    (
+        "From source",
+        "Anywhere Rust builds: cargo install-local.",
+        "The modeling kernel is pure Rust, so there is no C++ or CMake step.",
+    ),
+    (
+        "With an AI assistant",
+        "Any MCP client, over HTTP on your own machine.",
+        "Off until you turn it on in Preferences. The assistant's edits go through undo like yours.",
+    ),
+    (
+        "With other people",
+        "Share a document by cadrs ID and edit it together live.",
+        "Peer to peer: the apps connect directly, or through a relay when they must.",
+    ),
+];
+
+/// "File formats": (formats, what for, what to know).
+const FORMATS: &[(&str, &str, &str)] = &[
+    (
+        "cadrs (.cadrs)",
+        "The whole document: every tab, the feature history, versions and branches.",
+        "Keep it to keep editing. cadrs is in beta, so keep a STEP of work that matters too.",
+    ),
+    (
+        "STEP, IGES, BREP",
+        "Exact solids in and out (STEP AP214, IGES 5.3).",
+        "An imported file becomes an Import feature to build on, without the feature history it was made with.",
+    ),
+    (
+        "STL, OBJ",
+        "Meshes for printing and rendering: STL in and out, OBJ out.",
+        "A mesh has no exact faces or edges to dimension against.",
+    ),
+    (
+        "SVG, DXF, DWG, PDF, EPS",
+        "A drawing dropped onto a sketch becomes editable curves; flat patterns go out as DXF or DWG.",
+        "The curves land in the sketch you drop them on.",
+    ),
+    (
+        "Gerber, Excellon, IDF",
+        "A board's fabrication files, and its outline and parts to and from other EDA tools.",
+        "Gerber X2 with a job file, and drill files for plated and non-plated holes.",
+    ),
+];
+
+/// "Is it a fit?": what cadrs is good for, and what to check before a bigger project.
+const FIT_GOOD: &[&str] = &[
+    "3D-printed parts, brackets, enclosures and fixtures.",
+    "A circuit board and the enclosure around it, in one document.",
+    "Learning parametric CAD without an account or a subscription.",
+    "Working offline, with files you keep.",
+    "Building models with an AI assistant at your side.",
+];
+
+const FIT_CHECK: &[&str] = &[
+    "cadrs is in beta (0.1). Keep exports of work that matters.",
+    "Imported STEP and IGES files come in as solids, without the feature history they were made with.",
+    "Very large Part Studios, thousands of features, get slow: split them into several.",
+    "The macOS app is a beta and isn't signed yet.",
+    "Missing a tool you need? Check the issues, or open one.",
+];
+
+/// The questions people ask.
+const FAQ: &[Item] = &[
+    Item {
+        title: "Is cadrs free?",
+        body: "Yes. It is open source under MIT or Apache-2.0, at your option. There is no account and no subscription.",
+    },
+    Item {
+        title: "Which systems does it run on?",
+        body: "Windows and Linux on 64-bit x86, and macOS as a universal app (a beta: open it the first time with right-click, Open). Or build it from source.",
+    },
+    Item {
+        title: "Where are my documents kept?",
+        body: "In a folder on your computer; the app menu on the documents page opens it. Nothing is uploaded.",
+    },
+    Item {
+        title: "Can I work with other people?",
+        body: "Yes: share a document with someone by their cadrs ID (the account menu shows yours) and edit it together. The apps connect to each other directly.",
+    },
+    Item {
+        title: "Can it open my existing CAD files?",
+        body: "STEP, IGES and BREP come in as solids and STL as a mesh, ready to build on. The feature history from another CAD program doesn't come across.",
+    },
+    Item {
+        title: "How does an AI assistant use it?",
+        body: "Through MCP: with the server turned on, the assistant calls cadrs's tools (sketch, extrude, edit a feature, undo, take a screenshot, export STEP) in the running app.",
+    },
+    Item {
+        title: "Is cadrs connected to a CAD company?",
+        body: "No. cadrs is an independent open-source project, not affiliated with or endorsed by any CAD vendor.",
+    },
+];
+
+/// The MCP client configuration (a project's `.mcp.json`).
+const MCP_JSON: &str = "{\n  \"mcpServers\": {\n    \"cadrs\": {\n      \"type\": \"http\",\n      \"url\": \"http://127.0.0.1:7680/mcp\"\n    }\n  }\n}";
+
+/// The same for Claude Code, from a terminal.
+const MCP_CLAUDE_CODE: &str = "claude mcp add --transport http cadrs http://127.0.0.1:7680/mcp";
+
+/// The page's sections, for the "On this page" links and the header.
+const SECTIONS: &[(&str, &str)] = &[
+    ("Get started", "#get-started"),
+    ("How it works", "#how-it-works"),
+    ("Ways to use it", "#ways"),
+    ("File formats", "#formats"),
+    ("AI assistants", "#mcp"),
+    ("Features", "#features"),
+    ("Is it a fit?", "#fit"),
+    ("FAQ", "#faq"),
+];
+
+const SECTION_HEADING: &str =
+    "mt-5 text-balance text-3xl font-semibold tracking-tight text-foreground md:text-4xl";
+const SECTION_LEAD: &str = "mt-5 max-w-2xl text-pretty text-lg leading-8 text-muted-foreground";
+const LINK: &str = "font-medium text-primary underline-offset-4 hover:underline";
+const TABLE_HEAD: &str = "px-4 py-3 text-left text-sm font-semibold text-foreground";
+const TABLE_CELL: &str = "px-4 py-3 align-top text-sm leading-6 text-muted-foreground";
+const TABLE_NAME: &str =
+    "px-4 py-3 text-left align-top text-sm font-medium leading-6 text-foreground";
+
+/// A section's small label over its heading.
+struct Eyebrow(&'static str);
+
+impl<L: DataLoader> WebRenderSync<L> for Eyebrow {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        html_sync! {
+            {Badge {
+                variant: BadgeVariant::Outline,
+                class: Some("rounded-full bg-background"),
+                children: Some(self.0),
+            }}
+        }
+        .render(cx)
+    }
+}
+
+struct Steps;
+
+impl<L: DataLoader> WebRenderSync<L> for Steps {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        for (i, (step, link, href)) in STEPS.iter().enumerate() {
+            let number = ["1", "2", "3"][i.min(2)];
+            html_sync! {
+                {Card {
+                    class: Some("min-w-0"),
+                    children: Some(html_sync! {
+                        {CardHeader {
+                            class: None,
+                            children: Some(html_sync! {
+                                <span class="flex size-8 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                                    {number}
+                                </span>
+                                {CardTitle {
+                                    class: Some("mt-3 text-lg"),
+                                    children: Some(step.title),
+                                }}
+                                {CardDescription {
+                                    class: Some("text-base leading-7"),
+                                    children: Some(step.body),
+                                }}
+                            }),
+                        }}
+                        {CardContent {
+                            class: None,
+                            children: Some(html_sync! {
+                                <a href={*href} class={LINK}>{*link}</a>
+                            }),
+                        }}
+                    }),
+                }}
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
+
+struct Points(&'static [Item]);
+
+impl<L: DataLoader> WebRenderSync<L> for Points {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        for item in self.0 {
+            html_sync! {
+                <div class="min-w-0">
+                    <h3 class="font-semibold text-foreground">{item.title}</h3>
+                    <p class="mt-2 leading-7 text-muted-foreground">{item.body}</p>
+                </div>
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
+
+/// The walkthrough's steps, numbered.
+struct Walkthrough;
+
+impl<L: DataLoader> WebRenderSync<L> for Walkthrough {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        for (i, item) in FIRST_PART.iter().enumerate() {
+            let number = ["1", "2", "3", "4"][i.min(3)];
+            html_sync! {
+                <li class="flex gap-4">
+                    <span class="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-background text-sm font-semibold text-foreground">
+                        {number}
+                    </span>
+                    <div class="min-w-0">
+                        <h3 class="font-semibold text-foreground">{item.title}</h3>
+                        <p class="mt-1 leading-7 text-muted-foreground">{item.body}</p>
+                    </div>
+                </li>
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
+
+/// A three-column table: (name, what, what to know).
+struct Table {
+    rows: &'static [(&'static str, &'static str, &'static str)],
+    heads: [&'static str; 3],
+}
+
+impl<L: DataLoader> WebRenderSync<L> for Table {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        let [a, b, c] = self.heads;
+        html_sync! {
+            <div class="mt-10 overflow-x-auto rounded-xl border border-border bg-card">
+                <table class="w-full min-w-[640px] border-collapse">
+                    <thead class="border-b border-border bg-muted/40">
+                        <tr>
+                            <th scope="col" class={TABLE_HEAD}>{a}</th>
+                            <th scope="col" class={TABLE_HEAD}>{b}</th>
+                            <th scope="col" class={TABLE_HEAD}>{c}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-border">{TableRows(self.rows)}</tbody>
+                </table>
+            </div>
+        }
+        .render(cx)
+    }
+}
+
+struct TableRows(&'static [(&'static str, &'static str, &'static str)]);
+
+impl<L: DataLoader> WebRenderSync<L> for TableRows {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        for (name, what, note) in self.0 {
+            html_sync! {
+                <tr>
+                    <th scope="row" class={TABLE_NAME}>{*name}</th>
+                    <td class={TABLE_CELL}>{*what}</td>
+                    <td class={TABLE_CELL}>{*note}</td>
+                </tr>
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
+
+/// A bulleted list.
+struct Bullets(&'static [&'static str]);
+
+impl<L: DataLoader> WebRenderSync<L> for Bullets {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        for line in self.0 {
+            html_sync! {
+                <li class="flex gap-3 leading-7 text-muted-foreground">
+                    <span aria-hidden="true" class="mt-3 size-1.5 shrink-0 rounded-full bg-primary"></span>
+                    <span>{*line}</span>
+                </li>
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
+
+struct Faq;
+
+impl<L: DataLoader> WebRenderSync<L> for Faq {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        for item in FAQ {
+            html_sync! {
+                <details class="group border-b border-border py-5">
+                    <summary class="flex cursor-pointer list-none items-center justify-between gap-4 font-medium text-foreground">
+                        {item.title}
+                        <span
+                            aria-hidden="true"
+                            class="text-muted-foreground transition group-open:rotate-45"
+                        >
+                            "+"
+                        </span>
+                    </summary>
+                    <p class="mt-3 max-w-3xl leading-7 text-muted-foreground">{item.body}</p>
+                </details>
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
+
+/// The "On this page" links.
+struct SectionLinks;
+
+impl<L: DataLoader> WebRenderSync<L> for SectionLinks {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        for (label, href) in SECTIONS {
+            html_sync! {
+                <a
+                    href={*href}
+                    class="rounded-full border border-border bg-background px-3 py-1.5 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+                >
+                    {*label}
+                </a>
+            }
+            .render(cx)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct HomePage;
 
-// The page follows the layout of Proa UI's `hero_saas` and `features_bento` blocks.
+// The page follows the layout of Proa UI's `hero_saas` and `features_bento` blocks, its
+// sections those of a project guide: what it is, how to start, how it works, ways to use it,
+// formats, AI assistants, features, whether it fits, questions and sources.
 impl<L: DataLoader> WebRenderSync<L> for HomePage {
     fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
         let home = cx.request().url("/");
         let icon = cx.request().url("/icons/cadrs.png");
-        let demo = cx.request().url("/images/pcb-demo.gif");
         let markdown = cx.request().url("/index.md");
+        let latest = release().label.as_str();
         html_sync! {
             <header class="sticky top-0 z-10 border-b border-border/70 bg-background/85 backdrop-blur">
                 <nav
                     aria-label="Site"
-                    class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6"
+                    class="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6"
                 >
                     <a
                         href={home}
@@ -341,6 +844,13 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                         />
                         "cadrs"
                     </a>
+                    <div class="hidden items-center gap-5 text-sm text-muted-foreground lg:flex">
+                        <a href="#get-started" class="hover:text-foreground">"Get started"</a>
+                        <a href="#features" class="hover:text-foreground">"Features"</a>
+                        <a href="#formats" class="hover:text-foreground">"File formats"</a>
+                        <a href="#mcp" class="hover:text-foreground">"AI assistants"</a>
+                        <a href="#faq" class="hover:text-foreground">"FAQ"</a>
+                    </div>
                     <div class="flex items-center gap-1">
                         <a
                             href="https://github.com/sponsors/rvdende"
@@ -365,21 +875,41 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                         aria-hidden="true"
                         class="absolute inset-x-0 top-0 h-80 bg-gradient-to-b from-primary/10 to-transparent"
                     ></div>
-                    <div class="relative mx-auto grid max-w-6xl items-center gap-12 px-4 py-14 sm:px-6 md:py-20 lg:grid-cols-[0.9fr_1.1fr]">
+                    <div class="relative mx-auto grid max-w-6xl items-center gap-12 px-4 py-14 sm:px-6 md:py-20 lg:grid-cols-[0.85fr_1.15fr]">
                         <div class="flex flex-col items-start">
-                            {Badge {
-                                variant: BadgeVariant::Outline,
-                                class: Some("rounded-full bg-background/80"),
-                                children: Some("Open source · MIT or Apache-2.0"),
-                            }}
+                            <a
+                                href={LATEST_RELEASE}
+                                class="inline-flex items-center gap-2 rounded-full border border-border bg-background/80 px-3 py-1 text-sm text-muted-foreground hover:text-foreground"
+                            >
+                                <span class="size-2 rounded-full bg-primary"></span>
+                                <span data-release-label>{latest}</span>
+                                <span class="font-medium text-primary">"What's new"</span>
+                            </a>
                             <h1 class="mt-6 max-w-xl text-balance text-4xl font-semibold tracking-tight text-foreground md:text-5xl lg:text-6xl">
                                 "Parametric CAD, written in Rust"
                             </h1>
                             <p class="mt-6 max-w-lg text-pretty text-lg leading-8 text-muted-foreground">
-                                "Sketch on a plane, constrain and dimension, build parts from features, put them together in assemblies, and make drawings from them. cadrs follows Onshape's workflow, with a Bevy UI and its own B-rep kernel written in Rust, and runs on your own machine."
+                                "Sketch, constrain and dimension, then build parts, assemblies, drawings and circuit boards from features you can always go back and change. It runs on your own computer, with your documents in a folder you own."
+                            </p>
+                            <div class="mt-8 flex flex-wrap gap-3">
+                                <a
+                                    href="#download"
+                                    class={link_button(ButtonSize::Lg, ButtonVariant::Solid)}
+                                >
+                                    "Download"
+                                </a>
+                                <a
+                                    href="https://youtu.be/qT1FKZqUAxA"
+                                    class={link_button(ButtonSize::Lg, ButtonVariant::Outline)}
+                                >
+                                    "Watch the 90-second demo"
+                                </a>
+                            </div>
+                            <p class="mt-6 text-sm text-muted-foreground">
+                                "Free and open source (MIT or Apache-2.0) · Windows, Linux and macOS · An independent project"
                             </p>
                         </div>
-                        <div class="relative mx-auto w-full max-w-2xl">
+                        <div class="relative mx-auto w-full max-w-3xl">
                             <div
                                 aria-hidden="true"
                                 class="absolute -inset-6 rounded-[2rem] bg-primary/10 blur-3xl"
@@ -387,44 +917,33 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                             {Card {
                                 class: Some("relative overflow-hidden rounded-2xl border-border/80 bg-card/95 shadow-2xl"),
                                 children: Some(html_sync! {
-                                    <div class="flex items-center justify-between border-b border-border px-5 py-4">
-                                        <div>
-                                            <p class="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-                                                "One document"
-                                            </p>
-                                            <p class="mt-1 font-medium text-foreground">
-                                                "From sketch to part to PCB"
-                                            </p>
-                                        </div>
-                                        {Badge {
-                                            variant: BadgeVariant::Secondary,
-                                            class: Some("rounded-full"),
-                                            children: Some("90 s demo"),
-                                        }}
-                                    </div>
-                                    <a href="https://youtu.be/qT1FKZqUAxA" class="block">
-                                        <img
-                                            src={demo}
-                                            width="960"
-                                            height="526"
-                                            alt="From sketch to solid, then a PCB in the same Part Studio: schematic, board layout and the routed board in 3D"
-                                            class="block h-auto w-full"
-                                        />
+                                    <a href={cx.request().url(PART_STUDIO.light)} class="block">
+                                        {ShotImages { shot: PART_STUDIO, eager: true }}
                                     </a>
-                                    <div class="flex items-center justify-between border-t border-border px-5 py-3 text-sm">
+                                    <div class="flex items-center justify-between gap-4 border-t border-border px-5 py-3 text-sm">
                                         <span class="text-muted-foreground">
-                                            "Schematic, layout and the routed board in 3D"
+                                            "A house: 1,681 features and 628 parts in one Part Studio"
                                         </span>
-                                        <a
-                                            href="https://youtu.be/qT1FKZqUAxA"
-                                            class="font-medium text-primary underline-offset-4 hover:underline"
-                                        >
-                                            "Watch on YouTube"
-                                        </a>
+                                        <a href="#features" class={LINK}>"Features"</a>
                                     </div>
                                 }),
                             }}
                         </div>
+                    </div>
+                    <div class="relative mx-auto max-w-6xl px-4 pb-14 sm:px-6">
+                        <p class="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+                            "On this page"
+                        </p>
+                        <nav aria-label="On this page" class="mt-3 flex flex-wrap gap-2">
+                            {SectionLinks}
+                        </nav>
+                    </div>
+                </section>
+                <section id="get-started" class="scroll-mt-20 border-t border-border">
+                    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 md:py-20">
+                        {Eyebrow("Get started")}
+                        <h2 class={SECTION_HEADING}>"Three steps to your first part"</h2>
+                        <div class="mt-10 grid gap-4 md:grid-cols-3">{Steps}</div>
                     </div>
                 </section>
                 <section
@@ -464,7 +983,7 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                                         </p>
                                         <a
                                             href="https://github.com/rvdende/cadrs#building"
-                                            class="text-sm font-medium text-primary underline-offset-4 hover:underline"
+                                            class={LINK}
                                         >
                                             "Full build notes"
                                         </a>
@@ -474,22 +993,186 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                         }}
                     </div>
                 </section>
-                <section id="features" class="scroll-mt-14 border-y border-border bg-muted/30">
+                <section id="how-it-works" class="scroll-mt-20 border-y border-border bg-muted/30">
+                    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 md:py-20">
+                        {Eyebrow("How it works")}
+                        <h2 class={SECTION_HEADING}>
+                            "Features you can edit, in the order you made them"
+                        </h2>
+                        <p class={SECTION_LEAD}>
+                            "A part in cadrs is a recipe, not a lump of geometry: sketches and the features built on them, each one editable. Change a number at the start and the rest follows."
+                        </p>
+                        <div class="mt-10 grid gap-8 md:grid-cols-2">{Points(HOW)}</div>
+                    </div>
+                </section>
+                <section id="first-part" class="scroll-mt-20">
+                    <div class="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 md:py-20 lg:grid-cols-[0.8fr_1.2fr]">
+                        <div>
+                            {Eyebrow("Try it")}
+                            <h2 class={SECTION_HEADING}>"Your first part: change one dimension"</h2>
+                            <p class={SECTION_LEAD}>
+                                "A block 40 by 30 by 10 mm becomes 60 long with one edit. The values are only suggestions; use your own."
+                            </p>
+                        </div>
+                        <ol class="flex flex-col gap-6">{Walkthrough}</ol>
+                    </div>
+                </section>
+                <section id="ways" class="scroll-mt-20 border-y border-border bg-muted/30">
+                    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 md:py-20">
+                        {Eyebrow("Ways to use it")}
+                        <h2 class={SECTION_HEADING}>"Choose how you work"</h2>
+                        <p class={SECTION_LEAD}>
+                            "One app, used on its own, from source, with an AI assistant or with other people."
+                        </p>
+                        {Table { rows: WAYS, heads: ["Way", "What it takes", "Good to know"] }}
+                    </div>
+                </section>
+                <section id="formats" class="scroll-mt-20">
+                    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 md:py-20">
+                        {Eyebrow("File formats")}
+                        <h2 class={SECTION_HEADING}>"What goes in, what comes out"</h2>
+                        <p class={SECTION_LEAD}>
+                            "Keep the .cadrs document to keep editing; exchange solids as STEP and meshes as STL. The list covers the main formats, not every one."
+                        </p>
+                        {Table { rows: FORMATS, heads: ["Format", "Use it for", "Good to know"] }}
+                    </div>
+                </section>
+                <section id="mcp" class="scroll-mt-20 border-y border-border bg-muted/30">
+                    <div class="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:px-6 md:py-20 lg:grid-cols-2">
+                        <div>
+                            {Eyebrow("AI assistants")}
+                            <h2 class={SECTION_HEADING}>"Model with an AI assistant"</h2>
+                            <p class={SECTION_LEAD}>
+                                "cadrs serves MCP (the Model Context Protocol), so an assistant can work in the open document beside you."
+                            </p>
+                            <ul class="mt-8 flex flex-col gap-3">
+                                {Bullets(&[
+                                    "Turn it on in Preferences: Enable MCP server. It listens on your own machine only, at 127.0.0.1:7680.",
+                                    "Forty tools: open and create documents, sketch, extrude, edit and delete features, undo, take screenshots, export STEP, and place and route a board.",
+                                    "Every change goes through undo and shows in the feature list, as yours do.",
+                                ])}
+                            </ul>
+                        </div>
+                        <div class="flex min-w-0 flex-col gap-6">
+                            <div>
+                                <p class="text-sm font-medium text-foreground">
+                                    "A project's .mcp.json (Claude Code, Cursor and other clients)"
+                                </p>
+                                <pre class="mt-3 overflow-x-auto rounded-lg border border-border bg-background p-4 text-sm leading-6">
+                                    <code>{MCP_JSON}</code>
+                                </pre>
+                            </div>
+                            <div>
+                                <p class="text-sm font-medium text-foreground">
+                                    "Or, for Claude Code, in a terminal"
+                                </p>
+                                <pre class="mt-3 overflow-x-auto rounded-lg border border-border bg-background p-4 text-sm leading-6">
+                                    <code>{MCP_CLAUDE_CODE}</code>
+                                </pre>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                <section id="features" class="scroll-mt-14">
                     <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 md:py-20">
                         <div class="max-w-2xl">
-                            {Badge {
-                                variant: BadgeVariant::Outline,
-                                class: Some("rounded-full bg-background"),
-                                children: Some("Features"),
-                            }}
-                            <h2 class="mt-5 text-balance text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                                "From sketch to assembly to drawing"
+                            {Eyebrow("Features")}
+                            <h2 class={SECTION_HEADING}>
+                                "From sketch to assembly, drawing and board"
                             </h2>
-                            <p class="mt-5 text-pretty text-lg leading-8 text-muted-foreground">
+                            <p class={SECTION_LEAD}>
                                 "Every change goes through undo, every feature can be edited later, and the kernel runs in a process of its own, so a crash costs a rebuild, not your work."
                             </p>
                         </div>
                         <div class="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-3">{Features}</div>
+                    </div>
+                </section>
+                <section id="fit" class="scroll-mt-20 border-y border-border bg-muted/30">
+                    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 md:py-20">
+                        {Eyebrow("Is it a fit?")}
+                        <h2 class={SECTION_HEADING}>
+                            "What cadrs is good for, and what to check first"
+                        </h2>
+                        <div class="mt-10 grid gap-4 md:grid-cols-2">
+                            {Card {
+                                class: None,
+                                children: Some(html_sync! {
+                                    {CardHeader {
+                                        class: None,
+                                        children: Some(html_sync! {
+                                            {CardTitle {
+                                                class: Some("text-lg"),
+                                                children: Some("A good fit"),
+                                            }}
+                                        }),
+                                    }}
+                                    {CardContent {
+                                        class: None,
+                                        children: Some(html_sync! {
+                                            <ul class="flex flex-col gap-2">{Bullets(FIT_GOOD)}</ul>
+                                        }),
+                                    }}
+                                }),
+                            }}
+                            {Card {
+                                class: None,
+                                children: Some(html_sync! {
+                                    {CardHeader {
+                                        class: None,
+                                        children: Some(html_sync! {
+                                            {CardTitle {
+                                                class: Some("text-lg"),
+                                                children: Some("Before a bigger project"),
+                                            }}
+                                        }),
+                                    }}
+                                    {CardContent {
+                                        class: Some("flex flex-col gap-4"),
+                                        children: Some(html_sync! {
+                                            <ul class="flex flex-col gap-2">
+                                                {Bullets(FIT_CHECK)}
+                                            </ul>
+                                            <a
+                                                href="https://github.com/rvdende/cadrs/issues"
+                                                class={LINK}
+                                            >
+                                                "Open issues on GitHub"
+                                            </a>
+                                        }),
+                                    }}
+                                }),
+                            }}
+                        </div>
+                    </div>
+                </section>
+                <section id="faq" class="scroll-mt-20">
+                    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 md:py-20">
+                        {Eyebrow("FAQ")}
+                        <h2 class={SECTION_HEADING}>"Questions"</h2>
+                        <div class="mt-8 border-t border-border">{Faq}</div>
+                    </div>
+                </section>
+                <section id="sources" class="scroll-mt-20 border-t border-border bg-muted/30">
+                    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+                        <h2 class="text-xl font-semibold text-foreground">"Sources and links"</h2>
+                        <div class="mt-5 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                            <a href="https://github.com/rvdende/cadrs" class={LINK}>
+                                "The source code, on GitHub"
+                            </a>
+                            <a href={RELEASES} class={LINK}>"Releases and their notes"</a>
+                            <a href="https://github.com/rvdende/cadrs/issues" class={LINK}>
+                                "Issues: report a bug or ask for a tool"
+                            </a>
+                            <a href="https://github.com/rvdende/cadrs#building" class={LINK}>
+                                "Build notes"
+                            </a>
+                            <a href="https://youtu.be/qT1FKZqUAxA" class={LINK}>
+                                "The 90-second demo"
+                            </a>
+                            <a href="https://github.com/sponsors/rvdende" class={LINK}>
+                                "Sponsor cadrs"
+                            </a>
+                        </div>
                     </div>
                 </section>
             </main>
@@ -500,15 +1183,13 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                             <img src={icon} width="20" height="20" alt="" />
                             "cadrs"
                         </span>
+                        <a href="#download" class="hover:text-foreground">"Download"</a>
+                        <a href="#first-part" class="hover:text-foreground">"First part"</a>
+                        <a href="#mcp" class="hover:text-foreground">"AI assistants"</a>
                         <a href="https://github.com/rvdende/cadrs" class="hover:text-foreground">
                             "GitHub"
                         </a>
-                        <a
-                            href="https://github.com/rvdende/cadrs/releases"
-                            class="hover:text-foreground"
-                        >
-                            "Releases"
-                        </a>
+                        <a href={RELEASES} class="hover:text-foreground">"Releases"</a>
                         <a href={markdown} class="hover:text-foreground">"This page as Markdown"</a>
                         <span>
                             "Built with "
@@ -539,11 +1220,15 @@ impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for HomePage {
         md_sync! { r###"
             # cadrs: parametric CAD, written in Rust
 
-            Open source under MIT or Apache\-2\.0\.
+            Free and open source under MIT or Apache\-2\.0\. An independent project\.
 
-            Sketch on a plane, constrain and dimension, build parts from features, put them together in assemblies, and make drawings from them\. cadrs follows Onshape's workflow, with a Bevy UI and its own B\-rep kernel written in Rust, and runs on your own machine\.
+            Sketch, constrain and dimension, then build parts, assemblies, drawings and circuit boards from features you can always go back and change\. It runs on your own computer, with your documents in a folder you own\.
 
-            From sketch to part to PCB, in one document: [watch the 90\-second demo](https://youtu.be/qT1FKZqUAxA)\.
+            [Watch the 90\-second demo](https://youtu.be/qT1FKZqUAxA)\.
+
+            ## Get started
+
+            {Steps}
 
             {Downloads}
 
@@ -557,18 +1242,151 @@ impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for HomePage {
 
             `cargo install-local` builds in release and installs cadrs for your user, with a launcher entry\. Run it again to update\. To run without installing, use `cargo run --release`\.
 
-            ## From sketch to assembly to drawing
+            ## How it works
+
+            A part in cadrs is a recipe, not a lump of geometry: sketches and the features built on them, each one editable\. Change a number at the start and the rest follows\.
+
+            {Points(HOW)}
+
+            ## Your first part: change one dimension
+
+            {Walkthrough}
+
+            ## Ways to use it
+
+            {Table { rows: WAYS, heads: ["Way", "What it takes", "Good to know"] }}
+
+            ## File formats
+
+            {Table { rows: FORMATS, heads: ["Format", "Use it for", "Good to know"] }}
+
+            ## AI assistants \(MCP\)
+
+            Turn on Preferences › Enable MCP server\. It listens on your own machine only, at `http://127.0.0.1:7680/mcp`\. Every change the assistant makes goes through undo\.
+
+                {{
+                  "mcpServers": {{
+                    "cadrs": {{
+                      "type": "http",
+                      "url": "http://127.0.0.1:7680/mcp"
+                    }}
+                  }}
+                }}
+
+            For Claude Code: `claude mcp add --transport http cadrs http://127.0.0.1:7680/mcp`
+
+            ## Features
 
             Every change goes through undo, every feature can be edited later, and the kernel runs in a process of its own, so a crash costs a rebuild, not your work\.
 
             {Features}
 
-            Source: https://github.com/rvdende/cadrs
+            ## Is it a fit?
+
+            A good fit:
+
+            {Bullets(FIT_GOOD)}
+
+            Before a bigger project:
+
+            {Bullets(FIT_CHECK)}
+
+            ## FAQ
+
+            {Faq}
+
+            ## Sources and links
+
+            [Source code](https://github.com/rvdende/cadrs) · [Releases](https://github.com/rvdende/cadrs/releases) · [Issues](https://github.com/rvdende/cadrs/issues) · [Sponsor](https://github.com/sponsors/rvdende)
 
             Licensed under MIT or Apache\-2\.0, at your option\. cadrs is an independent project\. It is not affiliated with, endorsed by or sponsored by PTC or Onshape\. Onshape is a trademark of PTC Inc\.
             "###
         }
         .render_md(cx)
+    }
+}
+
+#[proa_macros::content(skip, reason = "The steps as a numbered list")]
+impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for Steps {
+    fn render_md(self, cx: &mut WebContext<L, B>) -> Result<(), WriteError> {
+        for (step, _, _) in STEPS {
+            md_sync! { r###"
+                - **{step.title}**: {step.body}
+                "###
+            }
+            .render_md(cx)?;
+        }
+        Ok(())
+    }
+}
+
+#[proa_macros::content(skip, reason = "The points as a bullet list")]
+impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for Points {
+    fn render_md(self, cx: &mut WebContext<L, B>) -> Result<(), WriteError> {
+        for item in self.0 {
+            md_sync! { r###"
+                - **{item.title}**: {item.body}
+                "###
+            }
+            .render_md(cx)?;
+        }
+        Ok(())
+    }
+}
+
+#[proa_macros::content(skip, reason = "The walkthrough as a list")]
+impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for Walkthrough {
+    fn render_md(self, cx: &mut WebContext<L, B>) -> Result<(), WriteError> {
+        for item in FIRST_PART {
+            md_sync! { r###"
+                - **{item.title}**: {item.body}
+                "###
+            }
+            .render_md(cx)?;
+        }
+        Ok(())
+    }
+}
+
+#[proa_macros::content(skip, reason = "The table's rows as a list")]
+impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for Table {
+    fn render_md(self, cx: &mut WebContext<L, B>) -> Result<(), WriteError> {
+        for (name, what, note) in self.rows {
+            md_sync! { r###"
+                - **{*name}**: {*what} {*note}
+                "###
+            }
+            .render_md(cx)?;
+        }
+        Ok(())
+    }
+}
+
+#[proa_macros::content(skip, reason = "The list as Markdown bullets")]
+impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for Bullets {
+    fn render_md(self, cx: &mut WebContext<L, B>) -> Result<(), WriteError> {
+        for line in self.0 {
+            md_sync! { r###"
+                - {*line}
+                "###
+            }
+            .render_md(cx)?;
+        }
+        Ok(())
+    }
+}
+
+#[proa_macros::content(skip, reason = "The questions and answers as paragraphs")]
+impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for Faq {
+    fn render_md(self, cx: &mut WebContext<L, B>) -> Result<(), WriteError> {
+        for item in FAQ {
+            md_sync! { r###"
+                **{item.title}** {item.body}
+                "###
+            }
+            .render_md(cx)?;
+        }
+        Ok(())
     }
 }
 
@@ -620,7 +1438,7 @@ use crate::{error::AppError, layouts::RootDocument};
 pub async fn handler(headers: HeaderMap) -> Result<impl IntoResponse, AppError> {
     let html = RouteResponse::ssr_async(RootDocument {
         title: "cadrs: parametric CAD, written in Rust",
-        description: "cadrs is an open-source, parametric, feature-based CAD app written in Rust: sketches, Part Studios, assemblies, drawings and PCBs, following Onshape's workflow.",
+        description: "cadrs is a free, open-source parametric CAD app written in Rust: sketches, Part Studios, assemblies, drawings and PCBs in one document, on your own computer.",
         content: proa_core::to_async(HomePage),
     });
     Ok(negotiate(
