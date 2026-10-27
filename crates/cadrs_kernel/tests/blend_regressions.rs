@@ -2413,3 +2413,70 @@ fn ekgpulse_bracket_chamfer() {
     let added = k.mass_properties(out).unwrap().volume - v0;
     assert!((1_470.4..1_473.7).contains(&added), "added {added}");
 }
+
+/// A 1.5 mm chamfer round the top of a window in a 0.6 mm plate (a lid's display window, from
+/// an Onshape import): the chamfer is wider than the wall is high, so it runs on through the
+/// wall and out of the underside, as Onshape's does, instead of failing. The window becomes a
+/// frustum: 1.5 mm wider each side at the top, 0.9 mm at the bottom, mitred at the corners.
+/// Removed: h·(2(a + b)·ō + 4·⟨o²⟩) for the offset o running 0.9 → 1.5 over h = 0.6, with
+/// a, b = 59, 44.6: ō = 1.2, ⟨o²⟩ = (0.9² + 0.9·1.5 + 1.5²)/3 = 1.47.
+#[test]
+fn chamfer_runs_through_a_thin_wall() {
+    let mut k = NativeKernel::new();
+    let plate = k.box_at(-50.0, -40.0, 0.0, 100.0, 80.0, 0.6).unwrap();
+    let window = k.box_at(-29.5, -22.3, -1.0, 59.0, 44.6, 3.0).unwrap();
+    let draw::Shape::Body(b) = k.bcut(&plate, &window).unwrap() else {
+        panic!("not a body")
+    };
+    let v0 = k.mass_properties(b).unwrap().volume;
+    let edges = edges_near(
+        &k,
+        b,
+        &[
+            [0.0, -22.3, 0.6],
+            [29.5, 0.0, 0.6],
+            [0.0, 22.3, 0.6],
+            [-29.5, 0.0, 0.6],
+        ],
+    );
+    let r = k
+        .chamfer_with(
+            b,
+            &edges,
+            &ChamferOpts::new(ChamferSpec::EqualDistance(1.5)),
+        )
+        .unwrap();
+    let out = r.bodies[0];
+    assert!(k.get(out).unwrap().check().is_empty());
+    let removed = v0 - k.mass_properties(out).unwrap().volume;
+    let want = 0.6 * (2.0 * (59.0 + 44.6) * 1.2 + 4.0 * 1.47);
+    assert!((removed - want).abs() < 1e-6, "{removed} (want {want})");
+    // The plate's 6 faces and the 4 chamfers: none of the window's walls is left.
+    assert_eq!(k.faces(out).unwrap().len(), 6 + 4);
+}
+
+/// Both top edges of a rib 2 mm wide chamfered 1.5 mm: their strips on the top overlap, so the
+/// two cuts meet in a ridge along the middle, 0.5 mm under the top (z = 3.5 + y and
+/// z = 5.5 − y), instead of failing. Removed: the 2 × 1.5 top less the triangle under the ridge
+/// (2 wide, 1 high), 2 mm², along 30 mm; the top face is gone.
+#[test]
+fn chamfers_meet_in_a_ridge() {
+    let mut k = NativeKernel::new();
+    let draw::Shape::Body(b) = k.box_(30.0, 2.0, 5.0).unwrap() else {
+        panic!("not a body")
+    };
+    let v0 = k.mass_properties(b).unwrap().volume;
+    let edges = edges_near(&k, b, &[[15.0, 0.0, 5.0], [15.0, 2.0, 5.0]]);
+    let r = k
+        .chamfer_with(
+            b,
+            &edges,
+            &ChamferOpts::new(ChamferSpec::EqualDistance(1.5)),
+        )
+        .unwrap();
+    let out = r.bodies[0];
+    assert!(k.get(out).unwrap().check().is_empty());
+    let removed = v0 - k.mass_properties(out).unwrap().volume;
+    assert!((removed - 60.0).abs() < 1e-6, "{removed}");
+    assert_eq!(k.faces(out).unwrap().len(), 6 - 1 + 2);
+}
