@@ -10,7 +10,8 @@
 //!   under **Shared with me**) and opens it. Someone shared with by name gets it there
 //!   without asking.
 //! - Opened, a shared document is edited together ([`live`]), with everyone's avatars, where
-//!   they are, and Follow mode ([`presence`]).
+//!   they are, and Follow mode ([`presence`]), and everyone's pointer and camera live
+//!   ([`pointers`]).
 
 use bevy::prelude::*;
 use cadrs_core::DocumentMeta;
@@ -23,6 +24,7 @@ use crate::{ActiveDocument, AppClock, AppState, DocumentStore};
 pub mod comments;
 pub mod live;
 pub mod locks;
+pub mod pointers;
 pub mod presence;
 pub mod share_dialog;
 pub mod sharing;
@@ -40,6 +42,7 @@ impl Plugin for CollabPlugin {
         comments::plugin(app);
         live::plugin(app);
         locks::plugin(app);
+        pointers::plugin(app);
         presence::plugin(app);
         sharing::plugin(app);
         share_dialog::plugin(app);
@@ -64,6 +67,7 @@ pub fn read_only_reason(shared: &SharedInfo) -> String {
 pub fn go_offline(world: &mut World) {
     live::end(world);
     *world.resource_mut::<presence::People>() = Default::default();
+    *world.resource_mut::<pointers::Pointers>() = Default::default();
     *world.resource_mut::<locks::TabLocks>() = Default::default();
     world.remove_resource::<presence::Following>();
 }

@@ -265,14 +265,37 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
     let anchor = a.entity;
     commands.queue(move |world: &mut World| {
         let state = NetState::of(world);
+        // Who else is in the shared document open now, and the tab each is in.
+        let people: Vec<(String, String)> = world
+            .get_resource::<crate::collab::presence::People>()
+            .map(|p| {
+                let doc = world.get_resource::<crate::ActiveDocument>();
+                p.by_id
+                    .iter()
+                    .map(|(id, person)| {
+                        let tab = person
+                            .presence
+                            .tab
+                            .zip(doc)
+                            .and_then(|(t, d)| d.doc.element(t))
+                            .map_or_else(String::new, |e| format!(" · {}", e.name));
+                        (id.clone(), format!("{}{tab}", person.presence.name))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let (title, subtitle) = match state {
             NetState::Online { .. } => {
                 let stats = world.get_resource::<NetStats>().and_then(|s| s.0.clone());
-                let detail = stats.map_or_else(
-                    || "Peer to peer, through iroh's relays".to_string(),
-                    |s| format!("Sending {}, receiving {}", rate(s.tx_rate), rate(s.rx_rate)),
-                );
-                ("Online", detail)
+                let rates = stats.map_or_else(String::new, |s| {
+                    format!(" · ↑ {} ↓ {}", rate(s.tx_rate), rate(s.rx_rate))
+                });
+                let who = match people.len() {
+                    0 => "No one else in this document".to_string(),
+                    1 => "1 other person here".to_string(),
+                    n => format!("{n} others here"),
+                };
+                ("Online", format!("{who}{rates}"))
             }
             NetState::Failed => (
                 "Could not go online",
@@ -288,16 +311,34 @@ fn on_button(a: On<Activate>, q: Query<(), With<NetButton>>, mut commands: Comma
             MenuItem::new("network-connect", "Connect").icon("network")
         };
         let autoconnect = world.resource::<LocalPreferences>().0.autoconnect_p2p;
-        let menu = cadrs_ui::Menu::new("network-menu")
+        let following = world
+            .get_resource::<crate::collab::presence::Following>()
+            .map(|f| f.leader.clone());
+        let mut menu = cadrs_ui::Menu::new("network-menu")
             .align_end()
             .min_width(260.0)
             .header(MenuHeader::new(title).subtitle(subtitle))
-            .separator()
-            .item(toggle)
-            .item(
-                MenuItem::new("network-autoconnect", "Connect when cadrs starts")
-                    .checked(autoconnect),
+            .separator();
+        // Each person: a click follows them (again: stops).
+        for (id, label) in &people {
+            let tip = if following.as_ref() == Some(id) {
+                "Following: click to stop"
+            } else {
+                "Click to follow their view"
+            };
+            menu = menu.item(
+                MenuItem::new(format!("network-person-{id}"), label.clone())
+                    .dot(crate::collab::presence::color_of(id))
+                    .checked(following.as_ref() == Some(id))
+                    .tooltip(tip),
             );
+        }
+        if !people.is_empty() {
+            menu = menu.separator();
+        }
+        let menu = menu.item(toggle).item(
+            MenuItem::new("network-autoconnect", "Connect when cadrs starts").checked(autoconnect),
+        );
         let theme = world.resource::<Theme>().clone();
         open_menu(&mut world.commands(), anchor, menu.build(&theme));
         world.flush();
@@ -317,7 +358,12 @@ fn on_menu_action(ev: On<MenuAction>, q: Query<(), With<NetButton>>, mut command
             let on = !w.resource::<LocalPreferences>().0.autoconnect_p2p;
             crate::preferences_ui::set_autoconnect_p2p(w, on);
         }),
-        _ => {}
+        item => {
+            if let Some(id) = item.strip_prefix("network-person-") {
+                let id = id.to_string();
+                commands.queue(move |w: &mut World| crate::collab::presence::toggle_follow(w, id));
+            }
+        }
     }
 }
 
