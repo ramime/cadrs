@@ -1473,6 +1473,98 @@ fn a_sketch_on_an_offset_plane_regenerates_where_the_rebuild_puts_the_plane() {
     );
 }
 
+#[test]
+fn an_add_joins_only_the_scope_parts_it_touches() {
+    // Two overlapping 10 mm blocks, each New (two parts): A at x 0..10, B at x 5..15. An Add at
+    // x 12..20 with both in its merge scope touches B only: B joins it (1000 + 800 − the 300
+    // they share), and A, which only overlaps B, stays a part of its own (as Onshape's Add).
+    let mut d = Doc::new();
+    let a = d.block(0.0, 0.0, 10.0, 10.0, 10.0);
+    let b = d.block(5.0, 0.0, 15.0, 10.0, 10.0);
+    let parts = d.parts();
+    let scope: Vec<_> = parts.iter().map(|p| p.id).collect();
+    assert_eq!(scope.len(), 2);
+    let s = d.sketch(PlaneRef::Top, vec![rect(12.0, 0.0, 20.0, 10.0)]);
+    d.extrude(s, &[Vec2::new(18.0, 5.0)], 10.0, |e| {
+        e.op = BooleanOp::Add;
+        e.merge_scope = scope;
+        e.merge_scope_set = true;
+    });
+    let parts = d.parts();
+    assert_eq!(parts.len(), 2);
+    let volume = |f: FeatureId| {
+        parts
+            .iter()
+            .find(|p| p.id.feature == f)
+            .unwrap()
+            .mass
+            .unwrap()
+            .volume
+    };
+    close(volume(a), 1000.0, 1e-6);
+    close(volume(b), 1500.0, 1e-6);
+}
+
+#[test]
+fn a_plane_through_an_edge_point_follows_the_edge() {
+    // A 40 × 10 × 20 box; a Plane point plane: Right's axes through the midpoint of the top edge
+    // along X at y = 0, from (0, 0, 20) to (40, 0, 20): origin (20, 0, 20), normal X. The box
+    // made 30 high takes the edge, and the plane's origin, to z = 30.
+    let mut d = Doc::new();
+    let x = d.block(0.0, 0.0, 40.0, 10.0, 20.0);
+    let edge = edge_at(&d.parts()[0], [20.0, 0.0, 20.0]);
+    let plane = d.add(AddFeature {
+        element: d.el,
+        feature: FeatureId::new(),
+        base_name: "Plane".into(),
+        kind: FeatureKind::Plane(PlaneFeature {
+            kind: PlaneType::PlanePoint,
+            entities: vec![
+                PlaneEntity::Plane(PlaneRef::Right),
+                PlaneEntity::EdgePoint { edge, t: 0.5 },
+            ],
+            ..PlaneFeature::default()
+        }),
+    });
+    let frame = |d: &Doc| {
+        let b = d.build();
+        assert!(b.errors.is_empty(), "rebuild errors: {:?}", b.errors);
+        b.planes[&plane]
+    };
+    let f = frame(&d);
+    for (got, want) in f.origin.iter().zip([20.0, 0.0, 20.0]) {
+        close(*got, want, 1e-9);
+    }
+    close(f.normal()[0], 1.0, 1e-9);
+    // The edge's feature is the plane's parent.
+    let features = d.features();
+    assert!(
+        features
+            .iter()
+            .find(|f| f.id == plane)
+            .unwrap()
+            .parents()
+            .contains(&x)
+    );
+    let mut e = match &features.iter().find(|f| f.id == x).unwrap().kind {
+        FeatureKind::Extrude(e) => e.clone(),
+        _ => unreachable!(),
+    };
+    e.depth = 30.0;
+    e.depth_expr = "30 mm".into();
+    d.h.execute(
+        &mut d.d,
+        &SetExtrude {
+            element: d.el,
+            feature: x,
+            extrude: e,
+            label: "Depth".into(),
+        },
+    )
+    .unwrap();
+    close(frame(&d).origin[2], 30.0, 1e-9);
+}
+
 fn c_ref(d: &Doc, plane: FeatureId) -> PlaneRef {
     cadrs_core::parts::plane_feature_ref(&d.features(), plane).unwrap()
 }

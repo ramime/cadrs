@@ -2291,7 +2291,9 @@ mod kernel_ops {
         }
 
         /// The parts a new body's boolean works on: all solids (Merge with all), the Merge
-        /// scope's, else the ones it touches (Add) or overlaps (Remove, Intersect).
+        /// scope's, else the ones it touches (Add) or overlaps (Remove, Intersect). An Add joins
+        /// only those it touches, as Onshape's: parts of the scope that just overlap one another
+        /// stay apart.
         fn scope(e: &Merge, state: &State, contacts: &Contacts) -> Vec<PartId> {
             let solids: Vec<PartId> = state
                 .parts
@@ -2299,7 +2301,7 @@ mod kernel_ops {
                 .filter(|p| p.part.kind == PartKind::Solid)
                 .map(|p| p.part.id)
                 .collect();
-            if e.merge_all {
+            let mut scope = if e.merge_all {
                 solids
             } else if e.scope_set || !e.scope.is_empty() {
                 e.scope
@@ -2308,11 +2310,15 @@ mod kernel_ops {
                     .filter(|p| solids.contains(p))
                     .collect()
             } else {
-                match e.op {
+                return match e.op {
                     BooleanOp::Add => contacts.touches.clone(),
                     _ => contacts.overlaps.clone(),
-                }
+                };
+            };
+            if e.op == BooleanOp::Add {
+                scope.retain(|p| contacts.touches.contains(p));
             }
+            scope
         }
 
         /// What a Remove takes out of the `scope` parts: the tool's intersection with each, else

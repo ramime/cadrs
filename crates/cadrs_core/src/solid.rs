@@ -82,8 +82,14 @@ pub struct EdgeCircle {
 impl SolidEdge {
     /// The point halfway along it.
     pub fn midpoint(&self) -> Vec3 {
+        self.point_at(0.5)
+    }
+
+    /// The point a fraction `t` of the way along it by length, from its first point (0) to its
+    /// last (1).
+    pub fn point_at(&self, t: f64) -> Vec3 {
         let total: f64 = self.points.windows(2).map(|w| len(sub(w[1], w[0]))).sum();
-        let mut left = total / 2.0;
+        let mut left = total * t.clamp(0.0, 1.0);
         for w in self.points.windows(2) {
             let l = len(sub(w[1], w[0]));
             if l >= left && l > 0.0 {
@@ -91,7 +97,12 @@ impl SolidEdge {
             }
             left -= l;
         }
-        self.points.first().copied().unwrap_or([0.0; 3])
+        let end = if t < 0.5 {
+            self.points.first()
+        } else {
+            self.points.last()
+        };
+        end.copied().unwrap_or([0.0; 3])
     }
 
     /// The distance from `p` to the polyline.
@@ -1370,6 +1381,25 @@ mod tests {
     use super::*;
     use cadrs_sketch::region::regions;
     use cadrs_sketch::{PlaneRef, Sketch, SketchOp};
+
+    #[test]
+    fn a_point_along_an_edge_is_by_length() {
+        // Two segments, 10 then 30 long: a quarter of the way (10) is the corner, halfway (20)
+        // is a third of the way along the second; past either end is that end.
+        let face = |index| FaceName::new(OpId::nil(), FaceOrigin::Unnamed { index });
+        let e = SolidEdge {
+            name: EdgeName::new(face(0), face(1), 0),
+            points: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 30.0, 0.0]],
+            circle: None,
+            tangent_group: None,
+            smooth: false,
+        };
+        let near = |a: Vec3, b: Vec3| assert!(len(sub(a, b)) < 1e-12, "{a:?} vs {b:?}");
+        near(e.point_at(0.25), [10.0, 0.0, 0.0]);
+        near(e.midpoint(), [10.0, 10.0, 0.0]);
+        near(e.point_at(-1.0), [0.0, 0.0, 0.0]);
+        near(e.point_at(2.0), [10.0, 30.0, 0.0]);
+    }
 
     fn rect(s: &mut Sketch, x: f64, y: f64, w: f64, h: f64) {
         SketchOp::AddPolyline {

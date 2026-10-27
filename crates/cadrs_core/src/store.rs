@@ -121,6 +121,27 @@ pub enum StoreError {
     Io(io::Error),
     Parse(String),
     UnsupportedVersion(u32),
+    /// A file of this schema version with a kind this cadrs doesn't know (a feature, tab or
+    /// option added since; changes within a version are additive): saved by a newer cadrs.
+    Newer(String),
+}
+
+impl StoreError {
+    /// Whether the file was saved by a newer cadrs than this one, which can't read it.
+    pub fn is_newer(&self) -> bool {
+        matches!(
+            self,
+            StoreError::UnsupportedVersion(_) | StoreError::Newer(_)
+        )
+    }
+}
+
+/// Why a file saved by a newer cadrs can't be opened, and what to do about it (for people).
+pub fn newer_reason() -> String {
+    format!(
+        "it was saved by a newer version of cadrs than this one ({}). Update cadrs to open it",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 impl fmt::Display for StoreError {
@@ -132,6 +153,7 @@ impl fmt::Display for StoreError {
                 f,
                 "document schema version {v} is newer than this cadrs supports ({SCHEMA_VERSION})"
             ),
+            StoreError::Newer(e) => write!(f, "saved by a newer version of cadrs: {e}"),
         }
     }
 }
@@ -253,20 +275,24 @@ impl Store {
         // A current file parses in one typed pass (milliseconds). Probing its version first was
         // far slower: ron skips the fields the probe doesn't name value by value, which took
         // seconds for a big document. So only a file that isn't current is probed and migrated.
-        if let Ok(file) = ron::from_str::<DocumentFile>(text)
+        if let Ok(file) = ron::from_str::<DocumentFile>(&text)
             && file.version == SCHEMA_VERSION
         {
             return Ok(file);
         }
         let probe: VersionProbe = ron::Options::default()
-            .from_str(text)
+            .from_str(&text)
             .map_err(|e| StoreError::Parse(e.to_string()))?;
         match probe.version {
-            1 => migrate::from_v1(text),
-            2 => migrate::from_v2(text),
-            3 => migrate::from_v3(text),
-            4 => migrate::from_v4(text),
-            SCHEMA_VERSION => ron::from_str(text).map_err(|e| StoreError::Parse(e.to_string())),
+            1 => migrate::from_v1(&text),
+            2 => migrate::from_v2(&text),
+            3 => migrate::from_v3(&text),
+            4 => migrate::from_v4(&text),
+            SCHEMA_VERSION => ron::from_str(&text).map_err(|e| match e.code {
+                // A kind this cadrs doesn't know: a newer cadrs added it within this version.
+                ron::Error::NoSuchEnumVariant { .. } => StoreError::Newer(e.to_string()),
+                _ => StoreError::Parse(e.to_string()),
+            }),
             v => Err(StoreError::UnsupportedVersion(v)),
         }
     }
@@ -1212,6 +1238,26 @@ mod tests {
         let (lib, errors) = store.list();
         assert!(lib.entries.is_empty());
         assert_eq!(errors.len(), 1);
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
+    }
+
+    #[test]
+    fn a_kind_from_a_newer_cadrs_is_told_apart() {
+        let store = temp_store("newer");
+        let doc = Document::new("x");
+        store.save(&doc, &DocumentMeta::new("me", 1)).unwrap();
+        let path = store.document_path(doc.id);
+        let text = cadrs_fs::read_to_string(&path).unwrap();
+        // A tab kind a newer cadrs added within this schema version.
+        cadrs_fs::write(&path, text.replacen("PartStudio(", "FutureStudio(", 1)).unwrap();
+        let e = store.load(doc.id).unwrap_err();
+        assert!(matches!(e, StoreError::Newer(_)), "{e}");
+        assert!(e.is_newer());
+        // A damaged file is not.
+        cadrs_fs::write(&path, &text[..text.len() / 2]).unwrap();
+        let e = store.load(doc.id).unwrap_err();
+        assert!(matches!(e, StoreError::Parse(_)), "{e}");
+        assert!(!e.is_newer());
         cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 

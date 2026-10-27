@@ -3,6 +3,7 @@
 //
 // Load it in the tab with:
 //   eval(await (await fetch('http://127.0.0.1:8765/scrape.js')).text()); cadrsScrape.start()
+// or cadrsScrape.start({only: [<document id>, …]}) for those documents only (yours or shared).
 // then poll `cadrsScrape.state`. A rerun skips every file already on disk.
 //
 // Layout under raw/:
@@ -197,8 +198,17 @@
         if ((await (await sink('ping')).text()) !== 'pong') throw new Error('receiver not answering');
         await useCurrentApi();
         await log('scrape start');
-        let docs = await listDocuments();
-        if (only) docs = docs.filter(x => only.includes(x.id));
+        // Documents named by id are looked up directly, so one shared with you (not in your own
+        // list) can be scraped too.
+        let docs = [];
+        if (only) {
+          for (const id of only) {
+            const doc = await save(`${id}/document.json`, `${API}/documents/${id}`);
+            if (doc) docs.push(doc);
+          }
+        } else {
+          docs = await listDocuments();
+        }
         state.docsTotal = docs.length;
         for (const doc of docs) {
           state.current = doc.name;
