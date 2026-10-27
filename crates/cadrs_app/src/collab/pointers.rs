@@ -563,7 +563,7 @@ struct BadgeDot;
 
 /// The chip with a collaborator's initials at their camera: whose.
 #[derive(Component)]
-struct CameraChip(String);
+struct CameraChip(String, bool);
 
 /// Shows the badge's arrow in 2D and its dot in 3D.
 fn shape_display(model: bool, arrow: bool) -> Display {
@@ -574,8 +574,7 @@ fn shape_display(model: bool, arrow: bool) -> Display {
     }
 }
 
-fn badge(t: &Theme, id: &str, label: &str, model: bool) -> impl Bundle {
-    let color = color_of(id);
+fn badge(t: &Theme, id: &str, label: &str, model: bool, color: Color) -> impl Bundle {
     let short: String = id.chars().take(8).collect();
     let arrow = |offset: Vec2, tint: Color| {
         cadrs_ui::icon::icon_in(
@@ -669,11 +668,11 @@ fn badge(t: &Theme, id: &str, label: &str, model: bool) -> impl Bundle {
     )
 }
 
-fn camera_chip(t: &Theme, id: &str, name: &str) -> impl Bundle {
+fn camera_chip(t: &Theme, id: &str, name: &str, color: Color, stale: bool) -> impl Bundle {
     let short: String = id.chars().take(8).collect();
     (
         Name::new(format!("collab-camera-{short}")),
-        CameraChip(id.to_string()),
+        CameraChip(id.to_string(), stale),
         Node {
             position_type: PositionType::Absolute,
             width: Val::Px(CHIP),
@@ -690,7 +689,7 @@ fn camera_chip(t: &Theme, id: &str, name: &str) -> impl Bundle {
             align_items: AlignItems::Center,
             ..default()
         },
-        BackgroundColor(color_of(id)),
+        BackgroundColor(color),
         BorderColor::all(Color::WHITE),
         GlobalZIndex(5),
         Pickable::IGNORE,
@@ -699,7 +698,7 @@ fn camera_chip(t: &Theme, id: &str, name: &str) -> impl Bundle {
                 cadrs_ui::Avatar::initials(name),
                 t.font_xs,
                 FontWeight::BOLD,
-                cadrs_ui::Avatar::ink_on(color_of(id))
+                cadrs_ui::Avatar::ink_on(color)
             ),
             Pickable::IGNORE,
         )],
@@ -712,6 +711,9 @@ fn label_of(people: &People, doc: Option<&ActiveDocument>, id: &str) -> String {
     let Some(p) = people.by_id.get(id) else {
         return id.chars().take(8).collect();
     };
+    if people.stale.contains(id) {
+        return format!("{} · reconnecting…", p.presence.name);
+    }
     let mut label = p.presence.name.clone();
     if let Some(f) = doc.and_then(|d| super::presence::editing_name(d, &p.presence)) {
         label.push_str(&format!(" · {f}"));
@@ -822,7 +824,9 @@ fn sync_badges(
     for (id, (p, model)) in want {
         let label = label_of(&people, doc.as_deref(), id);
         let local = p - rect.0.min;
-        let e = commands.spawn(badge(&theme, id, &label, model)).id();
+        let e = commands
+            .spawn(badge(&theme, id, &label, model, people.shown_color(id)))
+            .id();
         commands.entity(e).entry::<Node>().and_modify(move |mut n| {
             n.left = Val::Px(local.x);
             n.top = Val::Px(local.y);
@@ -858,7 +862,11 @@ fn sync_badges(
         }
     }
     for (e, chip, mut node) in &mut chips {
-        match cams.remove(chip.0.as_str()) {
+        // (Made again when their connection goes stale or comes back: its colour.)
+        match cams
+            .remove(chip.0.as_str())
+            .filter(|_| chip.1 == people.stale.contains(&chip.0))
+        {
             Some(p) => {
                 let local = p - rect.0.min;
                 node.left = Val::Px(local.x);
@@ -874,7 +882,16 @@ fn sync_badges(
             .map(|p| p.presence.name.clone())
             .unwrap_or_default();
         let local = p - rect.0.min;
-        let e = commands.spawn(camera_chip(&theme, id, &name)).id();
+        let stale = people.stale.contains(id);
+        let e = commands
+            .spawn(camera_chip(
+                &theme,
+                id,
+                &name,
+                people.shown_color(id),
+                stale,
+            ))
+            .id();
         commands.entity(e).entry::<Node>().and_modify(move |mut n| {
             n.left = Val::Px(local.x);
             n.top = Val::Px(local.y);
@@ -1275,9 +1292,9 @@ fn sync_overlays(
             && let Some((at, dir)) = edge_point(rect.0, p)
         {
             let color = color_of(id);
-            let tip = at + dir * 36.0;
+            let tip = at + dir * 30.0;
             let side = Vec2::new(-dir.y, dir.x) * 10.0;
-            let back = tip - dir * 12.0;
+            let back = tip - dir * 11.0;
             for wing in [back + side, back - side] {
                 spawned.push(
                     commands
@@ -1314,7 +1331,7 @@ fn sync_overlays(
                 crate::drawing::sheet_to_screen(sv, area_rect, Vec2::new(c[0] as f32, c[1] as f32))
             };
             let (a, b) = (corner(lo), corner(hi));
-            let (min, max) = (a.min(b) - Vec2::splat(6.0), a.max(b) + Vec2::splat(6.0));
+            let (min, max) = (a.min(b) - Vec2::splat(1.0), a.max(b) + Vec2::splat(1.0));
             let color = color_of(id);
             let at = local(min);
             spawned.push(
@@ -1327,22 +1344,18 @@ fn sync_overlays(
                             top: Val::Px(at.y),
                             width: Val::Px(max.x - min.x),
                             height: Val::Px(max.y - min.y),
-                            border: UiRect::all(Val::Px(1.5)),
-                            border_radius: BorderRadius::all(Val::Px(4.0)),
+                            border: UiRect::all(Val::Px(2.0)),
                             ..default()
                         },
-                        BackgroundColor(color.with_alpha(0.08)),
-                        BorderColor::all(color.with_alpha(0.6)),
+                        BackgroundColor(color.with_alpha(0.12)),
+                        BorderColor::all(color.with_alpha(0.85)),
                         GlobalZIndex(3),
                         Pickable::IGNORE,
                     ))
                     .id(),
             );
-            let name = people
-                .by_id
-                .get(id)
-                .map_or_else(String::new, |p| p.presence.name.clone());
-            let label = format!("{name} · {}", v.name);
+            // The view's name (their own name is at their pointer).
+            let label = v.name.clone();
             spawned.push(
                 commands
                     .spawn(mark_label(
@@ -1525,7 +1538,7 @@ fn draw_gizmos(
         if person.presence.tab != tab {
             continue;
         }
-        let color = color_of(id);
+        let color = people.shown_color(id);
         // What they have selected, their sketch's plane and what they are drawing on it.
         if let Some(a) = people.doing.get(id) {
             draw_picks(&mut picked, &cache, &a.selected, color, &px);

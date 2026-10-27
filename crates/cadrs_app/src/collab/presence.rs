@@ -131,6 +131,24 @@ pub struct People {
     /// When this document's room was first heard from: who is there by then was already
     /// there ("is here"), anyone after it joined.
     since: f64,
+    /// Who has not been heard from for [`STALE_AFTER`]: shown grey, "reconnecting…", until
+    /// they are heard again or forgotten.
+    pub stale: std::collections::BTreeSet<String>,
+}
+
+/// Someone silent this long (seconds: their presence comes every 4, what they do every 3)
+/// shows as reconnecting.
+const STALE_AFTER: f64 = 6.0;
+
+impl People {
+    /// The colour someone shows in: theirs, or grey while their connection is stale.
+    pub fn shown_color(&self, id: &str) -> Color {
+        if self.stale.contains(id) {
+            color_of(id).mix(&Color::srgb(0.5, 0.5, 0.52), 0.75)
+        } else {
+            color_of(id)
+        }
+    }
 }
 
 /// What someone is doing: in a few words, and what they have selected in their tab.
@@ -238,6 +256,10 @@ fn hear(
             draft: m.msg.draft.clone(),
             plane: m.msg.plane,
         };
+        // Heard from (what they do comes every few seconds too).
+        if let Some(p) = people.by_id.get_mut(&key) {
+            p.heard = t;
+        }
         if people.doing.get(&key) != Some(&a) {
             if let Some(p) = people.by_id.get_mut(&key) {
                 p.active = t;
@@ -305,6 +327,15 @@ fn hear(
             people.doing.remove(&l.id.to_string());
             toasts.push((p.key(), p.presence.name, "left"));
         }
+    }
+    let quiet: std::collections::BTreeSet<String> = people
+        .by_id
+        .iter()
+        .filter(|(_, p)| t - p.heard > STALE_AFTER)
+        .map(|(k, _)| k.clone())
+        .collect();
+    if people.stale != quiet {
+        people.stale = quiet;
     }
     let stale: Vec<String> = people
         .by_id
@@ -928,8 +959,14 @@ struct PersonAvatar(String);
 #[derive(PartialEq, Clone, Default)]
 struct BarState(Vec<BarPerson>, Option<String>, (bool, bool, bool));
 
-/// One avatar: id, name, tooltip, (follows me, I follow them, speaking), idle minutes.
-type BarPerson = (String, String, String, (bool, bool, bool), Option<u32>);
+/// One avatar: id, name, tooltip, (follows me, I follow them, speaking, stale), idle minutes.
+type BarPerson = (
+    String,
+    String,
+    String,
+    (bool, bool, bool, bool),
+    Option<u32>,
+);
 
 /// "In Part Studio 1 · Line", with "idle 3 min" after it once they are idle.
 pub(crate) fn with_idle(text: String, idle: Option<u32>) -> String {
@@ -1039,11 +1076,15 @@ fn sync_people_bar(
             if follows_me {
                 tip.push_str(" · following you");
             }
+            let stale = people.stale.contains(&key);
+            if stale {
+                tip = format!("{} · reconnecting…", p.presence.name);
+            }
             (
                 key,
                 p.presence.name.clone(),
                 tip,
-                (follows_me, i_follow, speaking),
+                (follows_me, i_follow, speaking, stale),
                 idle,
             )
         })
@@ -1096,9 +1137,11 @@ fn sync_people_bar(
             .entry::<Node>()
             .and_modify(|mut n| n.margin = UiRect::right(Val::Px(4.0)));
         }
-        for (key, name, tip, (follows_me, i_follow, speaking), idle) in &state.0 {
-            // Faded while they are idle.
-            let color = if idle.is_some() {
+        for (key, name, tip, (follows_me, i_follow, speaking, stale), idle) in &state.0 {
+            // Faded while they are idle, grey while their connection is stale.
+            let color = if *stale {
+                people.shown_color(key)
+            } else if idle.is_some() {
                 color_of(key).mix(&t.control, 0.6)
             } else {
                 color_of(key)
@@ -1192,15 +1235,20 @@ fn on_avatar_click(ev: On<Pointer<Click>>, q: Query<&PersonAvatar>, mut commands
             now(world),
             world.resource::<super::pointers::Pointers>().moved_at(&id),
         );
-        let place = world
-            .get_resource::<ActiveDocument>()
-            .map(|d| with_idle(whereabouts(d, &p.presence, doing.as_deref()), idle))
-            .unwrap_or_default();
+        let place = if world.resource::<People>().stale.contains(&id) {
+            "Reconnecting…".to_string()
+        } else {
+            world
+                .get_resource::<ActiveDocument>()
+                .map(|d| with_idle(whereabouts(d, &p.presence, doing.as_deref()), idle))
+                .unwrap_or_default()
+        };
         let following = world
             .get_resource::<Following>()
             .is_some_and(|f| f.leader == id);
         let name = p.presence.name.clone();
-        let mut header = MenuHeader::new(name.clone()).avatar_colored(color_of(&id));
+        let mut header = MenuHeader::new(name.clone())
+            .avatar_colored(world.resource::<People>().shown_color(&id));
         if !place.is_empty() {
             header = header.subtitle(place);
         }
@@ -1241,13 +1289,16 @@ fn on_person_action(ev: On<MenuAction>, q: Query<&PersonAvatar>, mut commands: C
     }
 }
 
-/// The chips on tabs and feature rows: whose (cadrs ID and name) they show.
+/// Whom a chip shows: cadrs ID, name, and whether their connection is stale (grey).
+type Who = (String, String, bool);
+
+/// The chips on tabs and feature rows: whose they show.
 #[derive(Component, PartialEq)]
-struct Marker(Vec<(String, String)>);
+struct Marker(Vec<Who>);
 
 /// A chip with each person's initials in their colour: after a tab's name (in its row), or at
 /// a feature row's right end.
-fn marker(people: Vec<(String, String)>, on_tab: bool, t: &Theme) -> impl Bundle {
+fn marker(people: Vec<Who>, on_tab: bool, t: &Theme) -> impl Bundle {
     const CHIP: f32 = 16.0;
     let node = if on_tab {
         Node {
@@ -1274,11 +1325,16 @@ fn marker(people: Vec<(String, String)>, on_tab: bool, t: &Theme) -> impl Bundle
         node,
         Pickable::IGNORE,
         Children::spawn(SpawnWith(move |p: &mut ChildSpawner| {
-            for (id, name) in people {
+            for (id, name, stale) in people {
+                let color = if stale {
+                    color_of(&id).mix(&Color::srgb(0.5, 0.5, 0.52), 0.75)
+                } else {
+                    color_of(&id)
+                };
                 p.spawn((
                     Avatar::new(format!("collab-marker-{}", &id[..8.min(id.len())]), name)
                         .size(CHIP)
-                        .color(color_of(&id))
+                        .color(color)
                         .build(&t),
                     cadrs_ui::color_scheme::KeepFill,
                     Pickable::IGNORE,
@@ -1297,9 +1353,13 @@ fn sync_markers(
     theme: Res<Theme>,
     mut commands: Commands,
 ) {
-    let mut want: BTreeMap<Entity, (Vec<(String, String)>, bool)> = BTreeMap::new();
+    let mut want: BTreeMap<Entity, (Vec<Who>, bool)> = BTreeMap::new();
     for p in people.by_id.values() {
-        let who = (p.key(), p.presence.name.clone());
+        let who = (
+            p.key(),
+            p.presence.name.clone(),
+            people.stale.contains(&p.key()),
+        );
         if let Some(tab) = p.presence.tab
             && let Some((e, _)) = tabs.iter().find(|(_, b)| b.0 == tab)
         {
