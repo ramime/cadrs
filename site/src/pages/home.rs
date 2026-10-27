@@ -1191,10 +1191,15 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                         </a>
                         <a href={RELEASES} class="hover:text-foreground">"Releases"</a>
                         <a href={markdown} class="hover:text-foreground">"This page as Markdown"</a>
-                        <span>
-                            "Made with "
-                            <a href="https://www.rust-lang.org" class="hover:text-foreground">
-                                "Rust"
+                        <span class="ml-auto flex items-center gap-1.5">
+                            "Made with"
+                            <a
+                                href="https://www.rust-lang.org"
+                                aria-label="Rust"
+                                title="Rust"
+                                class="text-lg leading-none transition hover:scale-110"
+                            >
+                                "🦀"
                             </a>
                         </span>
                     </div>
