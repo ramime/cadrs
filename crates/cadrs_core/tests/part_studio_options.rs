@@ -1474,6 +1474,38 @@ fn a_sketch_on_an_offset_plane_regenerates_where_the_rebuild_puts_the_plane() {
 }
 
 #[test]
+fn an_add_joins_only_the_scope_parts_it_touches() {
+    // Two overlapping 10 mm blocks, each New (two parts): A at x 0..10, B at x 5..15. An Add at
+    // x 12..20 with both in its merge scope touches B only: B joins it (1000 + 800 − the 300
+    // they share), and A, which only overlaps B, stays a part of its own (as Onshape's Add).
+    let mut d = Doc::new();
+    let a = d.block(0.0, 0.0, 10.0, 10.0, 10.0);
+    let b = d.block(5.0, 0.0, 15.0, 10.0, 10.0);
+    let parts = d.parts();
+    let scope: Vec<_> = parts.iter().map(|p| p.id).collect();
+    assert_eq!(scope.len(), 2);
+    let s = d.sketch(PlaneRef::Top, vec![rect(12.0, 0.0, 20.0, 10.0)]);
+    d.extrude(s, &[Vec2::new(18.0, 5.0)], 10.0, |e| {
+        e.op = BooleanOp::Add;
+        e.merge_scope = scope;
+        e.merge_scope_set = true;
+    });
+    let parts = d.parts();
+    assert_eq!(parts.len(), 2);
+    let volume = |f: FeatureId| {
+        parts
+            .iter()
+            .find(|p| p.id.feature == f)
+            .unwrap()
+            .mass
+            .unwrap()
+            .volume
+    };
+    close(volume(a), 1000.0, 1e-6);
+    close(volume(b), 1500.0, 1e-6);
+}
+
+#[test]
 fn a_plane_through_an_edge_point_follows_the_edge() {
     // A 40 × 10 × 20 box; a Plane point plane: Right's axes through the midpoint of the top edge
     // along X at y = 0, from (0, 0, 20) to (40, 0, 20): origin (20, 0, 20), normal X. The box
