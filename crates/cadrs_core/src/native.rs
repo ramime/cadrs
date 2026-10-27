@@ -1,7 +1,7 @@
 //! Portable, editable `.cadrs` ZIP packages. Library storage remains unchanged.
 use crate::{
     Document, DocumentId, DocumentMeta, Store, blobs,
-    store::{DocumentFile, SCHEMA_VERSION},
+    store::{DocumentFile, SCHEMA_VERSION, StoreError},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -143,12 +143,15 @@ pub fn import(
         let manifest: Manifest =
             ron::de::from_bytes(entries.get("manifest.ron").ok_or("Missing manifest.ron")?)
                 .map_err(|e| e.to_string())?;
+        if manifest.format == "cadrs" && manifest.version > 1 {
+            return Err(crate::store::newer_reason());
+        }
         if manifest.format != "cadrs" || manifest.version != 1 {
             return Err("Unsupported cadrs archive version or format".into());
         }
         let text = std::str::from_utf8(entries.get("document.ron").ok_or("Missing document.ron")?)
             .map_err(|e| e.to_string())?;
-        let file = Store::parse_document(text).map_err(|e| e.to_string())?;
+        let file = Store::parse_document(text).map_err(reason)?;
         let mut assets = Vec::new();
         for (hash, ext) in blobs::used_by(&file.document) {
             let name = blobs::file_name(&hash, &ext);
@@ -169,7 +172,7 @@ pub fn import(
         if source.metadata().map_err(|e| e.to_string())?.len() > MAX_BYTES {
             return Err("Document exceeds size limit".into());
         }
-        let file = Store::load_path(path).map_err(|e| e.to_string())?;
+        let file = Store::load_path(path).map_err(reason)?;
         let mut assets = Vec::new();
         for (hash, ext) in blobs::used_by(&file.document) {
             let bytes =
@@ -209,4 +212,13 @@ pub fn import(
         blobs::insert(bytes);
     }
     Ok(file)
+}
+
+/// A document's read error as the import reports it.
+fn reason(e: StoreError) -> String {
+    if e.is_newer() {
+        crate::store::newer_reason()
+    } else {
+        e.to_string()
+    }
 }
