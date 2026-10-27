@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds the site and exports it as static files for GitHub Pages.
+# Builds the site and exports it as static files for GitHub Pages (https://cadrs.net).
 #
-#   site/export.sh [OUT_DIR] [BASE_PATH]     defaults: site/dist, /cadrs
+#   site/export.sh [OUT_DIR] [BASE_PATH]     defaults: site/dist, the domain root
 #
 # Needs the `proa` CLI from our Proa fork (static export is not upstream yet) and the
 # Tailwind CLI v4 on PATH:
@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 out="${1:-dist}"
-base_path="${2-/cadrs}"
+base_path="${2-}"
 
 # The cadrs repo's .cargo/config.toml passes nightly-only rustflags (and mold) for the app;
 # RUSTFLAGS replaces them for this stable-toolchain build.
