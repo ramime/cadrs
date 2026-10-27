@@ -80,6 +80,9 @@ pub enum PlaneEntity {
     Face(FaceRef),
     /// An edge of a part (a line, a circle's axis, a curve).
     Edge(EdgeRef),
+    /// A point along an edge of a part, a fraction `t` of the way from its start by length
+    /// (Onshape's "Edge point": 0.5 is the midpoint).
+    EdgePoint { edge: EdgeRef, t: f64 },
     /// A vertex of a part.
     Vertex(VertexRef),
     /// A point of a sketch.
@@ -97,7 +100,9 @@ impl PlaneEntity {
             PlaneEntity::Plane(PlaneRef::Feature(f)) => Some(FeatureId(f.feature)),
             PlaneEntity::Plane(_) | PlaneEntity::Origin => None,
             PlaneEntity::Face(f) => Some(FeatureId(f.face.op)),
-            PlaneEntity::Edge(e) => Some(FeatureId(e.edge.op())),
+            PlaneEntity::Edge(e) | PlaneEntity::EdgePoint { edge: e, .. } => {
+                Some(FeatureId(e.edge.op()))
+            }
             PlaneEntity::Vertex(v) => Some(v.part.feature),
             PlaneEntity::SketchPoint { sketch, .. } | PlaneEntity::SketchCurve { sketch, .. } => {
                 Some(*sketch)

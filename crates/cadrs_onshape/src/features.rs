@@ -17,6 +17,7 @@ use cadrs_core::ids::{FeatureId, PartId};
 use cadrs_core::import::{AddImport, ImportUnit};
 use cadrs_core::mate::{ConnectorOrigin, ConnectorRef, MateConnectorFeature};
 use cadrs_core::pattern::{MirrorFeature, MirrorPlane, PatternFeature, PatternKind, PatternType};
+use cadrs_core::plane::{PlaneEntity, PlaneFeature, PlaneType};
 use cadrs_core::transform::{SecondaryAxis, TransformFeature, TransformType};
 use cadrs_sketch::CurveId;
 use cadrs_sketch::units::Quantity;
@@ -322,10 +323,10 @@ impl PartStudio<'_> {
         model.face(&q).map(AxisRef::Face)
     }
 
-    /// A direction parameter: a sketch line, a part edge, a face's normal or a default plane's.
+    /// A direction parameter: a sketch line, a part edge, a face's normal or a plane's.
     pub(crate) fn direction_param(&mut self, f: &Value, id: &str) -> Option<DirectionRef> {
         let pick = refs::picks(param(f, id)).into_iter().next()?;
-        if let Some(p) = pick.default_plane() {
+        if let Some(p) = self.plane_ref(&pick) {
             return Some(DirectionRef::PlaneNormal(p));
         }
         let Pick::Query(q) = pick else { return None };
@@ -583,9 +584,14 @@ impl PartStudio<'_> {
         }
         Self::lost_note(fr, lost, "part selections");
         let plane = match refs::picks(param(f, "mirrorPlane")).into_iter().next() {
-            Some(p) if p.default_plane().is_some() => p.default_plane().map(MirrorPlane::Plane),
-            Some(Pick::Query(q)) => self.face_of(&q).map(MirrorPlane::Face),
-            _ => None,
+            Some(p) => match self.plane_ref(&p) {
+                Some(pl) => Some(MirrorPlane::Plane(pl)),
+                None => match p {
+                    Pick::Query(q) => self.face_of(&q).map(MirrorPlane::Face),
+                    _ => None,
+                },
+            },
+            None => None,
         };
         let plane = plane.ok_or_else(|| {
             CommandError::Invalid("its mirror plane could not be translated".into())
@@ -863,6 +869,131 @@ impl PartStudio<'_> {
             );
         }
         self.add(f, fid, "Mate connector", FeatureKind::MateConnector(x), fr)
+    }
+
+    /// A Plane (`cPlane`). A point Onshape made in its dialog (an "Edge point" subfeature)
+    /// becomes the point along that edge.
+    pub(crate) fn plane(
+        &mut self,
+        f: &Value,
+        fid: &str,
+        fr: &mut FeatureReport,
+    ) -> Result<(), CommandError> {
+        let kind = match Self::text(f, "cplaneType").as_str() {
+            "OFFSET" => PlaneType::Offset,
+            "PLANE_POINT" => PlaneType::PlanePoint,
+            "LINE_ANGLE" => PlaneType::LineAngle,
+            "LINE_POINT" => PlaneType::PointNormal,
+            "THREE_POINT" => PlaneType::ThreePoint,
+            "MID_PLANE" => PlaneType::MidPlane,
+            "CURVE_POINT" => PlaneType::CurvePoint,
+            t => {
+                return Err(CommandError::Invalid(format!(
+                    "plane type {t} not imported yet"
+                )));
+            }
+        };
+        let subs: HashMap<&str, &Value> = f["subFeatures"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| Some((s["featureId"].as_str()?, s)))
+            .collect();
+        let queries = param(f, "entities")
+            .and_then(|p| p["queries"].as_array())
+            .cloned()
+            .unwrap_or_default();
+        let picks = refs::picks(param(f, "entities"));
+        let mut entities = Vec::new();
+        let mut lost = 0;
+        for (q, pick) in queries.iter().zip(&picks) {
+            match self.plane_entity(q, pick, &subs) {
+                Some(e) => entities.push(e),
+                None => lost += 1,
+            }
+        }
+        // A plane missing one of its entities would be built somewhere else.
+        if lost > 0 {
+            return Err(CommandError::Invalid(format!(
+                "{lost} of its {} entities could not be translated",
+                queries.len()
+            )));
+        }
+        let mut x = PlaneFeature {
+            kind,
+            entities,
+            flip: Self::flag(f, "oppositeDirection"),
+            flip_normal: Self::flag(f, "flipNormal"),
+            flip_alignment: Self::flag(f, "flipAlignment"),
+            ..PlaneFeature::default()
+        };
+        // Onshape keeps both values whatever the type; only the type's own one must evaluate.
+        match self.quantity(f, "offset", Quantity::Length) {
+            Ok(v) => (x.offset, x.offset_expr) = v,
+            Err(e) if kind == PlaneType::Offset => return Err(e),
+            Err(_) => {}
+        }
+        match self.quantity(f, "angle", Quantity::Angle) {
+            Ok(v) => (x.angle, x.angle_expr) = v,
+            Err(e) if kind == PlaneType::LineAngle => return Err(e),
+            Err(_) => {}
+        }
+        if let Some(why) = x.problem() {
+            return Err(CommandError::Invalid(format!(
+                "its entities don't fit the plane type: {why}"
+            )));
+        }
+        self.add(f, fid, "Plane", FeatureKind::Plane(x), fr)
+    }
+
+    /// What one of a Plane's entity queries picks (`q` the query as Onshape stores it, `subs`
+    /// the Plane's subfeatures by id).
+    fn plane_entity(
+        &mut self,
+        q: &Value,
+        pick: &Pick,
+        subs: &HashMap<&str, &Value>,
+    ) -> Option<PlaneEntity> {
+        if let Some(p) = self.plane_ref(pick) {
+            return Some(PlaneEntity::Plane(p));
+        }
+        if pick.is_origin() {
+            return Some(PlaneEntity::Origin);
+        }
+        // A point made in the dialog: `qCreatedBy(id + "<subfeature>", EntityType.VERTEX)`.
+        let qs = q["queryString"].as_str().unwrap_or_default();
+        if let Some(i) = qs.find("id + \"") {
+            let sub = subs.get(qs[i + 6..].split('"').next()?)?;
+            return self.edge_point(sub);
+        }
+        let Pick::Query(q) = pick else { return None };
+        Some(match self.connector_origin(q)? {
+            ConnectorOrigin::Origin => PlaneEntity::Origin,
+            ConnectorOrigin::Face(f) => PlaneEntity::Face(f),
+            ConnectorOrigin::Edge(e) => PlaneEntity::Edge(e),
+            ConnectorOrigin::Vertex(v) => PlaneEntity::Vertex(v),
+            ConnectorOrigin::SketchPoint { sketch, point } => {
+                PlaneEntity::SketchPoint { sketch, point }
+            }
+            ConnectorOrigin::SketchCurve { sketch, curve } => {
+                PlaneEntity::SketchCurve { sketch, curve }
+            }
+        })
+    }
+
+    /// An "Edge point" (a `cPoint` subfeature): the point a fraction `parameter` along its
+    /// edge.
+    fn edge_point(&mut self, sub: &Value) -> Option<PlaneEntity> {
+        if sub["featureType"].as_str() != Some("cPoint") {
+            return None;
+        }
+        let Pick::Query(q) = refs::picks(param(sub, "entities")).into_iter().next()? else {
+            return None;
+        };
+        let t = eval_expr(&Self::expr(sub, "parameter"), Quantity::Count, &self.vars)?;
+        let parts = self.parts();
+        let edge = self.model(&parts).edges(&q).into_iter().next()?;
+        Some(PlaneEntity::EdgePoint { edge, t })
     }
 
     pub(crate) fn delete_bodies(

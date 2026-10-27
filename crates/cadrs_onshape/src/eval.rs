@@ -222,6 +222,60 @@ fn vertex_faces(q: &Value, depth: usize) -> Option<Vec<Value>> {
     }
 }
 
+/// The queries of the two faces either side of an edge query's edge: a `SWEPT_EDGE`'s side
+/// faces swept by its two sketch curves, or a `CAP_EDGE`'s cap face and the side face its curve
+/// swept.
+fn edge_faces(q: &Value) -> Option<Vec<Value>> {
+    let s = |x: &str| Value::Str(x.into());
+    let map = |kv: Vec<(&str, Value)>| {
+        Value::Map(kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    };
+    let op = q.get("operationId")?.clone();
+    let originals: Vec<Value> = q
+        .get("disambiguationData")
+        .map(Value::items)
+        .unwrap_or_default()
+        .iter()
+        .filter(|d| {
+            d.get("disambiguationType").and_then(Value::as_str) == Some("ORIGINAL_DEPENDENCY")
+        })
+        .flat_map(|d| {
+            d.get("originals")
+                .map(Value::items)
+                .unwrap_or_default()
+                .iter()
+                .cloned()
+        })
+        .collect();
+    let swept = |o: Value| {
+        let dis = map(vec![
+            ("disambiguationType", s("ORIGINAL_DEPENDENCY")),
+            ("originals", Value::Array(vec![o])),
+        ]);
+        map(vec![
+            ("queryType", s("SWEPT_FACE")),
+            ("entityType", s("FACE")),
+            ("operationId", op.clone()),
+            ("disambiguationData", Value::Array(vec![dis])),
+        ])
+    };
+    match (q.get("queryType")?.as_str()?, &originals[..]) {
+        ("SWEPT_EDGE", [a, b]) => Some(vec![swept(a.clone()), swept(b.clone())]),
+        ("CAP_EDGE", [a]) => {
+            let mut cap = vec![
+                ("queryType", s("CAP_FACE")),
+                ("entityType", s("FACE")),
+                ("operationId", op.clone()),
+            ];
+            if let Some(start) = q.get("isStart") {
+                cap.push(("isStart", start.clone()));
+            }
+            Some(vec![map(cap), swept(a.clone())])
+        }
+        _ => None,
+    }
+}
+
 /// A Derived feature's source, loaded the first time a query needs it (loading another
 /// document's studio means importing it).
 pub struct LazySource {
@@ -1464,10 +1518,13 @@ impl Model<'_> {
     /// the side faces its two sketch curves swept), or a copy of one (a derived part's), found
     /// as the vertex of the three faces the same queries name.
     pub fn vertex(&self, q: &Value) -> Option<VertexRef> {
-        let mut sets: Vec<HashSet<Ent>> = vertex_faces(q, 0)?
-            .iter()
-            .map(|f| self.eval(f).into_iter().collect())
-            .collect();
+        let mut sets: Vec<HashSet<Ent>> = match self.blend_vertex_faces(q) {
+            Some(sets) => sets,
+            None => vertex_faces(q, 0)?
+                .iter()
+                .map(|f| self.eval(f).into_iter().collect())
+                .collect(),
+        };
         let is_start = q.get("isStart").and_then(Value::as_bool);
         // The cap face of an extrude here (not a copy's): only by its name, since a cap that
         // merged into the face the extrude started from leaves none (its corner is still there).
@@ -1544,6 +1601,42 @@ impl Model<'_> {
             corners.min_by(|a, b| dist(a.1).total_cmp(&dist(b.1)))
         };
         pick.map(|(p, v)| at(p, v))
+    }
+
+    /// The faces a fillet's or chamfer's corner (`BLEND_VERTEX`) is on: the face its operation
+    /// made from the edge it rounded (`blendedFrom`; the one next to both of that edge's
+    /// faces) and the faces the rounded edge ran into (`blendedInto`).
+    fn blend_vertex_faces(&self, q: &Value) -> Option<Vec<HashSet<Ent>>> {
+        if q.get("queryType")?.as_str()? != "BLEND_VERTEX" {
+            return None;
+        }
+        let op = self
+            .features
+            .get(op_feature(q.get("operationId")?.as_str()?))?
+            .0;
+        let from = q.get("blendedFrom")?;
+        let from = from.items().first().unwrap_or(from);
+        let sides: Vec<HashSet<Ent>> = edge_faces(from)?
+            .iter()
+            .map(|f| self.eval(f).into_iter().collect())
+            .collect();
+        let blend: HashSet<Ent> = self
+            .all_faces()
+            .filter(|f| {
+                self.face_names(*f)
+                    .iter()
+                    .any(|n| n.op == op && matches!(n.origin, FaceOrigin::FromEdge { .. }))
+            })
+            .filter(|f| {
+                let near = self.near(*f);
+                sides.iter().all(|s| s.iter().any(|x| near.contains(x)))
+            })
+            .collect();
+        let mut sets = vec![blend];
+        for into in q.get("blendedInto")?.items() {
+            sets.push(self.eval(into).into_iter().collect());
+        }
+        Some(sets)
     }
 
     pub fn edges(&self, q: &Value) -> Vec<EdgeRef> {

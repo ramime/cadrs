@@ -1712,7 +1712,9 @@ fn ball_centre(b: &Body, v: usize, r: f64) -> Option<P3> {
     Some(p + m.try_inverse()? * V3::new(-r, -r, -r))
 }
 
-/// Refuses a blend whose contact lines would leave the faces.
+/// Refuses a blend whose contact lines would leave the faces. A chamfer may (Onshape's does):
+/// its tool, the wedge between the edge and its contact lines, cuts away only what is there,
+/// so one wider than a wall is high runs on through the wall and out of the face beyond.
 fn check_fits(b: &Body, e: usize, kind: &dyn Fn(f64) -> SectionKind) -> Result<()> {
     let ed = &b.edges[e];
     let [s1, s2] = edge_sides(b, e)?;
@@ -1761,7 +1763,7 @@ fn check_fits(b: &Body, e: usize, kind: &dyn Fn(f64) -> SectionKind) -> Result<(
             }
         }
     }
-    if !(fits[0] && fits[1]) {
+    if !(fits[0] && fits[1]) && !matches!(kind(phi), SectionKind::Chamfer { .. }) {
         return Err(KernelError::TooLarge {
             op: "blend",
             why: "the blend is too large for the faces at the edge".into(),
@@ -1773,7 +1775,7 @@ fn check_fits(b: &Body, e: usize, kind: &dyn Fn(f64) -> SectionKind) -> Result<(
 /// Blends of two edges that share a flat face but no vertex must not overlap on it: the strips
 /// they take of it (from each edge into the face, as wide as its contact offset) may not meet.
 /// (Edges nearer than the two offsets can blend away from each other: the corners either side
-/// of a narrow hole.)
+/// of a narrow hole.) Chamfers may: their wedges cut away together, meeting in a ridge.
 fn check_overlaps(b: &Body, edges: &[EdgeBlend]) -> Result<()> {
     // Whether a point of the face lies inside the strip edge `e` takes of face `fi` (coedge
     // direction `fwd`), `w` wide: beside the edge, within the strip's width, short of its far
@@ -1821,7 +1823,7 @@ fn check_overlaps(b: &Body, edges: &[EdgeBlend]) -> Result<()> {
             | SectionKind::Curvature { r, .. } => {
                 (r / (theta / 2.0).tan(), r / (theta / 2.0).tan())
             }
-            SectionKind::Chamfer { d1, d2 } => (d1, d2),
+            SectionKind::Chamfer { .. } => continue,
             SectionKind::Asymmetric { r1, r2 } => {
                 (r1 / (theta / 2.0).tan(), r2 / (theta / 2.0).tan())
             }

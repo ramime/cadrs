@@ -105,6 +105,14 @@ pub(crate) fn items(
                 PlaneEntity::Plane(p) => crate::viewport::plane_label(features, *p),
                 PlaneEntity::Face(f) => format!("Face of {}", op_name(features, f.face.op)),
                 PlaneEntity::Edge(r) => edge_label(features, &r.edge),
+                PlaneEntity::EdgePoint { edge, t } => {
+                    let at = if (t - 0.5).abs() < 1e-9 {
+                        "Midpoint".to_string()
+                    } else {
+                        format!("Point at {:.0}%", t * 100.0)
+                    };
+                    format!("{at} of {}", edge_label(features, &edge.edge))
+                }
                 PlaneEntity::Vertex(v) => {
                     format!("Vertex of {}", op_name(features, v.vertex.faces[0].op))
                 }
