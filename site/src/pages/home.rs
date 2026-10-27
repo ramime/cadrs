@@ -1202,7 +1202,7 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                         class: None,
                     }}
                     <p class="max-w-3xl leading-6">
-                        "Licensed under MIT or Apache-2.0, at your option. cadrs is an independent project. It is not affiliated with, endorsed by or sponsored by PTC or Onshape. Onshape is a trademark of PTC Inc."
+                        "Licensed under MIT or Apache-2.0, at your option. cadrs is an independent project."
                     </p>
                 </div>
             </footer>
@@ -1299,7 +1299,7 @@ impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for HomePage {
 
             [Source code](https://github.com/rvdende/cadrs) · [Releases](https://github.com/rvdende/cadrs/releases) · [Issues](https://github.com/rvdende/cadrs/issues) · [Sponsor](https://github.com/sponsors/rvdende)
 
-            Licensed under MIT or Apache\-2\.0, at your option\. cadrs is an independent project\. It is not affiliated with, endorsed by or sponsored by PTC or Onshape\. Onshape is a trademark of PTC Inc\.
+            Licensed under MIT or Apache\-2\.0, at your option\. cadrs is an independent project\.
             "###
         }
         .render_md(cx)
