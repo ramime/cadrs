@@ -1230,9 +1230,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_iroh"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff09da1060bbe2ab3a52ae494d17f55ce75628d85d6ad18228b7d674790d9d6b"
+checksum = "4870527f7bd96145cacb8c8ed7051c88999fef5df863893046222c7ca0a7a836"
 dependencies = [
  "anyhow",
  "bevy",
@@ -2236,6 +2236,7 @@ dependencies = [
  "chrono",
  "directories",
  "flate2",
+ "icon-rs",
  "image",
  "nalgebra",
  "raw-window-handle",
@@ -4812,9 +4813,9 @@ dependencies = [
 
 [[package]]
 name = "icon-rs"
-version = "0.4.6"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "925077bb566e6524099bbb3e96bec3939e0711e2b42cc5ed83eb48fc5e5ce2dc"
+checksum = "599854ceda38afc54bf345d229348babbade4eed7258827937c56aa7c3fd67e8"
 
 [[package]]
 name = "icu_collections"

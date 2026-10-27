@@ -14,6 +14,10 @@ const PATIENCE: Duration = Duration::from_secs(30);
 const TOPIC: [u8; 32] = [42; 32];
 
 fn peer(name: &str) -> App {
+    peer_starting(name, true)
+}
+
+fn peer_starting(name: &str, autostart: bool) -> App {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
@@ -21,6 +25,7 @@ fn peer(name: &str) -> App {
             identity: None,
             display_name: name.into(),
             relays: Relays::Disabled,
+            autostart,
         },
     ));
     app
@@ -130,4 +135,33 @@ fn a_document_and_edits_travel_by_its_link_and_a_wrong_topic_is_refused() {
         fetch(&mut owner, &mut joiner, wrong),
         Err("Link sharing is off".into())
     );
+}
+
+#[test]
+fn an_owner_off_the_network_until_asked_serves_after_each_start() {
+    let mut owner = peer_starting("Owner", false);
+    let mut joiner = peer("Joiner");
+    let doc = Document::new("Bracket");
+    owner
+        .insert_resource(Shared(doc.clone()))
+        .add_systems(Update, serve);
+    owner.update();
+    assert!(
+        !owner.world().contains_resource::<Iroh>(),
+        "offline until asked"
+    );
+
+    for _ in 0..2 {
+        cadrs_net::start(owner.world_mut(), None, "Owner".into()).unwrap();
+        let link = ShareLink {
+            document: doc.id,
+            name: doc.name.clone(),
+            topic: TOPIC,
+            owner: owner.world().resource::<Iroh>().addr().unwrap(),
+        };
+        let welcome = fetch(&mut owner, &mut joiner, link).unwrap();
+        assert_eq!(welcome.snapshot.document, doc);
+        cadrs_net::stop(owner.world_mut());
+        assert!(!owner.world().contains_resource::<Iroh>());
+    }
 }

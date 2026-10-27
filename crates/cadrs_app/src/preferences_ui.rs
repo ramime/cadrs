@@ -14,6 +14,11 @@
 //!
 //! Below it, **AI assistants (MCP)**: the *Enable MCP server* switch and the endpoint it serves
 //! (`crate::mcp` starts and stops the server as OK changes it).
+//!
+//! Last, **Collaboration**: the cadrs ID while online, and *Connect when cadrs starts*
+//! (`autoconnect_p2p`, off by default: cadrs stays offline until the user connects,
+//! [`crate::network`]). It takes effect at the next start; the top bar's network button goes
+//! online or offline now.
 
 use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
@@ -170,6 +175,12 @@ pub fn set_mcp_enabled(world: &mut World, on: bool) {
     save(world);
 }
 
+/// Whether cadrs goes online as soon as it starts, saved (the network button's menu).
+pub fn set_autoconnect_p2p(world: &mut World, on: bool) {
+    world.resource_mut::<LocalPreferences>().0.autoconnect_p2p = on;
+    save(world);
+}
+
 /// Remembers that the user has seen "What's new" up to `edition`
 /// ([`crate::notifications::WHATS_NEW`]).
 pub(crate) fn mark_whats_new_seen(world: &mut World, edition: u32) {
@@ -221,6 +232,7 @@ pub fn open_preferences(world: &mut World) {
     let preset = world.resource::<LocalPreferences>().mouse();
     #[cfg(not(target_arch = "wasm32"))]
     let mcp = world.resource::<LocalPreferences>().0.mcp;
+    let autoconnect = world.resource::<LocalPreferences>().0.autoconnect_p2p;
     let snap = world
         .resource::<LocalPreferences>()
         .0
@@ -326,15 +338,17 @@ pub fn open_preferences(world: &mut World) {
                         None => {
                             r.spawn((
                                 Name::new("pref-cadrs-id"),
-                                t.text("Networking is off", t.font_base, FontWeight::NORMAL, t.muted_foreground),
+                                t.text("Shown while online", t.font_base, FontWeight::NORMAL, t.muted_foreground),
                             ));
                         }
                     }
                 });
+                b.spawn(form_row(t, "pref-p2p-row", "P2P networking", 150.0))
+                    .with_child(Switch::new("pref-p2p-autoconnect").label("Connect when cadrs starts").on(autoconnect).build(t));
                 b.spawn((
                     Name::new("pref-collab-note"),
                     t.text(
-                        "Documents are shared peer to peer, with no server. Give this ID to someone who wants to share a document with you.",
+                        "Documents are shared peer to peer, with no server, through iroh's relays. Off, cadrs stays offline until you connect with the network button in the top bar, or share. Give your cadrs ID to someone who wants to share a document with you.",
                         t.font_sm,
                         FontWeight::NORMAL,
                         t.muted_foreground,
@@ -382,7 +396,7 @@ fn on_preset_change(
     }
 }
 
-/// OK: the chosen preset, interface size and MCP switch are kept.
+/// OK: the chosen preset, interface size and the MCP and P2P switches are kept.
 fn save_preferences(world: &mut World) {
     let mut q = world.query_filtered::<Entity, With<PreferencesDialog>>();
     let Some(dialog) = q.iter(world).next() else {
@@ -441,6 +455,13 @@ fn save_preferences(world: &mut World) {
         .map(|(_, s)| s.on);
     if let Some(on) = mcp {
         world.resource_mut::<LocalPreferences>().0.mcp.enabled = on;
+    }
+    let autoconnect = qm
+        .iter(world)
+        .find(|(n, _)| n.as_str() == "pref-p2p-autoconnect")
+        .map(|(_, s)| s.on);
+    if let Some(on) = autoconnect {
+        world.resource_mut::<LocalPreferences>().0.autoconnect_p2p = on;
     }
     save(world);
     world.trigger(DialogClose { entity: dialog });

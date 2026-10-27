@@ -215,11 +215,18 @@ fn main() -> AppExit {
         app.insert_resource(cadrs_app::update::CheckForUpdates);
     }
     // Sharing and collaboration: only a person's own runs are a peer (`CADRS_NET=0` keeps
-    // one off the network). The identity lives with the documents, so each data dir is a peer.
-    // The identity in use (the account menu switches it) picks the key and the name.
-    if !scripted && !opts.headless && std::env::var_os("CADRS_NET").is_none_or(|v| v != "0") {
+    // one off the network for good). The identity lives with the documents, so each data dir
+    // is a peer. The identity in use (the account menu switches it) picks the key and the name.
+    // The node goes online at once only with the user's *Connect when cadrs starts*
+    // (`autoconnect_p2p`, off by default: issue #148) or `CADRS_NET=1`; otherwise when the
+    // user connects (the top bar's network button, or sharing).
+    let net = std::env::var("CADRS_NET").ok();
+    if !scripted && !opts.headless && net.as_deref() != Some("0") {
         let root = data_dir.clone().or_else(Store::default_root);
         let ids = root.as_deref().map(cadrs_app::identity::load);
+        let autoconnect = root
+            .as_deref()
+            .is_some_and(|r| cadrs_core::preferences::Preferences::load(r).autoconnect_p2p);
         app.add_plugins(cadrs_net::NetPlugin {
             identity: root.zip(ids.as_ref()).map(|(d, i)| i.key_path(&d)),
             display_name: ids.map_or_else(
@@ -227,6 +234,7 @@ fn main() -> AppExit {
                 |i| i.active().name.clone(),
             ),
             relays: Default::default(),
+            autostart: autoconnect || net.as_deref() == Some("1"),
         });
     }
     // A person's runs ask the system for files (issue #136); scripted and headless runs keep the

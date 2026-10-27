@@ -100,6 +100,36 @@ pub struct Presence {
     pub following: Option<String>,
 }
 
+/// Where someone's pointer is in the tab they are in: sent many times a second while it moves
+/// and every few seconds while it rests, so the others see it live. Peers from before it ignore
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Pointer {
+    pub document: DocumentId,
+    pub tab: ElementId,
+    /// `None` while the pointer is off the tab's view (over a panel, out of the window).
+    pub at: Option<PointerAt>,
+}
+
+/// A pointer position, in the units of what the tab shows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum PointerAt {
+    /// In a 3D view: the model point (mm) on the part under it, else on the ground grid.
+    Model([f32; 3]),
+    /// On a 2D view of a PCB Studio: the board or component (`EdaOf`), the view's mode (the
+    /// app's code for schematic, layout, symbol or footprint) and the design point (nm).
+    Design { of: EdaOf, mode: u8, at: [i64; 2] },
+    /// On a drawing's sheet (its id) at a sheet point (mm).
+    Sheet { sheet: u128, at: [f32; 2] },
+}
+
+/// What a PCB Studio's 2D view shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EdaOf {
+    Board(u64),
+    Component(u64),
+}
+
 /// A 3D view as it travels: orientation, centre, zoom, projection and render mode.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct View {
@@ -168,7 +198,8 @@ pub(crate) fn register(app: &mut App) {
         .add_net_message::<Presence>()
         .add_net_message::<CommentChanged>()
         .add_net_message::<VersionCreated>()
-        .add_net_message::<LocksChanged>();
+        .add_net_message::<LocksChanged>()
+        .add_net_message::<Pointer>();
 }
 
 /// The owner's room for a document shared in `topic`: always the same topic, so links keep

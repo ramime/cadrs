@@ -527,6 +527,8 @@ fn top_bar(root: &mut ChildSpawnerCommands, t: &Theme, doc_name: &str, profile: 
         })
         .with_children(|r| {
             crate::update::spawn_version(r, t);
+            // Online or not (`crate::network`).
+            crate::network::spawn_button(r, t);
             // Light, dark or the system's scheme.
             r.spawn((
                 cadrs_ui::scheme_toggle(t),

@@ -9,8 +9,11 @@
 //!
 //! The **color scheme** ([`ColorScheme`]): light, dark, or whatever the system uses.
 //!
-//! And the **MCP server** ([`McpPreferences`]): whether AI assistants may drive the app over
+//! The **MCP server** ([`McpPreferences`]): whether AI assistants may drive the app over
 //! the Model Context Protocol, and on which loopback port.
+//!
+//! And whether cadrs goes online for sharing as soon as it starts
+//! ([`Preferences::autoconnect_p2p`], off unless the user turns it on).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -306,6 +309,10 @@ pub struct Preferences {
     /// The last edition of the app's "What's new" notice the user has seen.
     #[serde(default)]
     pub whats_new_seen: u32,
+    /// Go online for sharing and collaboration (peer to peer, through iroh's relays) as soon
+    /// as cadrs starts. Off, cadrs stays off the network until the user connects (issue #148).
+    #[serde(default)]
+    pub autoconnect_p2p: bool,
 }
 
 fn default_rotation_snap_degrees() -> f64 {
@@ -325,6 +332,7 @@ impl Default for Preferences {
             ui_scale: 100,
             color_scheme: ColorScheme::default(),
             whats_new_seen: 0,
+            autoconnect_p2p: false,
         }
     }
 }
@@ -508,10 +516,11 @@ mod tests {
             ui_scale: 125,
             color_scheme: ColorScheme::Dark,
             whats_new_seen: 1,
+            autoconnect_p2p: true,
         };
         p.save(&dir).unwrap();
         assert_eq!(Preferences::load(&dir), p);
-        // A file from before the MCP server reads with it off.
+        // A file from before the MCP server (and P2P's switch) reads with both off.
         cadrs_fs::write(Preferences::path(&dir), "(mouse: Creo)").unwrap();
         assert_eq!(
             Preferences::load(&dir),

@@ -39,9 +39,11 @@ const HEARTBEAT: f64 = 4.0;
 /// Someone not heard from this long is gone.
 const FORGET_AFTER: f64 = 15.0;
 
-/// Collaborator colours, as Onshape's social cues: strong enough to tell apart at a dot.
+/// Collaborator colours, as Onshape's social cues: strong enough to tell apart at a dot, and
+/// none the app's own (its teal accent, the selection's orange), so a person never reads as a
+/// control or a selection.
 const PALETTE: [&str; 8] = [
-    "#2f80ed", "#eb5757", "#27ae60", "#f2994a", "#9b51e0", "#00a3a3", "#d6409f", "#b8860b",
+    "#2f80ed", "#e53935", "#2e7d32", "#8e24aa", "#d81b60", "#3949ab", "#6d4c41", "#546e7a",
 ];
 
 pub(super) fn plugin(app: &mut App) {
@@ -55,7 +57,13 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             Update,
-            (sync_people_bar, sync_markers, sync_follow_outline).after(follow),
+            (
+                sync_people_bar,
+                sync_markers,
+                sync_follow_outline,
+                colour_own_avatar,
+            )
+                .after(follow),
         )
         .add_observer(on_avatar_double_click)
         .add_observer(on_voice_button)
@@ -103,7 +111,13 @@ impl Person {
 pub struct People {
     document: Option<DocumentId>,
     pub by_id: BTreeMap<String, Person>,
+    /// When this document's room was first heard from: who is there by then was already
+    /// there ("is here"), anyone after it joined.
+    since: f64,
 }
+
+/// How long after opening a shared document the people heard were already there.
+const ALREADY_THERE: f64 = 3.0;
 
 /// Voice in the top bar (`super::voice` fills it when voice is built in): whether it is,
 /// whether this user joined and is muted, who is speaking (cadrs IDs), and what the buttons
@@ -147,6 +161,8 @@ fn hear(
     live: Option<Res<Live>>,
     mut people: ResMut<People>,
     time: Res<Time<Real>>,
+    theme: Res<Theme>,
+    mut commands: Commands,
 ) {
     let t = time.elapsed_secs_f64();
     let Some(live) = live else {
@@ -161,11 +177,21 @@ fn hear(
         *people = People {
             document: Some(live.document),
             by_id: BTreeMap::new(),
+            since: t,
         };
     }
+    let mut toasts = Vec::new();
     for m in rx.read() {
         if m.msg.document != live.document {
             continue;
+        }
+        if !people.by_id.contains_key(&m.from.to_string()) {
+            let how = if t - people.since < ALREADY_THERE {
+                "is here"
+            } else {
+                "joined"
+            };
+            toasts.push(format!("{} {how}", m.msg.name));
         }
         people.by_id.insert(
             m.from.to_string(),
@@ -177,8 +203,10 @@ fn hear(
         );
     }
     for l in left.read() {
-        if l.room == live.room() {
-            people.by_id.remove(&l.id.to_string());
+        if l.room == live.room()
+            && let Some(p) = people.by_id.remove(&l.id.to_string())
+        {
+            toasts.push(format!("{} left", p.presence.name));
         }
     }
     let stale: Vec<String> = people
@@ -188,7 +216,12 @@ fn hear(
         .map(|(k, _)| k.clone())
         .collect();
     for k in stale {
-        people.by_id.remove(&k);
+        if let Some(p) = people.by_id.remove(&k) {
+            toasts.push(format!("{} left", p.presence.name));
+        }
+    }
+    for text in toasts {
+        cadrs_ui::show_toast(&mut commands, &theme, text);
     }
 }
 
@@ -224,7 +257,7 @@ fn view_of(v: &ViewState) -> View {
     }
 }
 
-fn view_state(v: &View) -> ViewState {
+pub(super) fn view_state(v: &View) -> ViewState {
     ViewState {
         azimuth: v.azimuth,
         elevation: v.elevation,
@@ -381,15 +414,42 @@ fn describe(doc: &ActiveDocument, p: &Presence) -> String {
     if let Some(e) = p.tab.and_then(|t| doc.doc.element(t)) {
         text.push_str(&format!(" · in {}", e.name));
     }
-    if let Some((e, f)) = p.editing
-        && let Some(f) = doc
-            .doc
-            .element(e)
-            .and_then(|e| e.features().iter().find(|x| x.id == f))
-    {
-        text.push_str(&format!(", editing {}", f.name));
+    if let Some(f) = editing_name(doc, p) {
+        text.push_str(&format!(", editing {f}"));
     }
     text
+}
+
+/// The name of the feature someone has open (its dialog or sketch).
+pub(super) fn editing_name(doc: &ActiveDocument, p: &Presence) -> Option<String> {
+    let (e, f) = p.editing?;
+    let f = doc.doc.element(e)?.features().iter().find(|x| x.id == f)?;
+    Some(f.name.clone())
+}
+
+/// This user's own avatar in the top bar, while online: in the colour the others see them in
+/// (their cadrs ID's), not the one picked from their name.
+fn colour_own_avatar(
+    iroh: Option<Res<Iroh>>,
+    mut avatars: Query<(&Name, &mut BackgroundColor)>,
+    added: Query<(), Added<Name>>,
+    mut last: Local<Option<String>>,
+    profile: Res<crate::UserProfile>,
+) {
+    let me = iroh.map(|i| i.id().to_string());
+    if *last == me && added.is_empty() {
+        return;
+    }
+    let want = me.as_deref().map_or_else(
+        || cadrs_ui::Avatar::color_for(&profile.display_name),
+        color_of,
+    );
+    for (name, mut bg) in &mut avatars {
+        if name.as_str() == "identity-avatar" && bg.0 != want {
+            bg.0 = want;
+        }
+    }
+    *last = me;
 }
 
 #[allow(clippy::too_many_arguments)]
