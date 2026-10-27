@@ -32,7 +32,7 @@ use cadrs_ui::{
     Button, DialogClose, NumberField, NumberFieldCommit, NumberFieldEdit, NumberFieldState, Select,
     SelectChange, SelectState, SelectableText, SwitchState, form_row,
 };
-// The MCP server's switch (not in a page).
+// The MCP server's and P2P networking's switches (not in a page).
 #[cfg(not(target_arch = "wasm32"))]
 use cadrs_ui::Switch;
 
@@ -232,6 +232,7 @@ pub fn open_preferences(world: &mut World) {
     let preset = world.resource::<LocalPreferences>().mouse();
     #[cfg(not(target_arch = "wasm32"))]
     let mcp = world.resource::<LocalPreferences>().0.mcp;
+    #[cfg(not(target_arch = "wasm32"))]
     let autoconnect = world.resource::<LocalPreferences>().0.autoconnect_p2p;
     let snap = world
         .resource::<LocalPreferences>()
@@ -343,6 +344,8 @@ pub fn open_preferences(world: &mut World) {
                         }
                     }
                 });
+                // A page has no network to connect to.
+                #[cfg(not(target_arch = "wasm32"))]
                 b.spawn(form_row(t, "pref-p2p-row", "P2P networking", 150.0))
                     .with_child(Switch::new("pref-p2p-autoconnect").label("Connect when cadrs starts").on(autoconnect).build(t));
                 b.spawn((
