@@ -210,6 +210,14 @@ fn main() -> AppExit {
             relays: Default::default(),
         });
     }
+    // A person's runs ask the system for files (issue #136); scripted and headless runs keep the
+    // in-app picker, which a scenario can drive. `CADRS_NATIVE_DIALOGS=0` keeps it too.
+    if !scripted
+        && !opts.headless
+        && std::env::var_os("CADRS_NATIVE_DIALOGS").is_none_or(|v| v != "0")
+    {
+        app.insert_resource(cadrs_ui::file_picker::NativeFileDialogs(true));
+    }
     if scripted || opts.headless {
         // The same light (or `CADRS_COLOR_SCHEME`) look on every machine.
         app.insert_resource(cadrs_ui::Appearance::without_system());

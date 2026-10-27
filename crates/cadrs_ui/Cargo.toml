@@ -10,6 +10,10 @@ bevy.workspace = true
 # Icons at sizes not built in (a UI scale, a high-DPI screen), rendered like `build.rs` does.
 resvg.workspace = true
 icon-rs.workspace = true
+# The system's file dialogs and the user's folders (`file_picker`).
+rfd.workspace = true
+directories.workspace = true
+raw-window-handle.workspace = true
 
 [build-dependencies]
 resvg.workspace = true
