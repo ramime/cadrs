@@ -60,6 +60,11 @@ pub struct Scenario {
     /// scenario fails.
     #[serde(default = "default_timeout")]
     pub timeout: f32,
+    /// The window's size in logical px, `(width, height)`, when the scenario needs one other
+    /// than 1600×1000: a small screen, or a large UI scale on one (`(800, 500)` is 1600×1000 at
+    /// 200%). `--window-size` overrides it.
+    #[serde(default)]
+    pub window_size: Option<(u32, u32)>,
     pub steps: Vec<Step>,
 }
 

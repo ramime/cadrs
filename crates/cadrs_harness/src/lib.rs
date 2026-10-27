@@ -45,6 +45,8 @@ pub struct HarnessOptions {
     pub headless: bool,
     pub scenario: Option<String>,
     pub size: UVec2,
+    /// Whether `--window-size` gave [`Self::size`] (over a scenario's own `window_size`).
+    pub size_given: bool,
     /// Where screenshots go; defaults to `target/scenarios/<name>/` in the workspace.
     pub out_dir: Option<PathBuf>,
     /// Where documents are stored (`--data-dir`). Scenarios default to a fresh
@@ -63,6 +65,7 @@ impl Default for HarnessOptions {
             headless: false,
             scenario: None,
             size: UVec2::new(1600, 1000),
+            size_given: false,
             out_dir: None,
             data_dir: None,
             no_cursor: false,
@@ -90,6 +93,7 @@ impl HarnessOptions {
                     let w: u32 = w.parse().map_err(|_| format!("bad width in {v:?}"))?;
                     let h: u32 = h.parse().map_err(|_| format!("bad height in {v:?}"))?;
                     o.size = UVec2::new(w.max(64), h.max(64));
+                    o.size_given = true;
                 }
                 "--out" => o.out_dir = Some(args.next().ok_or("--out needs a directory")?.into()),
                 "--data-dir" => {
@@ -108,8 +112,9 @@ impl HarnessOptions {
         Ok(o)
     }
 
-    /// Loads `scenarios/<name>.ron` (the name may also be a path to a `.ron` file).
-    pub fn load_scenario(&self) -> Result<Option<Scenario>, String> {
+    /// Loads `scenarios/<name>.ron` (the name may also be a path to a `.ron` file). The run
+    /// takes the scenario's `window_size`, unless `--window-size` gave one.
+    pub fn load_scenario(&mut self) -> Result<Option<Scenario>, String> {
         let Some(name) = &self.scenario else {
             return Ok(None);
         };
@@ -118,7 +123,13 @@ impl HarnessOptions {
         } else {
             scenario::scenarios_dir().join(format!("{name}.ron"))
         };
-        Scenario::load(&path).map(Some)
+        let scenario = Scenario::load(&path)?;
+        if let Some((w, h)) = scenario.window_size
+            && !self.size_given
+        {
+            self.size = UVec2::new(w.max(64), h.max(64));
+        }
+        Ok(Some(scenario))
     }
 
     fn scenario_name(&self) -> String {

@@ -418,6 +418,12 @@ fn golden_keyboard_shortcuts() {
 
 #[test]
 #[ignore = "headless screenshots; run with: cargo test -r -p cadrs -F app-tests --test golden -- --ignored"]
+fn golden_preferences_scroll() {
+    run_scenario("preferences_scroll");
+}
+
+#[test]
+#[ignore = "headless screenshots; run with: cargo test -r -p cadrs -F app-tests --test golden -- --ignored"]
 fn golden_cursors_tooltips() {
     run_scenario("cursors_tooltips");
 }

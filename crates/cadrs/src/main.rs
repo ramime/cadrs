@@ -141,7 +141,7 @@ fn main() -> AppExit {
             }
         };
     }
-    let opts = match HarnessOptions::from_args(args) {
+    let mut opts = match HarnessOptions::from_args(args) {
         Ok(o) => o,
         Err(e) => {
             // The harness's own usage line knows only the app's options: point to all of them.
