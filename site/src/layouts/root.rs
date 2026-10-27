@@ -50,6 +50,7 @@ where
                         <meta name="color-scheme" content="light dark" />
                         <meta name="description" content={description} />
                         <meta name="theme-color" content="#1d4fb8" />
+                        <meta name="vibetrend-verify" content="vt-05ddd28bae9121b79d74bde2" />
                         {StaticRaw(crate::theme::THEME_SCRIPT)}
                         {StaticRaw(crate::github::STARS_SCRIPT)}
                         {StaticRaw(crate::pages::home::RELEASE_SCRIPT)}
