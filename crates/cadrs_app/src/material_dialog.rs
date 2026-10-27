@@ -875,18 +875,35 @@ fn material_dialog(t: &Theme, s: &MaterialSession, units: Units) -> impl Bundle 
                                 .height(24.0)
                                 .build(t),
                         );
-                        pop.spawn((
-                            Name::new("material-list"),
-                            MaterialList,
-                            Node {
-                                flex_direction: FlexDirection::Column,
-                                max_height: Val::Px(176.0),
-                                overflow: Overflow::scroll_y(),
-                                ..default()
-                            },
-                            list_scroll(&s),
-                        ))
-                        .with_children(|l| spawn_list(l, t, &s));
+                        // The list scrolls with the wheel and its scrollbar (it holds more
+                        // materials than its eight rows show).
+                        pop.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            ..default()
+                        })
+                        .with_children(|frame| {
+                            let list = frame
+                                .spawn((
+                                    Name::new("material-list"),
+                                    MaterialList,
+                                    cadrs_ui::WheelScroll,
+                                    cadrs_ui::scrollbar::ScrollGutter(12.0),
+                                    Node {
+                                        flex_direction: FlexDirection::Column,
+                                        max_height: Val::Px(176.0),
+                                        overflow: Overflow::scroll_y(),
+                                        ..default()
+                                    },
+                                    list_scroll(&s),
+                                ))
+                                .with_children(|l| spawn_list(l, t, &s))
+                                .id();
+                            frame.spawn(cadrs_ui::vertical_scrollbar(
+                                t,
+                                "material-list-scrollbar",
+                                list,
+                            ));
+                        });
                     });
                     c.spawn((
                         Name::new("material-props"),
@@ -1125,5 +1142,39 @@ mod tests {
     fn slugs() {
         assert_eq!(slug("Aluminum - 6061"), "aluminum-6061");
         assert_eq!(slug("Nylon 6/6"), "nylon-6-6");
+    }
+
+    /// The material list holds more than its eight rows show: the wheel and a scrollbar scroll
+    /// it (it stopped at Brass before), and every library material is in it.
+    #[test]
+    fn the_material_list_scrolls_to_every_material() {
+        let s = MaterialSession {
+            element: ElementId::new(),
+            parts: Vec::new(),
+            tab: 0,
+            chosen: None,
+            query: String::new(),
+            open: true,
+            custom: Material::custom("Custom material", 1000.0),
+            has_material: false,
+            library: 0,
+            libraries: Vec::new(),
+            owners: Vec::new(),
+        };
+        let mut world = World::new();
+        world.spawn(material_dialog(
+            &Theme::default(),
+            &s,
+            Units::new(LengthUnit::Millimeter, 3),
+        ));
+        let list = world
+            .query_filtered::<Entity, With<MaterialList>>()
+            .single(&world)
+            .unwrap();
+        assert!(world.get::<cadrs_ui::WheelScroll>(list).is_some());
+        let mut bars = world.query::<&cadrs_ui::scrollbar::SlimScrollbar>();
+        assert!(bars.iter(&world).any(|b| b.target == list));
+        assert_eq!(search(&s).len(), material::search("").len());
+        assert!(search(&s).iter().any(|m| m == "Titanium - Ti-6Al-4V"));
     }
 }
