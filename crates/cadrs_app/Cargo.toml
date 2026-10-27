@@ -40,7 +40,7 @@ winit.workspace = true
 ureq.workspace = true
 flate2.workspace = true
 tar.workspace = true
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client.workspace = true

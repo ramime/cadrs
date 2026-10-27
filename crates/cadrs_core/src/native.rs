@@ -110,7 +110,7 @@ pub fn import(
         let mut total = 0u64;
         for i in 0..zip.len() {
             let entry = zip.by_index(i).map_err(|e| e.to_string())?;
-            let name = entry.name().to_string();
+            let name = entry.name().map_err(|e| e.to_string())?.to_string();
             if name.contains('\\')
                 || name.split('/').any(|s| s == ".." || s == ".")
                 || entry.enclosed_name().is_none()

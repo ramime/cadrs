@@ -34,8 +34,9 @@ fn rewrite(source: &Path, dest: &Path, edit: impl Fn(&str, Vec<u8>) -> Option<Ve
         let mut entry = zip.by_index(i).unwrap();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
-        if let Some(bytes) = edit(entry.name(), bytes) {
-            out.start_file(entry.name(), zip::write::SimpleFileOptions::default())
+        let name = entry.name().unwrap().into_owned();
+        if let Some(bytes) = edit(&name, bytes) {
+            out.start_file(name, zip::write::SimpleFileOptions::default())
                 .unwrap();
             out.write_all(&bytes).unwrap();
         }
