@@ -65,6 +65,8 @@ pub struct Notification {
     at: Option<Vec2>,
     /// The widest it gets (px); a longer message is cut with "…" (the whole of it in a tooltip).
     max_width: Option<f32>,
+    /// A person's avatar (their name and colour) in place of the icon: news about them.
+    avatar: Option<(String, Color)>,
 }
 
 impl Notification {
@@ -80,6 +82,7 @@ impl Notification {
             name: "toast".into(),
             at: None,
             max_width: None,
+            avatar: None,
         }
     }
 
@@ -135,6 +138,12 @@ impl Notification {
     }
 
     /// Shows the ✕ (default true).
+    /// News about a person: their avatar (initials on their colour) in place of the icon.
+    pub fn avatar(mut self, user: impl Into<String>, color: Color) -> Self {
+        self.avatar = Some((user.into(), color));
+        self
+    }
+
     pub fn closable(mut self, c: bool) -> Self {
         self.closable = c;
         self
@@ -192,6 +201,7 @@ pub fn show_notification(commands: &mut Commands, theme: &Theme, n: Notification
     let at = n.at;
     let max_width = n.max_width;
     let error = n.error;
+    let avatar = n.avatar.clone();
     let (background, border, icon_name, icon_color, foreground) = if error {
         (
             Color::srgb_u8(0xfd, 0xec, 0xec),
@@ -271,9 +281,23 @@ pub fn show_notification(commands: &mut Commands, theme: &Theme, n: Notification
             GlobalZIndex(z::TOOLTIP),
         ))
         .with_children(|p| {
-            p.spawn((icon(icon_name, 16.0, icon_color), Pickable::IGNORE))
-                .entry::<Node>()
-                .and_modify(|mut n| n.flex_shrink = 0.0);
+            match avatar {
+                Some((user, color)) => {
+                    p.spawn((
+                        crate::avatar::Avatar::new("toast-avatar", user)
+                            .size(20.0)
+                            .color(color)
+                            .build(&t),
+                        crate::color_scheme::KeepFill,
+                        Pickable::IGNORE,
+                    ));
+                }
+                None => {
+                    p.spawn((icon(icon_name, 16.0, icon_color), Pickable::IGNORE))
+                        .entry::<Node>()
+                        .and_modify(|mut n| n.flex_shrink = 0.0);
+                }
+            }
             let mut text = p.spawn((
                 Name::new("toast-message"),
                 t.text(

@@ -620,7 +620,7 @@ pub(crate) fn navigate(
     mut pointer: ResMut<EdaPointer>,
     mut clicks: MessageWriter<EdaClick>,
     (mut last_press, mut right_press): Presses,
-    time: Res<Time>,
+    (time, live): (Res<Time>, Option<Res<crate::collab::live::Live>>),
     layout: Res<layout_tools::LayoutState>,
     mut ui: ResMut<EdaUi>,
     mut commands: Commands,
@@ -640,6 +640,8 @@ pub(crate) fn navigate(
     let local = |c: Vec2| [(c.x - rect.0.min.x) as f64, (c.y - rect.0.min.y) as f64];
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    // Alt+click in a shared document: "look here" (`collab::pointers::ping`), not a click.
+    let pings = live.is_some() && keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
     for input in events {
         let pos = input.location.position;
         match input.action {
@@ -659,6 +661,11 @@ pub(crate) fn navigate(
                     if b == PointerButton::Secondary {
                         *right_press = Some(pos);
                     }
+                }
+                PointerButton::Primary if over && pings => {
+                    commands.queue(|world: &mut World| {
+                        crate::collab::pointers::ping(world);
+                    });
                 }
                 PointerButton::Primary if over => {
                     let at = view.to_design_pt(local(pos));
@@ -686,11 +693,13 @@ pub(crate) fn navigate(
                         });
                     }
                 }
-                PointerButton::Primary => {
+                PointerButton::Primary if !pings => {
                     clicks.write(EdaClick::Release {
                         at: view.to_design_pt(local(pos)),
                     });
                 }
+                // A ping's release.
+                PointerButton::Primary => {}
             },
             PointerAction::Scroll { unit, y, .. } if over => {
                 let lines = match unit {

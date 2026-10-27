@@ -246,6 +246,8 @@ fn hear(
         }
     }
     let mut toasts = Vec::new();
+    // Who joined (not who was already here): their toast offers Follow and Go to.
+    let mut joined: Vec<(String, String, String)> = Vec::new();
     for m in rx.read() {
         if m.msg.document != live.document {
             continue;
@@ -261,10 +263,11 @@ fn hear(
                 .msg
                 .tab
                 .and_then(|t| doc.as_ref()?.doc.element(t).map(|e| e.name.clone()));
-            toasts.push(match at {
+            let text = match at {
                 Some(at) => format!("{} {how}, in {at}", m.msg.name),
                 None => format!("{} {how}", m.msg.name),
-            });
+            };
+            joined.push((m.from.to_string(), m.msg.name.clone(), text));
         }
         let before = people.by_id.get(&m.from.to_string());
         // Someone starting (or stopping) to follow this user says so.
@@ -273,9 +276,13 @@ fn hear(
         };
         let (was, is) = (follows(before.map(|b| &b.presence)), follows(Some(&m.msg)));
         if is && !was {
-            toasts.push(format!("{} is following you", m.msg.name));
+            toasts.push((m.from.to_string(), m.msg.name.clone(), "is following you"));
         } else if was && !is {
-            toasts.push(format!("{} stopped following you", m.msg.name));
+            toasts.push((
+                m.from.to_string(),
+                m.msg.name.clone(),
+                "stopped following you",
+            ));
         }
         let active = match before {
             Some(b) if b.presence == m.msg => b.active,
@@ -296,7 +303,7 @@ fn hear(
             && let Some(p) = people.by_id.remove(&l.id.to_string())
         {
             people.doing.remove(&l.id.to_string());
-            toasts.push(format!("{} left", p.presence.name));
+            toasts.push((p.key(), p.presence.name, "left"));
         }
     }
     let stale: Vec<String> = people
@@ -308,11 +315,51 @@ fn hear(
     for k in stale {
         people.doing.remove(&k);
         if let Some(p) = people.by_id.remove(&k) {
-            toasts.push(format!("{} left", p.presence.name));
+            toasts.push((k, p.presence.name, "left"));
         }
     }
-    for text in toasts {
-        cadrs_ui::show_toast(&mut commands, &theme, text);
+    for (id, name, what) in toasts {
+        cadrs_ui::show_notification(
+            &mut commands,
+            &theme,
+            cadrs_ui::Notification::info(format!("{name} {what}"))
+                .name("collab-person-toast")
+                .avatar(name, color_of(&id)),
+        );
+    }
+    for (id, name, text) in joined {
+        let toast = cadrs_ui::show_notification(
+            &mut commands,
+            &theme,
+            cadrs_ui::Notification::info(text)
+                .name("collab-joined-toast")
+                .avatar(name, color_of(&id))
+                .seconds(8.0),
+        );
+        let short: String = id.chars().take(8).collect();
+        for (action, label) in [("goto", "Go to"), ("follow", "Follow")] {
+            let link = cadrs_ui::toast_action(
+                &mut commands,
+                &theme,
+                toast,
+                format!("collab-joined-{action}-{short}"),
+                label,
+            );
+            let id = id.clone();
+            commands.entity(link).observe(
+                move |_: On<bevy::ui_widgets::Activate>, mut commands: Commands| {
+                    let id = id.clone();
+                    commands.queue(move |w: &mut World| {
+                        cadrs_ui::close_toasts(w);
+                        if action == "follow" {
+                            toggle_follow(w, id);
+                        } else {
+                            go_to(w, &id);
+                        }
+                    });
+                },
+            );
+        }
     }
 }
 
@@ -484,11 +531,58 @@ fn doing_now(world: &World) -> String {
             return w.into();
         }
     }
-    selected(
-        world
-            .get_resource::<crate::viewport::Selection>()
-            .map_or(0, |s| s.0.len()),
-    )
+    world
+        .get_resource::<crate::viewport::Selection>()
+        .map_or_else(String::new, |s| selection_words(world, &s.0))
+}
+
+/// What is selected, in a few words: one thing by name ("Face of Extrude 1", "Part 1"), else
+/// how many of each ("2 faces, 1 edge").
+fn selection_words(world: &World, picks: &[crate::viewport::Pick]) -> String {
+    use crate::viewport::Pick;
+    if let [one] = picks {
+        let doc = world.get_resource::<ActiveDocument>();
+        let features = doc
+            .and_then(|d| d.active.and_then(|t| d.doc.element(t)))
+            .map(|e| e.features())
+            .unwrap_or_default();
+        let named = match one {
+            Pick::Feature(f) => features.iter().find(|x| x.id == *f).map(|x| x.name.clone()),
+            p => {
+                crate::parts::pick_label(features, world.resource::<crate::parts::PartCache>(), *p)
+            }
+        };
+        if let Some(n) = named {
+            return n;
+        }
+    }
+    let mut counts: Vec<(&str, &str, usize)> = Vec::new();
+    for p in picks {
+        let (one, many) = match p {
+            Pick::Face(..) => ("face", "faces"),
+            Pick::Edge(..) => ("edge", "edges"),
+            Pick::Vertex(..) | Pick::SketchPoint(..) => ("vertex", "vertices"),
+            Pick::Part(..) => ("part", "parts"),
+            Pick::Feature(..) => ("feature", "features"),
+            Pick::Plane(..) => ("plane", "planes"),
+            _ => ("item", "items"),
+        };
+        match counts.iter_mut().find(|c| c.0 == one) {
+            Some(c) => c.2 += 1,
+            None => counts.push((one, many, 1)),
+        }
+    }
+    counts
+        .iter()
+        .map(|(one, many, n)| {
+            if *n == 1 {
+                format!("1 {one}")
+            } else {
+                format!("{n} {many}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The plane of the sketch this user has open, as it travels.
@@ -1117,8 +1211,9 @@ fn on_avatar_click(ev: On<Pointer<Click>>, q: Query<&PersonAvatar>, mut commands
                 .icon("visible")
                 .tooltip("See their tab and their view as they move")
         };
+        // Beside the avatar, not under it: the view cube sits below the top bar's right end.
         let menu = cadrs_ui::Menu::new("collab-person-menu")
-            .align_end()
+            .side(bevy::ui_widgets::popover::PopoverSide::Left)
             .min_width(240.0)
             .header(header)
             .separator()

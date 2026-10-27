@@ -66,6 +66,8 @@ pub(super) fn plugin(app: &mut App) {
         .init_gizmo_group::<CollabGizmos>()
         .init_gizmo_group::<CollabHiddenGizmos>()
         .init_gizmo_group::<CollabPickGizmos>()
+        .init_gizmo_group::<CollabGazeGizmos>()
+        .add_observer(on_edge_chip_click)
         .add_systems(Startup, configure_gizmos)
         .add_systems(
             Update,
@@ -74,6 +76,7 @@ pub(super) fn plugin(app: &mut App) {
                 (
                     smooth,
                     sync_badges,
+                    sync_edge_chips,
                     sync_overlays,
                     draw_gizmos,
                     sync_pick_tints,
@@ -92,9 +95,15 @@ pub struct CollabGizmos;
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct CollabHiddenGizmos;
 
-/// What a collaborator has selected: its outlines, wide, over the part's own edges.
+/// What a collaborator has selected, and what they are drawing: wide, over the part's own
+/// edges.
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct CollabPickGizmos;
+
+/// The line from a collaborator's camera to their pointer: dotted and faint, so it never reads
+/// as something drawn.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct CollabGazeGizmos;
 
 fn configure_gizmos(mut store: ResMut<GizmoConfigStore>) {
     let (config, _) = store.config_mut::<CollabGizmos>();
@@ -106,6 +115,9 @@ fn configure_gizmos(mut store: ResMut<GizmoConfigStore>) {
     let (config, _) = store.config_mut::<CollabPickGizmos>();
     config.line.width = 4.0;
     config.depth_bias = -0.02;
+    let (config, _) = store.config_mut::<CollabGazeGizmos>();
+    config.line.width = 1.5;
+    config.line.style = GizmoLineStyle::Dotted;
 }
 
 /// Someone else's pointer.
@@ -717,7 +729,7 @@ fn label_of(people: &People, doc: Option<&ActiveDocument>, id: &str) -> String {
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn sync_badges(
-    pointers: Res<Pointers>,
+    (pointers, pings): (Res<Pointers>, Res<Pings>),
     people: Res<People>,
     (doc, kind, eda, eda_ui, drawing): (
         Option<Res<ActiveDocument>>,
@@ -767,10 +779,17 @@ fn sync_badges(
         return;
     };
 
-    // The pointers.
+    // The pointers (not while their ping shows there: it says "look here" in their place).
+    let pinging: Vec<&str> = pings
+        .0
+        .iter()
+        .filter(|(_, tab, at, _)| here.screen(*tab, *at).is_some())
+        .map(|(id, ..)| id.as_str())
+        .collect();
     let mut want: BTreeMap<&str, (Vec2, bool)> = BTreeMap::new();
     for (id, r) in &pointers.by_id {
         if !r.idle(t)
+            && !pinging.contains(&id.as_str())
             && let Some(at) = r.shown
             && let Some(s) = here.screen(r.tab, at)
         {
@@ -890,72 +909,253 @@ fn segment(a: Vec2, b: Vec2, width: f32, color: Color) -> impl Bundle {
     )
 }
 
-/// A collaborator's pointer beyond the view's edge: their initials there, an arrow pointing
-/// out toward it.
-fn edge_chip(t: &Theme, id: &str, name: &str, at: Vec2) -> impl Bundle {
+/// How far in from the view's edges an edge chip sits (px).
+const EDGE_INSET: f32 = 60.0;
+
+/// Where a point beyond the view's edge shows: on the view's border inset by [`EDGE_INSET`],
+/// toward it; and the direction to it.
+fn edge_point(rect: Rect, p: Vec2) -> Option<(Vec2, Vec2)> {
+    let inset = rect.inflate(-EDGE_INSET);
+    if inset.width() <= 0.0 || inset.height() <= 0.0 {
+        return None;
+    }
+    let c = inset.center();
+    let d = p - c;
+    let reach = |half: f32, d: f32| {
+        if d.abs() > 1e-3 {
+            half / d.abs()
+        } else {
+            f32::MAX
+        }
+    };
+    let k = reach(inset.half_size().x, d.x).min(reach(inset.half_size().y, d.y));
+    Some((c + d * k, d.normalize_or_zero()))
+}
+
+/// A collaborator's pointer beyond the view's edge: their chip and label there, an arrow toward
+/// it; a click takes the view to it. Whose, and what its label says.
+#[derive(Component)]
+struct EdgeChip {
+    id: String,
+    label: String,
+}
+
+/// The arrow of an [`EdgeChip`].
+#[derive(Component)]
+struct EdgeArrow;
+
+fn edge_chip(t: &Theme, id: &str, name: &str, label: &str) -> impl Bundle {
     let color = color_of(id);
     let short: String = id.chars().take(8).collect();
     (
-        Overlay,
         Name::new(format!("collab-edge-{short}")),
+        EdgeChip {
+            id: id.to_string(),
+            label: label.to_string(),
+        },
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(at.x - 18.0),
-            top: Val::Px(at.y - 18.0),
-            width: Val::Px(36.0),
-            height: Val::Px(36.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
+            width: Val::Px(0.0),
+            height: Val::Px(0.0),
             ..default()
         },
         GlobalZIndex(7),
         Pickable::IGNORE,
-        children![(
-            Node {
-                padding: UiRect::all(Val::Px(2.0)),
-                border_radius: BorderRadius::MAX,
-                ..default()
-            },
-            BackgroundColor(Color::WHITE),
-            cadrs_ui::color_scheme::KeepFill,
-            Pickable::IGNORE,
-            children![(
-                cadrs_ui::Avatar::new(format!("collab-edge-{short}-face"), name.to_string())
-                    .size(24.0)
-                    .color(color)
-                    .build(t),
+        children![
+            (
+                EdgeArrow,
+                // (The caret fills about a third of its box.)
+                cadrs_ui::icon::icon_in(
+                    "caret-up-filled",
+                    40.0,
+                    color,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        ..default()
+                    },
+                ),
+                bevy::ui::UiTransform::default(),
+                Pickable::IGNORE,
+            ),
+            (
+                Name::new(format!("collab-edge-{short}-chip")),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(-15.0),
+                    top: Val::Px(-15.0),
+                    padding: UiRect::all(Val::Px(2.0)),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(Color::WHITE),
+                cadrs_ui::color_scheme::KeepFill,
+                Tooltip::new(format!("{label}: click to look there")),
+                children![(
+                    cadrs_ui::Avatar::new(format!("collab-edge-{short}-face"), name.to_string())
+                        .size(26.0)
+                        .color(color)
+                        .build(t),
+                    cadrs_ui::color_scheme::KeepFill,
+                    Pickable::IGNORE,
+                )],
+            ),
+            (
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(18.0),
+                    top: Val::Px(-11.0),
+                    padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                    border_radius: BorderRadius::all(Val::Px(t.radius)),
+                    ..default()
+                },
+                BackgroundColor(color),
                 cadrs_ui::color_scheme::KeepFill,
                 Pickable::IGNORE,
-            )],
-        ),],
+                children![(
+                    t.text(
+                        label.to_string(),
+                        t.font_sm,
+                        FontWeight::MEDIUM,
+                        cadrs_ui::Avatar::ink_on(color)
+                    ),
+                    Pickable::IGNORE,
+                )],
+            ),
+        ],
     )
 }
 
-/// The arrow beside an [`edge_chip`], at `at` (local px), pointing along `angle` (radians,
-/// clockwise from the right, as on screen).
-fn edge_arrow(id: &str, at: Vec2, angle: f32) -> impl Bundle {
-    (
-        Overlay,
-        // (The caret fills about a third of its box.)
-        cadrs_ui::icon::icon_in(
-            "caret-up-filled",
-            34.0,
-            color_of(id),
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(at.x - 17.0),
-                top: Val::Px(at.y - 17.0),
-                ..default()
-            },
-        ),
-        // The caret points up: turned to point at them.
-        bevy::ui::UiTransform {
-            rotation: Rot2::radians(angle + std::f32::consts::FRAC_PI_2),
-            ..default()
-        },
-        GlobalZIndex(7),
-        Pickable::IGNORE,
-    )
+/// Keeps an [`EdgeChip`] at the edge toward each pointer beyond it (not idle ones).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn sync_edge_chips(
+    pointers: Res<Pointers>,
+    people: Res<People>,
+    (doc, kind, eda, eda_ui, drawing): (
+        Option<Res<ActiveDocument>>,
+        Res<ActiveKind>,
+        Res<Eda2d>,
+        Res<EdaUi>,
+        Option<Res<crate::drawing::DrawingUi>>,
+    ),
+    (view, rect, time): (Res<ViewportView>, Res<ViewportRect>, Res<Time<Real>>),
+    area: Query<Entity, With<ViewportArea>>,
+    mut chips: Query<(Entity, &EdgeChip, &mut Node, &Children), Without<EdgeArrow>>,
+    mut arrows: Query<(&mut Node, &mut bevy::ui::UiTransform), With<EdgeArrow>>,
+    theme: Res<Theme>,
+    mut commands: Commands,
+) {
+    let here = here_of(
+        doc.as_deref(),
+        *kind,
+        &eda,
+        &eda_ui,
+        drawing.as_deref(),
+        &view,
+        &rect,
+    );
+    let t = time.elapsed_secs_f64();
+    let mut want: BTreeMap<&str, (Vec2, Vec2)> = BTreeMap::new();
+    for (id, r) in &pointers.by_id {
+        if let Some((p, _)) = r
+            .shown
+            .filter(|_| !r.idle(t))
+            .and_then(|at| here.screen_any(r.tab, at))
+            && !rect.0.contains(p)
+            && let Some(e) = edge_point(rect.0, p)
+        {
+            want.insert(id.as_str(), e);
+        }
+    }
+    let local = |at: Vec2| at - rect.0.min;
+    for (e, chip, mut node, children) in &mut chips {
+        let label = label_of(&people, doc.as_deref(), &chip.id);
+        match want.remove(chip.id.as_str()) {
+            Some((at, dir)) if label == chip.label => {
+                let at = local(at);
+                node.left = Val::Px(at.x);
+                node.top = Val::Px(at.y);
+                for c in children.iter() {
+                    if let Ok((mut n, mut tf)) = arrows.get_mut(c) {
+                        // The caret points up: turned toward them, ahead of the chip.
+                        let ahead = dir * 26.0 - Vec2::splat(20.0);
+                        n.left = Val::Px(ahead.x);
+                        n.top = Val::Px(ahead.y);
+                        tf.rotation =
+                            Rot2::radians(dir.y.atan2(dir.x) + std::f32::consts::FRAC_PI_2);
+                    }
+                }
+            }
+            // Gone, or its label changed (made again below).
+            _ => commands.entity(e).despawn(),
+        }
+    }
+    let Ok(area) = area.single() else {
+        return;
+    };
+    for (id, (at, _)) in want {
+        let name = people
+            .by_id
+            .get(id)
+            .map_or_else(String::new, |p| p.presence.name.clone());
+        let label = label_of(&people, doc.as_deref(), id);
+        let e = commands.spawn(edge_chip(&theme, id, &name, &label)).id();
+        let at = local(at);
+        commands.entity(e).entry::<Node>().and_modify(move |mut n| {
+            n.left = Val::Px(at.x);
+            n.top = Val::Px(at.y);
+        });
+        commands.entity(area).add_child(e);
+    }
+}
+
+/// A click on an edge chip takes this user's view to that pointer.
+fn on_edge_chip_click(
+    ev: On<bevy::picking::events::Pointer<bevy::picking::events::Click>>,
+    parents: Query<&ChildOf>,
+    chips: Query<&EdgeChip>,
+    mut commands: Commands,
+) {
+    let Some(id) = std::iter::once(ev.entity)
+        .chain(parents.iter_ancestors(ev.entity))
+        .find_map(|e| chips.get(e).ok())
+        .map(|c| c.id.clone())
+    else {
+        return;
+    };
+    commands.queue(move |world: &mut World| look_at(world, &id));
+}
+
+/// This user's view, moved to centre `id`'s pointer (in 3D, or on the same 2D view).
+fn look_at(world: &mut World, id: &str) {
+    let Some(at) = world
+        .resource::<Pointers>()
+        .by_id
+        .get(id)
+        .and_then(|r| r.at.or(r.shown))
+    else {
+        return;
+    };
+    match at {
+        PointerAt::Model(p) => {
+            let mut vv = world.resource_mut::<ViewportView>();
+            let mut to = vv.target();
+            to.focus = Vec3::from_array(p);
+            vv.animate_to(to);
+        }
+        PointerAt::Design { at, .. } => {
+            let Some(key) = world.resource::<Eda2d>().0 else {
+                return;
+            };
+            let size = world.resource::<ViewportRect>().0.size();
+            let mut ui = world.resource_mut::<EdaUi>();
+            if let Some((view, fitted)) = ui.views.get_mut(&key) {
+                let s = view.to_screen([at[0] as f64, at[1] as f64]);
+                view.pan([size.x as f64 / 2.0 - s[0], size.y as f64 / 2.0 - s[1]]);
+                *fitted = false;
+            }
+        }
+        PointerAt::Sheet { .. } => {}
+    }
 }
 
 /// A small pill of text beside a mark (local px): "Alex's view", "Look here".
@@ -1019,7 +1219,13 @@ fn sync_overlays(
         Res<EdaUi>,
         Option<Res<crate::drawing::DrawingUi>>,
     ),
-    (view, rect, time): (Res<ViewportView>, Res<ViewportRect>, Res<Time<Real>>),
+    (view, rect, time, cache, iroh): (
+        Res<ViewportView>,
+        Res<ViewportRect>,
+        Res<Time<Real>>,
+        Res<crate::parts::PartCache>,
+        Option<Res<Iroh>>,
+    ),
     area: Query<Entity, With<ViewportArea>>,
     old: Query<Entity, With<Overlay>>,
     theme: Res<Theme>,
@@ -1065,42 +1271,7 @@ fn sync_overlays(
             );
         }
     }
-    // Pointers beyond the view's edges.
-    let inset = rect.0.inflate(-60.0);
-    for (id, r) in &pointers.by_id {
-        let Some((p, _)) = r
-            .shown
-            .filter(|_| !r.idle(t))
-            .and_then(|at| here.screen_any(r.tab, at))
-        else {
-            continue;
-        };
-        if rect.0.contains(p) || inset.width() <= 0.0 || inset.height() <= 0.0 {
-            continue;
-        }
-        let c = inset.center();
-        let d = p - c;
-        let reach = |half: f32, d: f32| {
-            if d.abs() > 1e-3 {
-                half / d.abs()
-            } else {
-                f32::MAX
-            }
-        };
-        let k = reach(inset.half_size().x, d.x).min(reach(inset.half_size().y, d.y));
-        let name = people
-            .by_id
-            .get(id)
-            .map_or_else(String::new, |p| p.presence.name.clone());
-        let at = local(c + d * k);
-        let dir = d.normalize_or_zero();
-        spawned.push(commands.spawn(edge_chip(&theme, id, &name, at)).id());
-        spawned.push(
-            commands
-                .spawn(edge_arrow(id, at + dir * 22.0, d.y.atan2(d.x)))
-                .id(),
-        );
-    }
+    let me = iroh.map(|i| i.id().to_string());
     // In 3D, someone whose mouse is off their view: a ring where they look (its centre).
     if here.tab.is_some() && three_d(here.kind) && here.eda.is_none_or(|e| e.1 == Mode::ThreeD) {
         for (id, person) in &people.by_id {
@@ -1108,7 +1279,9 @@ fn sync_overlays(
                 .by_id
                 .get(id)
                 .is_some_and(|r| r.at.is_some() && !r.idle(t) && Some(r.tab) == here.tab);
-            if person.presence.tab != here.tab || pointing {
+            // (Whoever follows this user looks at this very view.)
+            let follows_me = me.is_some() && person.presence.following == me;
+            if person.presence.tab != here.tab || pointing || follows_me {
                 continue;
             }
             let Some(v) = person.presence.view.as_ref() else {
@@ -1120,12 +1293,19 @@ fn sync_overlays(
             }
             let color = color_of(id);
             let at = local(p);
-            spawned.push(
-                commands
-                    .spawn(ring(at, 16.0, 2.5, color.with_alpha(0.85)))
-                    .id(),
-            );
-            spawned.push(commands.spawn(ring(at, 3.0, 3.0, color)).id());
+            // On their camera's chip (looking straight at it): the chip says it, with the label.
+            let eye = rect.0.center()
+                + view
+                    .view
+                    .project(eye_of(&super::presence::view_state(v), &cache));
+            if eye.distance(p) > 20.0 {
+                spawned.push(
+                    commands
+                        .spawn(ring(at, 16.0, 2.5, color.with_alpha(0.85)))
+                        .id(),
+                );
+                spawned.push(commands.spawn(ring(at, 3.0, 3.0, color)).id());
+            }
             let label = format!("{}'s view", person.presence.name);
             spawned.push(
                 commands
@@ -1139,9 +1319,16 @@ fn sync_overlays(
             );
         }
     }
-    // Pings: rings growing out of the point, one after another, and "Look here".
+    // Pings: rings growing out of the point, one after another, and "Look here"; beyond the
+    // view's edge, at its edge chip.
     for (id, tab, at, start) in &pings.0 {
-        let Some((p, _)) = here.screen(*tab, *at) else {
+        let Some(p) = here.screen_any(*tab, *at).and_then(|(p, _)| {
+            if rect.0.contains(p) {
+                Some(p)
+            } else {
+                edge_point(rect.0, p).map(|(e, _)| e)
+            }
+        }) else {
             continue;
         };
         let color = color_of(id);
@@ -1241,7 +1428,9 @@ fn draw_gizmos(
     mut shown: Gizmos<CollabGizmos>,
     mut hidden: Gizmos<CollabHiddenGizmos>,
     mut picked: Gizmos<CollabPickGizmos>,
+    (mut gaze, iroh): (Gizmos<CollabGazeGizmos>, Option<Res<Iroh>>),
 ) {
+    let me = iroh.map(|i| i.id().to_string());
     let tab = doc.as_deref().and_then(|d| d.active);
     if tab.is_none() || !three_d(*kind) || eda.0.is_some_and(|e| e.2 != Mode::ThreeD) {
         return;
@@ -1270,16 +1459,27 @@ fn draw_gizmos(
                         Some(PointerAt::Model(p)) => Some(Vec3::from_array(p)),
                         _ => None,
                     });
-                draw_draft(&mut shown, d, a.plane, at, color.with_alpha(0.9), mine);
+                draw_draft(&mut picked, d, a.plane, at, color, mine, &px);
                 // Where a part hides it (a sketch on a face it is drawn under), faint over it.
-                draw_draft(&mut hidden, d, a.plane, at, color.with_alpha(0.45), mine);
+                draw_draft(
+                    &mut hidden,
+                    d,
+                    a.plane,
+                    at,
+                    color.with_alpha(0.45),
+                    mine,
+                    &px,
+                );
             }
         }
-        // Their camera, while they look at this tab in 3D (not whoever this user follows:
-        // that camera is this view).
-        if following.as_ref().is_some_and(|f| f.leader == *id) {
+        // Their camera, while they look at this tab in 3D (not whoever this user follows, nor
+        // whoever follows this user: either way that camera is this view).
+        if following.as_ref().is_some_and(|f| f.leader == *id)
+            || (me.is_some() && person.presence.following == me)
+        {
             continue;
         }
+        let drawing = people.doing.get(id).is_some_and(|a| a.draft.is_some());
         let Some(theirs) = person
             .presence
             .view
@@ -1301,14 +1501,13 @@ fn draw_gizmos(
         let size = CAMERA_PX * px(eye);
         draw_camera(&mut shown, &theirs, eye, size, color);
         draw_camera(&mut hidden, &theirs, eye, size, faint);
-        if let Some(p) = pointer {
-            shown.line(eye, p, color.with_alpha(0.6));
-            hidden.line(eye, p, color.with_alpha(0.15));
-        } else {
-            // Their mouse is off their view: a line to where they look (its ring is a badge,
-            // `sync_overlays`).
-            shown.line(eye, theirs.focus, color.with_alpha(0.35));
-            hidden.line(eye, theirs.focus, color.with_alpha(0.12));
+        // Where they look from to where they point (not while they draw: their drawing goes
+        // there), or to their view's centre while their mouse is off their view (its ring is a
+        // badge, `sync_overlays`).
+        match pointer {
+            Some(p) if !drawing => gaze.line(eye, p, color.with_alpha(0.4)),
+            Some(_) => {}
+            None => gaze.line(eye, theirs.focus, color.with_alpha(0.3)),
         }
     }
 }
@@ -1479,7 +1678,8 @@ fn draw_plane<G: GizmoConfigGroup>(g: &mut Gizmos<G>, plane: SketchPlane, color:
     g.linestrip([c[0], c[1], c[2], c[3], c[0]], color);
 }
 
-/// What a collaborator is drawing: the points placed so far, the last piece to their pointer.
+/// What a collaborator is drawing: the points placed so far (each with a dot), the last piece
+/// to their pointer.
 fn draw_draft<G: GizmoConfigGroup>(
     g: &mut Gizmos<G>,
     draft: &Draft,
@@ -1487,7 +1687,19 @@ fn draw_draft<G: GizmoConfigGroup>(
     pointer: Option<Vec3>,
     color: Color,
     view: &ViewState,
+    px: &impl Fn(Vec3) -> f32,
 ) {
+    let facing = Quat::from_rotation_arc(Vec3::Z, view.back());
+    let mut dot = |p: Vec3| {
+        let r = 4.0 * px(p);
+        g.circle(Isometry3d::new(p, facing), r, color);
+        g.circle(Isometry3d::new(p, facing), r * 0.45, color);
+    };
+    match draft {
+        Draft::Chain(pts) => pts.iter().for_each(|p| dot(v3(*p))),
+        Draft::Rect { first, .. } | Draft::Circle(first) => dot(v3(*first)),
+        Draft::Design(_) => {}
+    }
     match draft {
         Draft::Chain(pts) => {
             let all: Vec<Vec3> = pts.iter().map(|p| v3(*p)).chain(pointer).collect();
