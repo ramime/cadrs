@@ -1191,7 +1191,12 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                         </a>
                         <a href={RELEASES} class="hover:text-foreground">"Releases"</a>
                         <a href={markdown} class="hover:text-foreground">"This page as Markdown"</a>
-                        <span>"Made with Rust"</span>
+                        <span>
+                            "Made with "
+                            <a href="https://www.rust-lang.org" class="hover:text-foreground">
+                                "Rust"
+                            </a>
+                        </span>
                     </div>
                     {Separator {
                         orientation: SeparatorOrientation::Horizontal,
