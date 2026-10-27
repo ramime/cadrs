@@ -1145,7 +1145,7 @@ pub fn offset_wire(edges: &[(Curve, f64, f64)], d: f64) -> Result<Vec<Vec<Piece2
             "an offset needs edges and a distance".into(),
         ));
     }
-    let clock = std::time::Instant::now();
+    let clock = web_time::Instant::now();
     let flat: Vec<(Curve, f64, f64)> = edges.iter().map(|(c, a, b)| flattened(c, *a, *b)).collect();
     let mut bb = Bbox::empty();
     // Each edge's length in the plane (its chords): an edge square to the plane (a wire not in

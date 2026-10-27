@@ -197,7 +197,8 @@ impl Scenario {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text =
+            cadrs_fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
@@ -206,7 +207,7 @@ impl Scenario {
 /// one in the source tree.
 pub fn scenarios_dir() -> PathBuf {
     let local = PathBuf::from("scenarios");
-    if local.is_dir() {
+    if cadrs_fs::is_dir(&local) {
         return local;
     }
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenarios"))
@@ -251,7 +252,7 @@ mod tests {
 
     #[test]
     fn repository_scenarios_parse() {
-        for entry in std::fs::read_dir(scenarios_dir()).unwrap() {
+        for entry in cadrs_fs::read_dir(scenarios_dir()).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|e| e == "ron") {
                 Scenario::load(&path).unwrap();

@@ -2202,6 +2202,7 @@ dependencies = [
  "bevy",
  "cadrs_app",
  "cadrs_core",
+ "cadrs_fs",
  "cadrs_harness",
  "cadrs_net",
  "cadrs_ui",
@@ -2219,6 +2220,7 @@ dependencies = [
  "cadrs_easyeda",
  "cadrs_eda",
  "cadrs_fea",
+ "cadrs_fs",
  "cadrs_idf",
  "cadrs_kernel",
  "cadrs_kicad",
@@ -2247,6 +2249,7 @@ dependencies = [
  "uuid",
  "wayland-backend",
  "wayland-client",
+ "web-time",
  "winit",
  "zip",
 ]
@@ -2273,6 +2276,7 @@ dependencies = [
  "cadrs_drawing",
  "cadrs_eda",
  "cadrs_fea",
+ "cadrs_fs",
  "cadrs_idf",
  "cadrs_kernel",
  "cadrs_render",
@@ -2292,6 +2296,7 @@ dependencies = [
  "tempfile",
  "tiny-skia",
  "uuid",
+ "web-time",
  "zip",
 ]
 
@@ -2299,6 +2304,7 @@ dependencies = [
 name = "cadrs_drawing"
 version = "0.2.0"
 dependencies = [
+ "cadrs_fs",
  "cadrs_kernel",
  "cadrs_sketch",
  "flate2",
@@ -2325,6 +2331,7 @@ dependencies = [
 name = "cadrs_eda"
 version = "0.2.0"
 dependencies = [
+ "cadrs_fs",
  "clipper2-rust",
  "earcutr",
  "gerber_parser",
@@ -2341,6 +2348,16 @@ dependencies = [
  "faer",
  "rayon",
  "robust",
+ "web-time",
+]
+
+[[package]]
+name = "cadrs_fs"
+version = "0.2.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "web-time",
 ]
 
 [[package]]
@@ -2368,10 +2385,12 @@ name = "cadrs_harness"
 version = "0.2.0"
 dependencies = [
  "bevy",
+ "cadrs_fs",
  "cadrs_ui",
  "image",
  "ron",
  "serde",
+ "web-time",
 ]
 
 [[package]]
@@ -2396,6 +2415,7 @@ dependencies = [
  "serde",
  "spade",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
@@ -2403,6 +2423,7 @@ name = "cadrs_kicad"
 version = "0.2.0"
 dependencies = [
  "cadrs_eda",
+ "cadrs_fs",
  "serde_json",
  "uuid",
 ]
@@ -2436,6 +2457,7 @@ dependencies = [
  "bevy_iroh",
  "cadrs_core",
  "data-encoding",
+ "n0-future",
  "postcard",
  "serde",
  "tokio",
@@ -2489,6 +2511,7 @@ dependencies = [
  "cadrs_router_kernels",
  "futures-lite",
  "uuid",
+ "web-time",
  "wgpu",
 ]
 
@@ -2533,11 +2556,13 @@ name = "cadrs_ui"
 version = "0.2.0"
 dependencies = [
  "bevy",
+ "cadrs_fs",
  "directories",
  "icon-rs",
  "raw-window-handle",
  "resvg",
  "rfd",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

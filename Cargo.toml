@@ -14,6 +14,7 @@ default-members = [
     "crates/cadrs_eda",
     "crates/cadrs_easyeda",
     "crates/cadrs_fea",
+    "crates/cadrs_fs",
     "crates/cadrs_idf",
     "crates/cadrs_kicad",
     "crates/cadrs_kernel",
@@ -62,7 +63,8 @@ raw-window-handle = "0.6"
 winit = { version = "0.30", default-features = false }
 earcutr = "0.4"
 proptest = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# `wasmbind`: the clock in a browser (JavaScript's Date; nothing elsewhere).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "wasmbind"] }
 nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 ttf-parser = "0.25"
 # Sheet metal flat patterns (P3I.1): 2D polygon booleans for the flat outline, reliefs and the
@@ -75,8 +77,9 @@ gerber_parser = "0.5"
 tiny-skia = "0.11"
 flate2 = "1"
 # P3F.5 (simulation): sparse Cholesky (MIT), exact geometric predicates (MIT/Apache-2.0),
-# data parallelism (MIT/Apache-2.0).
-faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg", "rayon"] }
+# data parallelism (MIT/Apache-2.0). faer's own threads (its `rayon` feature) are cadrs_fea's,
+# off in the browser build.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 robust = "1.2"
 rayon = "1"
 serde_json = "1"
@@ -92,7 +95,9 @@ base64 = "0.22"
 # The MCP server (cadrs_mcp): the official Rust SDK over Streamable HTTP, served by axum on a
 # tokio runtime of its own (MIT/Apache-2.0).
 rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
-tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"] }
+# Each crate names the features it uses: cadrs_net's (sync) also build for the browser, where
+# tokio has no network.
+tokio = { version = "1", default-features = false }
 tokio-util = "0.7"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 # Sharing and collaboration (cadrs_net): peers over iroh, no server. Only the transport, rooms
@@ -101,8 +106,18 @@ bevy_iroh = { version = "0.4.6", default-features = false }
 # Share links (cadrs_net): postcard, then base32 so a link survives a chat client.
 postcard = { version = "1.1", features = ["alloc"] }
 data-encoding = "2"
+# Clocks that also run in the browser (`std::time::Instant::now` panics there); std's own
+# types on other targets, and the `Instant` Bevy uses.
+web-time = "1"
+# The browser build's glue (`cadrs_fs`, `cadrs`'s page): the versions Bevy and wgpu use.
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+# Timeouts on every target (cadrs_net): tokio's timer needs its runtime, which a browser has not.
+n0-future = "0.3"
 
 cadrs_core = { path = "crates/cadrs_core" }
+cadrs_fs = { path = "crates/cadrs_fs" }
 cadrs_cam = { path = "crates/cadrs_cam" }
 cadrs_sketch = { path = "crates/cadrs_sketch" }
 cadrs_vars = { path = "crates/cadrs_vars" }

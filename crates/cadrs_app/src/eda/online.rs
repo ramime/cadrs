@@ -74,7 +74,7 @@ pub fn register(app: &mut App) {
 
 /// The saved answer for a part, from the fixtures folder.
 fn fixture(dir: &std::path::Path, lcsc: &str) -> Result<cadrs_easyeda::serde_json::Value, String> {
-    let text = std::fs::read_to_string(dir.join(format!("{lcsc}.json")))
+    let text = cadrs_fs::read_to_string(dir.join(format!("{lcsc}.json")))
         .map_err(|_| format!("{lcsc}: not in the saved parts"))?;
     let v: cadrs_easyeda::serde_json::Value =
         cadrs_easyeda::serde_json::from_str(&text).map_err(|e| e.to_string())?;
@@ -88,7 +88,7 @@ fn fixture(dir: &std::path::Path, lcsc: &str) -> Result<cadrs_easyeda::serde_jso
 /// The saved parts matching every word of `query`.
 fn fixture_search(dir: &std::path::Path, query: &str) -> Result<(Vec<Hit>, u64), String> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut files: Vec<PathBuf> = cadrs_fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .flatten()
         .map(|e| e.path())

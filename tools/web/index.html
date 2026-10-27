@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cadrs</title>
+<link rel="icon" type="image/png" href="cadrs.png">
+<style>
+  :root { color-scheme: light dark; --bg: #f7f7f8; --fg: #18181b; --muted: #71717a; --bar: #e4e4e7; --accent: #2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #18181b; --fg: #fafafa; --muted: #a1a1aa; --bar: #3f3f46; --accent: #60a5fa; } }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  /* Bevy sizes the canvas to its parent (`fit_canvas_to_parent`). */
+  #cadrs { display: block; width: 100%; height: 100%; outline: none; }
+  #status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; padding: 16px; text-align: center; background: var(--bg); }
+  #status img { width: 64px; height: 64px; }
+  #status .bar { width: min(280px, 70vw); height: 4px; border-radius: 2px; background: var(--bar); overflow: hidden; }
+  #status .fill { width: 0; height: 100%; background: var(--accent); transition: width .2s; }
+  #status .note { max-width: 460px; color: var(--muted); }
+  #status a { color: var(--accent); }
+  #status.done { display: none; }
+</style>
+</head>
+<body>
+<canvas id="cadrs" tabindex="0"></canvas>
+<div id="status">
+  <img src="cadrs.png" alt="">
+  <div id="message">Loading cadrs…</div>
+  <div class="bar"><div class="fill" id="fill"></div></div>
+  <div class="note" id="note">The whole app runs in this tab. Your documents stay in this browser.</div>
+</div>
+<script type="module">
+  import init from "./cadrs.js";
+  import { openFiles } from "./files.js";
+
+  const status = document.getElementById("status");
+  const message = document.getElementById("message");
+  const note = document.getElementById("note");
+  const fill = document.getElementById("fill");
+
+  function fail(what, detail) {
+    message.textContent = what;
+    note.innerHTML = detail;
+    fill.parentElement?.remove();
+  }
+
+  // Downloads the gzipped module (`build.sh` writes it: hosts don't all compress .wasm),
+  // showing its progress, and unpacks it while it streams in.
+  async function fetchModule(url) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
+    const total = Number(response.headers.get("content-length")) || 0;
+    let done = 0;
+    const progress = new TransformStream({
+      transform(chunk, controller) {
+        done += chunk.length;
+        if (total) fill.style.width = `${Math.min(100, (100 * done) / total)}%`;
+        message.textContent = `Loading cadrs… ${(done / 1e6).toFixed(0)}${total ? ` of ${(total / 1e6).toFixed(0)}` : ""} MB`;
+        controller.enqueue(chunk);
+      },
+    });
+    const wasm = response.body.pipeThrough(progress).pipeThrough(new DecompressionStream("gzip"));
+    return new Response(wasm, { headers: { "content-type": "application/wasm" } });
+  }
+
+  async function start() {
+    if (!navigator.gpu || !(await navigator.gpu.requestAdapter())) {
+      fail("Your browser has no WebGPU",
+        'cadrs draws with WebGPU: try a recent Chrome, Edge, Firefox or Safari. Or <a href="https://github.com/rvdende/cadrs/releases/latest">download cadrs</a> for Windows, Linux or macOS.');
+      return;
+    }
+    // A panic traps the module, in whatever frame it happens: say so instead of a frozen page.
+    const stopped = (e) => {
+      const text = String(e?.reason ?? e?.error ?? e?.message ?? e);
+      if (text.includes("Using exceptions for control flow")) return;
+      status.classList.remove("done");
+      fail("cadrs stopped", `${text.replace(/</g, "&lt;")}<br>The browser's console has the details. Reload the page to start again.`);
+    };
+    try {
+      const [module, files] = await Promise.all([
+        fetchModule(new URL("cadrs_bg.wasm.gz", import.meta.url)),
+        openFiles(),
+      ]);
+      // `cadrs_fs` takes the files from here when the app first reads one.
+      globalThis.cadrsFiles = files;
+      message.textContent = "Starting…";
+      fill.style.width = "100%";
+      addEventListener("error", stopped);
+      addEventListener("unhandledrejection", stopped);
+      // Returns once the app runs (Bevy's event loop then drives it from the browser's frames).
+      await init({ module_or_path: module });
+    } catch (e) {
+      // Bevy leaves `main` by throwing this; the app is running.
+      if (!String(e).includes("Using exceptions for control flow")) {
+        console.error(e);
+        stopped(e);
+        return;
+      }
+    }
+    status.classList.add("done");
+    document.getElementById("cadrs").focus();
+  }
+  start();
+</script>
+</body>
+</html>

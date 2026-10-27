@@ -531,8 +531,8 @@ pub fn write_report(world: &mut World, label: &str) {
             t.as_secs_f64() * 1e3
         ));
     }
-    let _ = std::fs::create_dir_all(&dir);
-    if let Err(e) = std::fs::write(dir.join(format!("perf-{label}-rebuilds.txt")), s) {
+    let _ = cadrs_fs::create_dir_all(&dir);
+    if let Err(e) = cadrs_fs::write(dir.join(format!("perf-{label}-rebuilds.txt")), s) {
         warn!("scale-report: {e}");
     }
 }

@@ -314,7 +314,7 @@ fn add_text(d: &mut Design, text: &str, at: Pt, layer: Layer, look: TextLook) {
 struct Autorouting {
     task: bevy::tasks::Task<cadrs_router::Outcome>,
     board: cadrs_eda::board::Board,
-    started: std::time::Instant,
+    started: web_time::Instant,
 }
 
 /// Auto-route: the shown board's unconnected nets routed off the main thread (the view stays
@@ -336,7 +336,7 @@ fn start_autoroute(w: &mut World) {
     w.insert_resource(Autorouting {
         task,
         board,
-        started: std::time::Instant::now(),
+        started: web_time::Instant::now(),
     });
     ui::toast(w, "Auto-routing…");
 }
@@ -412,7 +412,7 @@ fn on_graphic_picked(
         }
         let path = m.path.clone();
         commands.queue(move |w: &mut World| {
-            let polys = std::fs::read_to_string(&path)
+            let polys = cadrs_fs::read_to_string(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|t| cadrs_eda::graphic_import::svg_polygons(&t));
             match polys {

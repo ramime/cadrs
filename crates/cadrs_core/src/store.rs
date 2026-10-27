@@ -106,11 +106,11 @@ struct EntryFile {
 
 /// The size and modified time (ns since the epoch) of a file.
 fn file_stamp(path: &Path) -> Option<(u64, u64)> {
-    let m = std::fs::metadata(path).ok()?;
+    let m = cadrs_fs::metadata(path).ok()?;
     let ns = m
         .modified()
         .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(web_time::UNIX_EPOCH)
         .ok()?
         .as_nanos();
     Some((m.len(), ns as u64))
@@ -202,12 +202,12 @@ impl Store {
     /// the app quit with the document open, so the thumbnail was never rendered. Also with no
     /// large thumbnail (one saved before they were), so the next close renders one.
     pub fn thumbnail_outdated(&self, id: DocumentId, modified: Timestamp) -> bool {
-        let saved = std::fs::metadata(self.thumbnail_path(id))
+        let saved = cadrs_fs::metadata(self.thumbnail_path(id))
             .and_then(|m| m.modified())
             .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+            .and_then(|t| t.duration_since(web_time::UNIX_EPOCH).ok());
         saved.is_none_or(|t| (t.as_secs() as Timestamp) < modified)
-            || !self.doc_dir(id).join(THUMBNAIL_LARGE_FILE).exists()
+            || !cadrs_fs::exists(self.doc_dir(id).join(THUMBNAIL_LARGE_FILE))
     }
 
     /// Writes `document.ron` for `doc`.
@@ -219,7 +219,7 @@ impl Store {
         };
         let text = ron::ser::to_string_pretty(&file, ron::ser::PrettyConfig::default())
             .map_err(|e| StoreError::Parse(e.to_string()))?;
-        std::fs::create_dir_all(self.doc_dir(doc.id))?;
+        cadrs_fs::create_dir_all(self.doc_dir(doc.id))?;
         let path = self.document_path(doc.id);
         write_atomic(&path, text.as_bytes())?;
         write_entry(&path, &file.entry())?;
@@ -266,7 +266,7 @@ impl Store {
 
     /// Reads a `document.ron` only (listing the documents doesn't need their files).
     fn read_path(path: &Path) -> Result<DocumentFile, StoreError> {
-        let text = std::fs::read_to_string(path)?;
+        let text = cadrs_fs::read_to_string(path)?;
         Self::parse_document(&text)
     }
 
@@ -301,13 +301,13 @@ impl Store {
     pub fn list(&self) -> (Library, Vec<(PathBuf, StoreError)>) {
         let mut lib = Library::default();
         let mut errors = Vec::new();
-        let Ok(dir) = std::fs::read_dir(&self.root) else {
+        let Ok(dir) = cadrs_fs::read_dir(&self.root) else {
             return (lib, errors);
         };
         let mut paths: Vec<PathBuf> = dir
             .filter_map(|e| e.ok())
             .map(|e| e.path().join(DOCUMENT_FILE))
-            .filter(|p| p.is_file())
+            .filter(|p| cadrs_fs::is_file(p))
             .collect();
         paths.sort();
         // Most documents have a current `entry.ron`; parse the rest in full, in parallel, and
@@ -319,32 +319,35 @@ impl Store {
             .filter(|(_, c)| c.is_none())
             .map(|(p, _)| p)
             .collect();
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-        let chunk = missing.len().div_ceil(threads).max(1);
-        let mut read: Vec<Result<DocumentEntry, StoreError>> = std::thread::scope(|s| {
-            let jobs: Vec<_> = missing
-                .chunks(chunk)
-                .map(|paths| {
-                    s.spawn(move || {
-                        paths
-                            .iter()
-                            .map(|p| {
-                                let entry = Self::read_path(p)?.entry();
-                                // Only a cache: listing works without it.
-                                let _ = write_entry(p, &entry);
-                                Ok(entry)
-                            })
-                            .collect::<Vec<_>>()
-                    })
+        let read_all = |paths: &[&PathBuf]| {
+            paths
+                .iter()
+                .map(|p| {
+                    let entry = Self::read_path(p)?.entry();
+                    // Only a cache: listing works without it.
+                    let _ = write_entry(p, &entry);
+                    Ok(entry)
                 })
-                .collect();
-            jobs.into_iter()
-                .flat_map(|j| j.join().expect("a document read panicked"))
                 .collect::<Vec<_>>()
-        })
-        .into_iter()
-        .rev()
-        .collect();
+        };
+        // A page has one thread.
+        #[cfg(target_arch = "wasm32")]
+        let read: Vec<Result<DocumentEntry, StoreError>> = read_all(&missing);
+        #[cfg(not(target_arch = "wasm32"))]
+        let read: Vec<Result<DocumentEntry, StoreError>> = {
+            let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let chunk = missing.len().div_ceil(threads).max(1);
+            std::thread::scope(|s| {
+                let jobs: Vec<_> = missing
+                    .chunks(chunk)
+                    .map(|paths| s.spawn(move || read_all(paths)))
+                    .collect();
+                jobs.into_iter()
+                    .flat_map(|j| j.join().expect("a document read panicked"))
+                    .collect()
+            })
+        };
+        let mut read: Vec<_> = read.into_iter().rev().collect();
         for (path, cached) in paths.into_iter().zip(cached) {
             match cached
                 .map(Ok)
@@ -355,8 +358,8 @@ impl Store {
             }
         }
         let folders = self.root.join(FOLDERS_FILE);
-        if folders.is_file() {
-            match std::fs::read_to_string(&folders)
+        if cadrs_fs::is_file(&folders) {
+            match cadrs_fs::read_to_string(&folders)
                 .map_err(StoreError::from)
                 .and_then(|t| {
                     ron::from_str::<FoldersFile>(&t).map_err(|e| StoreError::Parse(e.to_string()))
@@ -379,8 +382,8 @@ impl Store {
     /// Empties the holding area of permanently deleted documents (call on exit).
     pub fn flush_deleted(&self) -> Result<(), StoreError> {
         let dir = self.root.join(DELETED_DIR);
-        if dir.is_dir() {
-            std::fs::remove_dir_all(dir)?;
+        if cadrs_fs::is_dir(&dir) {
+            cadrs_fs::remove_dir_all(dir)?;
         }
         Ok(())
     }
@@ -417,15 +420,15 @@ impl Store {
     ) -> Result<(), StoreError> {
         // Permanently deleted: move aside (undo moves it back).
         for e in &before.entries {
-            if after.get(e.id).is_none() && self.doc_dir(e.id).is_dir() {
-                std::fs::create_dir_all(self.root.join(DELETED_DIR))?;
-                std::fs::rename(self.doc_dir(e.id), self.deleted_dir(e.id))?;
+            if after.get(e.id).is_none() && cadrs_fs::is_dir(self.doc_dir(e.id)) {
+                cadrs_fs::create_dir_all(self.root.join(DELETED_DIR))?;
+                cadrs_fs::rename(self.doc_dir(e.id), self.deleted_dir(e.id))?;
             }
         }
         for e in &after.entries {
-            if before.get(e.id).is_none() && !self.doc_dir(e.id).is_dir() {
-                if self.deleted_dir(e.id).is_dir() {
-                    std::fs::rename(self.deleted_dir(e.id), self.doc_dir(e.id))?;
+            if before.get(e.id).is_none() && !cadrs_fs::is_dir(self.doc_dir(e.id)) {
+                if cadrs_fs::is_dir(self.deleted_dir(e.id)) {
+                    cadrs_fs::rename(self.deleted_dir(e.id), self.doc_dir(e.id))?;
                 } else {
                     continue;
                 }
@@ -448,7 +451,7 @@ impl Store {
             };
             let text = ron::ser::to_string_pretty(&file, ron::ser::PrettyConfig::default())
                 .map_err(|e| StoreError::Parse(e.to_string()))?;
-            std::fs::create_dir_all(&self.root)?;
+            cadrs_fs::create_dir_all(&self.root)?;
             write_atomic(&self.root.join(FOLDERS_FILE), text.as_bytes())?;
         }
         Ok(())
@@ -457,7 +460,7 @@ impl Store {
     /// The current `folders.ron` (an error when there is none).
     fn read_folders(&self) -> Result<FoldersFile, StoreError> {
         let path = self.root.join(FOLDERS_FILE);
-        let text = std::fs::read_to_string(&path)?;
+        let text = cadrs_fs::read_to_string(&path)?;
         ron::from_str(&text).map_err(|e| StoreError::Parse(e.to_string()))
     }
 
@@ -517,7 +520,7 @@ impl Store {
     /// Saves the document's thumbnail. An image larger than the lists' size is kept as the
     /// large picture too, and the lists' one is scaled down from it; a small one replaces both.
     pub fn write_thumbnail(&self, id: DocumentId, img: &RgbaImage) -> Result<(), StoreError> {
-        std::fs::create_dir_all(self.doc_dir(id))?;
+        cadrs_fs::create_dir_all(self.doc_dir(id))?;
         let png = |img: &RgbaImage| -> Result<Vec<u8>, StoreError> {
             let mut bytes = Vec::new();
             img.write_to(&mut io::Cursor::new(&mut bytes), image::ImageFormat::Png)
@@ -535,8 +538,8 @@ impl Store {
             );
             write_atomic(&self.thumbnail_path(id), &png(&small)?)?;
         } else {
-            if large.exists() {
-                std::fs::remove_file(&large)?;
+            if cadrs_fs::exists(&large) {
+                cadrs_fs::remove_file(&large)?;
             }
             write_atomic(&self.thumbnail_path(id), &png(img)?)?;
         }
@@ -868,7 +871,7 @@ mod migrate {
 
 /// The listing entry cached next to `doc_path`, if it is still that file's.
 fn read_entry(doc_path: &Path) -> Option<DocumentEntry> {
-    let text = std::fs::read_to_string(doc_path.with_file_name(ENTRY_FILE)).ok()?;
+    let text = cadrs_fs::read_to_string(doc_path.with_file_name(ENTRY_FILE)).ok()?;
     let f: EntryFile = ron::from_str(&text).ok()?;
     (file_stamp(doc_path)? == (f.doc_len, f.doc_modified_ns)).then_some(DocumentEntry {
         id: f.id,
@@ -897,8 +900,8 @@ fn write_entry(doc_path: &Path, entry: &DocumentEntry) -> Result<(), StoreError>
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    cadrs_fs::write(&tmp, bytes)?;
+    cadrs_fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
@@ -924,14 +927,14 @@ mod tests {
         assert_eq!(file.version, SCHEMA_VERSION);
         assert_eq!(file.document, doc);
         assert_eq!(file.meta, meta);
-        let text = std::fs::read_to_string(store.document_path(doc.id)).unwrap();
+        let text = cadrs_fs::read_to_string(store.document_path(doc.id)).unwrap();
         assert!(text.contains("version: 5"), "{text}");
         assert!(store.read_thumbnail(doc.id).is_some());
         let (lib, errors) = store.list();
         assert!(errors.is_empty());
         assert_eq!(lib.entries.len(), 1);
         assert_eq!(lib.entries[0].name, "Bracket");
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -964,7 +967,7 @@ mod tests {
         store.sync(&before, &lib).unwrap();
         assert_eq!(store.list().0.entries.len(), 2);
         assert_eq!(store.load(id).unwrap().document.name, "Copy of Bracket");
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1022,7 +1025,7 @@ mod tests {
         let features = file.document.elements[0].features();
         assert_eq!(features[1].name, "Sketch 2");
         assert!(features[1].sketch().unwrap().disable_imprinting);
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     /// A version 1 file (sketches with the plane inside the geometry) loads as version 2.
@@ -1053,8 +1056,8 @@ mod tests {
             asm = ron::to_string(&asm).unwrap(),
             f = ron::to_string(&f).unwrap(),
         );
-        std::fs::create_dir_all(store.doc_dir(doc_id)).unwrap();
-        std::fs::write(store.document_path(doc_id), text).unwrap();
+        cadrs_fs::create_dir_all(store.doc_dir(doc_id)).unwrap();
+        cadrs_fs::write(store.document_path(doc_id), text).unwrap();
         let file = store.load(doc_id).unwrap();
         assert_eq!(file.version, SCHEMA_VERSION);
         assert_eq!(file.meta, meta);
@@ -1069,7 +1072,7 @@ mod tests {
         // Saving writes the new version, which loads back unchanged.
         store.save(&file.document, &file.meta).unwrap();
         assert_eq!(store.load(doc_id).unwrap(), file);
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     /// A version 2 file (M3–M8: sketches only) loads and saves as the current version.
@@ -1106,21 +1109,21 @@ mod tests {
         store.save(&doc, &meta).unwrap();
         // Rewrite it as an M8 build would have: the same text with version 2.
         let path = store.document_path(doc.id);
-        let text = std::fs::read_to_string(&path)
+        let text = cadrs_fs::read_to_string(&path)
             .unwrap()
             .replace("version: 5", "version: 2");
         assert!(!text.contains("Extrude") && !text.contains("Face("));
-        std::fs::write(&path, text).unwrap();
+        cadrs_fs::write(&path, text).unwrap();
         let file = store.load(doc.id).unwrap();
         assert_eq!(file.version, SCHEMA_VERSION);
         assert_eq!(file.document, doc);
         store.save(&file.document, &file.meta).unwrap();
         assert!(
-            std::fs::read_to_string(&path)
+            cadrs_fs::read_to_string(&path)
                 .unwrap()
                 .contains("version: 5")
         );
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     /// Extrudes and sketches on faces round-trip through `document.ron`.
@@ -1205,7 +1208,7 @@ mod tests {
         .unwrap();
         let meta = DocumentMeta::new("me", 1_000);
         store.save(&doc, &meta).unwrap();
-        let text = std::fs::read_to_string(store.document_path(doc.id)).unwrap();
+        let text = cadrs_fs::read_to_string(store.document_path(doc.id)).unwrap();
         assert!(
             text.contains("Extrude(") && text.contains("Face("),
             "{text}"
@@ -1215,7 +1218,7 @@ mod tests {
         let parts = crate::parts::parts(file.document.elements[0].features());
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].name, "Part 1");
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1224,10 +1227,10 @@ mod tests {
         let doc = Document::new("x");
         store.save(&doc, &DocumentMeta::new("me", 1)).unwrap();
         let path = store.document_path(doc.id);
-        let text = std::fs::read_to_string(&path)
+        let text = cadrs_fs::read_to_string(&path)
             .unwrap()
             .replace("version: 5", "version: 99");
-        std::fs::write(&path, text).unwrap();
+        cadrs_fs::write(&path, text).unwrap();
         assert!(matches!(
             store.load(doc.id),
             Err(StoreError::UnsupportedVersion(99))
@@ -1235,7 +1238,7 @@ mod tests {
         let (lib, errors) = store.list();
         assert!(lib.entries.is_empty());
         assert_eq!(errors.len(), 1);
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1244,18 +1247,18 @@ mod tests {
         let doc = Document::new("x");
         store.save(&doc, &DocumentMeta::new("me", 1)).unwrap();
         let path = store.document_path(doc.id);
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = cadrs_fs::read_to_string(&path).unwrap();
         // A tab kind a newer cadrs added within this schema version.
-        std::fs::write(&path, text.replacen("PartStudio(", "FutureStudio(", 1)).unwrap();
+        cadrs_fs::write(&path, text.replacen("PartStudio(", "FutureStudio(", 1)).unwrap();
         let e = store.load(doc.id).unwrap_err();
         assert!(matches!(e, StoreError::Newer(_)), "{e}");
         assert!(e.is_newer());
         // A damaged file is not.
-        std::fs::write(&path, &text[..text.len() / 2]).unwrap();
+        cadrs_fs::write(&path, &text[..text.len() / 2]).unwrap();
         let e = store.load(doc.id).unwrap_err();
         assert!(matches!(e, StoreError::Parse(_)), "{e}");
         assert!(!e.is_newer());
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1270,7 +1273,7 @@ mod tests {
         store.sync(&before, &after).unwrap();
         let (reloaded, _) = store.list();
         assert_eq!(reloaded, after);
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1283,17 +1286,17 @@ mod tests {
         // A document rewritten behind the store's back is read in full again.
         let path = store.document_path(id);
         let name = &lib.entries[0].name;
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = cadrs_fs::read_to_string(&path).unwrap();
         let edited = text.replacen(&format!("name: {name:?}"), "name: \"Edited elsewhere\"", 1);
-        std::fs::write(&path, edited).unwrap();
+        cadrs_fs::write(&path, edited).unwrap();
         let (relisted, _) = store.list();
         assert_eq!(relisted.entries[0].name, "Edited elsewhere");
         assert_eq!(relisted.entries[1], lib.entries[1]);
         // Without entry files, listing reads every document and writes them again.
-        std::fs::remove_file(store.doc_dir(id).join(ENTRY_FILE)).unwrap();
+        cadrs_fs::remove_file(store.doc_dir(id).join(ENTRY_FILE)).unwrap();
         assert_eq!(store.list().0, relisted);
         assert!(store.doc_dir(id).join(ENTRY_FILE).is_file());
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1338,7 +1341,7 @@ mod tests {
         assert_eq!(on_disk, lib);
         assert_eq!(on_disk.entries.len(), 2);
         store.flush_deleted().unwrap();
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1353,11 +1356,11 @@ mod tests {
         assert_eq!(la.entries.len(), 12);
         let id = la.entries[0].id;
         assert_eq!(
-            std::fs::read(a.thumbnail_path(id)).unwrap(),
-            std::fs::read(b.thumbnail_path(id)).unwrap()
+            cadrs_fs::read(a.thumbnail_path(id)).unwrap(),
+            cadrs_fs::read(b.thumbnail_path(id)).unwrap()
         );
-        std::fs::remove_dir_all(a.root()).unwrap();
-        std::fs::remove_dir_all(b.root()).unwrap();
+        cadrs_fs::remove_dir_all(a.root()).unwrap();
+        cadrs_fs::remove_dir_all(b.root()).unwrap();
     }
 
     #[test]
@@ -1434,7 +1437,7 @@ mod tests {
         let (reloaded, _) = store.list();
         assert_eq!(reloaded.get(ids[0]).unwrap().meta.labels, [fixtures]);
         assert_eq!(reloaded.labels.len(), 2);
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 
     #[test]
@@ -1459,6 +1462,6 @@ mod tests {
         assert_eq!(copy.document.name, "Block source copy");
         assert_eq!(copy.document.elements, source.document.elements);
         assert_ne!(copy.document.id, source.document.id);
-        std::fs::remove_dir_all(store.root()).unwrap();
+        cadrs_fs::remove_dir_all(store.root()).unwrap();
     }
 }

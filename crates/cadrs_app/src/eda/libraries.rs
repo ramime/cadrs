@@ -100,7 +100,7 @@ impl UserLibraries {
                     format!("{stem}_{i}.{ext}")
                 };
                 let path = dir.join(file);
-                std::fs::write(&path, &bytes[..])
+                cadrs_fs::write(&path, &bytes[..])
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 m.source = path.to_string_lossy().into_owned();
             }
@@ -145,7 +145,11 @@ pub fn attach_model_files(libs: &mut [Library]) {
             }
             m.blob = read
                 .entry(m.source.clone())
-                .or_insert_with(|| std::fs::read(&m.source).ok().map(cadrs_core::blobs::insert))
+                .or_insert_with(|| {
+                    cadrs_fs::read(&m.source)
+                        .ok()
+                        .map(cadrs_core::blobs::insert)
+                })
                 .clone();
         }
     }

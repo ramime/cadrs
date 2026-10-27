@@ -3,6 +3,10 @@
 //! in-app picker, which scripted and headless runs use because a scenario can drive it. Either
 //! way the pick arrives as the same [`FilePicked`] or [`FilesPicked`] message.
 //!
+//! In a page (the browser build) the system's dialog is the browser's file chooser: the chosen
+//! files are copied into the page's files, in [`UPLOADS`], and those are the paths picked. A
+//! browser can't give a folder, so a folder prompt there is the in-app picker's.
+//!
 //! The in-app picker (P3C.7: Insert DXF/DWG and Insert image) is a modal [`Dialog`] like
 //! gpui-component's file prompt: the folder in an editable path field with an Up button, the
 //! folder's subfolders and the files of the wanted types in a scrolling list (folders first,
@@ -45,6 +49,9 @@ impl Plugin for FilePickerPlugin {
             .add_observer(on_submit);
     }
 }
+
+/// Where a page puts the files chosen in the browser's file chooser.
+pub const UPLOADS: &str = "/Uploads";
 
 /// Whether file prompts open the system's own dialog instead of the in-app picker. Off unless
 /// the app turns it on (`cadrs` does for a person's runs, not for scripted or headless ones).
@@ -129,7 +136,7 @@ pub fn join_names(names: &[String]) -> String {
 
 /// One entry of a folder: (name, is a folder, size in bytes).
 pub fn list_dir(dir: &Path, extensions: &[String]) -> Vec<(String, bool, u64)> {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(rd) = cadrs_fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut out: Vec<(String, bool, u64)> = rd
@@ -252,7 +259,7 @@ pub fn home_dir() -> Option<PathBuf> {
 /// the home folder as `~`, else absolute.
 pub fn display_dir(dir: &std::path::Path) -> String {
     let rel = |base: Option<PathBuf>, prefix: &str| {
-        let base = base.and_then(|b| std::fs::canonicalize(&b).ok().or(Some(b)))?;
+        let base = base.and_then(|b| cadrs_fs::canonicalize(&b).ok().or(Some(b)))?;
         let r = dir.strip_prefix(&base).ok()?;
         Some(if r.as_os_str().is_empty() {
             prefix.to_string()
@@ -282,7 +289,10 @@ fn open_picker(
     let (title, tag) = (title.to_string(), tag.to_string());
     let extensions: Vec<String> = extensions.iter().map(|e| e.to_string()).collect();
     commands.queue(move |world: &mut World| {
-        if world.resource::<NativeFileDialogs>().0 {
+        // A browser can't give a folder.
+        if world.resource::<NativeFileDialogs>().0
+            && !(folders_only && cfg!(target_arch = "wasm32"))
+        {
             open_native(world, &title, tag, dir, &extensions, folders_only, multi);
             return;
         }
@@ -305,6 +315,7 @@ fn open_picker(
 
 /// Opens the system's file dialog on a thread of its own and keeps its answer coming
 /// ([`take_native_picks`]). A second prompt for the same `tag` while one is open is ignored.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
 fn open_native(
     world: &mut World,
@@ -379,6 +390,61 @@ fn open_native(
     });
 }
 
+/// The browser's file chooser, for files (see the module docs): the chosen files are read into
+/// [`UPLOADS`] and the answer comes as a native one does ([`take_native_picks`]).
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+fn open_native(
+    world: &mut World,
+    title: &str,
+    tag: String,
+    _dir: PathBuf,
+    extensions: &[String],
+    _folders_only: bool,
+    multi: bool,
+) {
+    if world
+        .resource::<NativeJobs>()
+        .0
+        .iter()
+        .any(|j| j.tag == tag)
+    {
+        return;
+    }
+    let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+    if !extensions.is_empty() {
+        let name = extensions
+            .iter()
+            .map(|e| e.to_uppercase())
+            .collect::<Vec<_>>()
+            .join(", ");
+        dialog = dialog.add_filter(name, extensions);
+    }
+    let (tx, rx) = mpsc::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        let chosen = if multi {
+            dialog.pick_files().await
+        } else {
+            dialog.pick_file().await.map(|h| vec![h])
+        };
+        let mut paths = Vec::new();
+        for file in chosen.into_iter().flatten() {
+            let path = Path::new(UPLOADS).join(file.file_name());
+            let bytes = file.read().await;
+            match cadrs_fs::create_dir_all(UPLOADS).and_then(|()| cadrs_fs::write(&path, bytes)) {
+                Ok(()) => paths.push(path),
+                Err(e) => warn!("cannot keep {}: {e}", path.display()),
+            }
+        }
+        let _ = tx.send((!paths.is_empty()).then_some(paths));
+    });
+    world.resource_mut::<NativeJobs>().0.push(NativeJob {
+        tag,
+        multi,
+        answer: Mutex::new(rx),
+    });
+}
+
 /// Turns a system dialog's answer into the same message the in-app picker sends; a cancelled
 /// dialog sends nothing.
 fn take_native_picks(
@@ -430,7 +496,7 @@ fn spawn_in_app_picker(
     folders_only: bool,
     multi: bool,
 ) {
-    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let dir = cadrs_fs::canonicalize(&dir).unwrap_or(dir);
     let t = theme.clone();
     let (tb, tf) = (t.clone(), t.clone());
     let (n1, n2) = (name.clone(), name.clone());
@@ -661,7 +727,7 @@ fn accept(w: &mut World, name: &str) {
             })
             .collect();
         if let [one] = paths.as_slice()
-            && one.is_dir()
+            && cadrs_fs::is_dir(one)
         {
             let one = one.clone();
             update(w, name, |s| {
@@ -672,7 +738,7 @@ fn accept(w: &mut World, name: &str) {
             set_field(w, &format!("{name}-name-field"), "");
             return;
         }
-        if paths.is_empty() || !paths.iter().all(|p| p.is_file()) {
+        if paths.is_empty() || !paths.iter().all(cadrs_fs::is_file) {
             return;
         }
         w.write_message(FilesPicked {
@@ -696,7 +762,7 @@ fn accept(w: &mut World, name: &str) {
     } else {
         state.dir.join(&chosen)
     };
-    if path.is_dir() {
+    if cadrs_fs::is_dir(&path) {
         update(w, name, |s| {
             s.dir = path;
             s.selected = None;
@@ -704,7 +770,7 @@ fn accept(w: &mut World, name: &str) {
         set_field(w, &format!("{name}-name-field"), "");
         return;
     }
-    if !path.is_file() {
+    if !cadrs_fs::is_file(&path) {
         return;
     }
     w.write_message(FilePicked {
@@ -732,9 +798,9 @@ fn on_submit(
                     (Some(rest), Some(home)) => home.join(rest.trim_start_matches(['/', '\\'])),
                     _ => PathBuf::from(v),
                 };
-                if p.is_dir() {
+                if cadrs_fs::is_dir(&p) {
                     update(w, &name, |s| {
-                        s.dir = std::fs::canonicalize(&p).unwrap_or(p);
+                        s.dir = cadrs_fs::canonicalize(&p).unwrap_or(p);
                         s.selected = None;
                     });
                 }
@@ -895,16 +961,16 @@ mod tests {
     #[test]
     fn lists_folders_first_then_matching_files() {
         let d = std::env::temp_dir().join(format!("cadrs-picker-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("sub")).unwrap();
-        std::fs::write(d.join("b.DXF"), "x").unwrap();
-        std::fs::write(d.join("a.dxf"), "xy").unwrap();
-        std::fs::write(d.join("c.txt"), "x").unwrap();
-        std::fs::write(d.join(".hidden.dxf"), "x").unwrap();
+        let _ = cadrs_fs::remove_dir_all(&d);
+        cadrs_fs::create_dir_all(d.join("sub")).unwrap();
+        cadrs_fs::write(d.join("b.DXF"), "x").unwrap();
+        cadrs_fs::write(d.join("a.dxf"), "xy").unwrap();
+        cadrs_fs::write(d.join("c.txt"), "x").unwrap();
+        cadrs_fs::write(d.join(".hidden.dxf"), "x").unwrap();
         let l = list_dir(&d, &["dxf".into(), "dwg".into()]);
         let names: Vec<&str> = l.iter().map(|e| e.0.as_str()).collect();
         assert_eq!(names, ["sub", "a.dxf", "b.DXF"]);
         assert_eq!(l[1].2, 2);
-        let _ = std::fs::remove_dir_all(&d);
+        let _ = cadrs_fs::remove_dir_all(&d);
     }
 }

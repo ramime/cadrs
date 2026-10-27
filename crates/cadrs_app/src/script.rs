@@ -362,8 +362,8 @@ fn run_script_commands(mut msgs: MessageReader<ScriptCommand>, mut commands: Com
                     .components()
                     .any(|c| matches!(c, std::path::Component::ParentDir))
             {
-                let _ = std::fs::remove_dir_all(&dir);
-                let _ = std::fs::create_dir_all(&dir);
+                let _ = cadrs_fs::remove_dir_all(&dir);
+                let _ = cadrs_fs::create_dir_all(&dir);
             } else {
                 warn!("clear-dir: only folders under target/ ({})", dir.display());
             }
@@ -1424,7 +1424,7 @@ fn populate_sketch(world: &mut World, n: usize) {
         warn!("populate-sketch needs an open sketch");
         return;
     };
-    let start = std::time::Instant::now();
+    let start = web_time::Instant::now();
     let (op, rects) = populate_ops(n);
     let Some(mut doc) = world.get_resource_mut::<ActiveDocument>() else {
         return;
@@ -1454,7 +1454,7 @@ fn populate_sketch(world: &mut World, n: usize) {
 fn pcb_board(world: &mut World, spec: &str) {
     use cadrs_core::commands::{RenameDocument, RenameElement, SetUnits};
     let dir = fixtures_dir().join("idf");
-    let read = |ext: &str| std::fs::read_to_string(dir.join(format!("{spec}.{ext}")));
+    let read = |ext: &str| cadrs_fs::read_to_string(dir.join(format!("{spec}.{ext}")));
     let pcb = match (read("emn"), read("emp")) {
         (Ok(emn), Ok(emp)) => match cadrs_pcb::PcbBoard::read(&emn, &emp) {
             Ok(b) => b,
@@ -1503,7 +1503,7 @@ fn pcb_board(world: &mut World, spec: &str) {
 /// one in the source tree.
 pub(crate) fn fixtures_dir() -> std::path::PathBuf {
     let local = std::path::PathBuf::from("fixtures");
-    if local.is_dir() {
+    if cadrs_fs::is_dir(&local) {
         return local;
     }
     std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures"))
@@ -1555,7 +1555,7 @@ fn open_fixture(world: &mut World, name: &str) {
     }
     // P3D.3: a stand-in shipped with its history (`fixtures/<name>.history.ron`).
     let history = fixtures_dir().join(format!("{name}.history.ron"));
-    if history.is_file()
+    if cadrs_fs::is_file(&history)
         && let Some(store) = world.get_resource::<crate::DocumentStore>()
     {
         match cadrs_core::history_log::HistoryLog::load_path(&history) {
@@ -1583,9 +1583,9 @@ fn write_step(path: &str, sample: cadrs_core::samples::StepFixture) {
     match bytes {
         Some(Ok(b)) => {
             if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
+                let _ = cadrs_fs::create_dir_all(dir);
             }
-            if let Err(e) = std::fs::write(&path, b) {
+            if let Err(e) = cadrs_fs::write(&path, b) {
                 warn!("step-fixture {}: {e}", path.display());
             }
         }

@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::diagnostic::DiagnosticsStore;
 use bevy::gizmos::config::GizmoConfigStore;

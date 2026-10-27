@@ -361,7 +361,9 @@ pub struct Renderer {
     samples_done: u32,
     ground_z: f32,
     eps: f32,
-    pool: rayon::ThreadPool,
+    /// The render's own threads; `None` in a page, which can't start any (rayon's global pool
+    /// is then the page's one thread).
+    pool: Option<rayon::ThreadPool>,
 }
 
 /// The threads a render uses: half the machine's, at most eight (the app stays responsive).
@@ -387,10 +389,12 @@ impl Renderer {
             }
             None => (0.0, 1e-4),
         };
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads.max(1))
-            .build()
-            .expect("render threads");
+        let pool = (!cfg!(target_arch = "wasm32")).then(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads.max(1))
+                .build()
+                .expect("render threads")
+        });
         Renderer {
             scene,
             camera,
@@ -417,6 +421,14 @@ impl Renderer {
         self.samples_done >= self.settings.samples
     }
 
+    /// Runs `op` on the render's threads.
+    fn install<R: Send>(&self, op: impl FnOnce() -> R + Send) -> R {
+        match &self.pool {
+            Some(pool) => pool.install(op),
+            None => op(),
+        }
+    }
+
     /// Adds one sample to every pixel.
     pub fn pass(&mut self) {
         let s = self.samples_done;
@@ -425,7 +437,7 @@ impl Renderer {
         let mut guide = std::mem::take(&mut self.guide);
         {
             let this = &*self;
-            this.pool.install(|| {
+            this.install(|| {
                 accum
                     .par_chunks_mut(w)
                     .zip(guide.par_chunks_mut(w))
@@ -808,7 +820,7 @@ impl Renderer {
         for &step in steps {
             let src = &cur;
             let ground = &ground;
-            cur = self.pool.install(|| {
+            cur = self.install(|| {
                 (0..h)
                     .into_par_iter()
                     .flat_map_iter(|y| {
@@ -867,7 +879,7 @@ impl Renderer {
         for (iteration, step) in [1usize, 2, 4, 8].into_iter().enumerate() {
             let sigma_l = noise * 4.0 / (1u32 << iteration) as f32;
             let src = &cur;
-            let next: Vec<V3> = self.pool.install(|| {
+            let next: Vec<V3> = self.install(|| {
                 (0..h)
                     .into_par_iter()
                     .flat_map_iter(|y| {

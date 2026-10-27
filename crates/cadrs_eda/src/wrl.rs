@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn reads_the_test_fixture() {
-        let text = std::fs::read_to_string(concat!(
+        let text = cadrs_fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/eda/test_part.wrl"
         ))
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn reads_an_easyeda_model() {
         let path = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join("work/desk_power_monitor/hardware/desk_power_monitor_mini32_lora/library/easyeda2kicad.3dshapes/WIRELM-SMD_RA-01SH.wrl");
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = cadrs_fs::read_to_string(&path) else {
             return;
         };
         let m = read(&text).unwrap();

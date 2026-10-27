@@ -31,7 +31,7 @@ use crate::*;
 
 /// Accumulated time per phase of an operation (CADRS_PROFILE=1 prints it after each one).
 pub(crate) struct Prof {
-    t: std::time::Instant,
+    t: web_time::Instant,
     on: bool,
     phases: Vec<(&'static str, std::time::Duration)>,
 }
@@ -45,14 +45,14 @@ pub(crate) fn profiling() -> bool {
 impl Prof {
     pub(crate) fn new() -> Self {
         Self {
-            t: std::time::Instant::now(),
+            t: web_time::Instant::now(),
             on: profiling(),
             phases: Vec::new(),
         }
     }
     pub(crate) fn mark(&mut self, name: &'static str) {
         if self.on {
-            let now = std::time::Instant::now();
+            let now = web_time::Instant::now();
             self.phases.push((name, now - self.t));
             self.t = now;
         }
@@ -2520,7 +2520,7 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
         let done: Vec<(Found, u64)> = chunk
             .par_iter()
             .map(|&(fa, fb)| {
-                let t = std::time::Instant::now();
+                let t = web_time::Instant::now();
                 // (The curves the surfaces only touch along are left out: the faces' tangent
                 // contact is found from their boundaries, as for faces tangent along an edge.)
                 let r = ssi::surface_surface_tol(

@@ -269,7 +269,8 @@ struct LibraryInfo {
 /// The folders the built-in libraries load from, in order: `$CADRS_LIBRARIES` (a path list)
 /// when set; else `libraries/` beside the executable, in the macOS app bundle's
 /// `Contents/Resources/` or two levels up (`target/release/`), and the repository's `libraries/`
-/// this was built from.
+/// this was built from. In a page (the browser build): `/libraries`, which the page unpacks from
+/// its bundle (`tools/web`).
 pub fn builtin_dirs() -> Vec<PathBuf> {
     if let Some(v) = std::env::var_os("CADRS_LIBRARIES") {
         return std::env::split_paths(&v).collect();
@@ -288,10 +289,12 @@ pub fn builtin_dirs() -> Vec<PathBuf> {
                 .map(|d| d.join("libraries")),
         );
     }
+    #[cfg(target_arch = "wasm32")]
+    dirs.push(PathBuf::from("/libraries"));
     dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../libraries"));
     // The first that exists (the same folder can show up twice).
     dirs.into_iter()
-        .find(|d| d.join("Device").is_dir() || d.is_dir())
+        .find(|d| cadrs_fs::is_dir(d.join("Device")) || cadrs_fs::is_dir(d))
         .into_iter()
         .collect()
 }
@@ -329,9 +332,9 @@ fn set_footprint_ids(f: &mut Footprint, mut id: impl FnMut() -> uuid::Uuid) {
 /// Writes a library folder (creating it), one file per symbol and footprint. Model files the
 /// footprints name by a path inside `dir` are written relative to it.
 pub fn save_library(lib: &Library, dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let write = |name: &str, text: String| {
-        std::fs::write(dir.join(name), text).map_err(|e| format!("{name}: {e}"))
+        cadrs_fs::write(dir.join(name), text).map_err(|e| format!("{name}: {e}"))
     };
     write(
         LIBRARY_FILE,
@@ -354,9 +357,9 @@ pub fn save_library(lib: &Library, dir: &Path) -> Result<(), String> {
 
 /// Makes `dir` a library folder (with its `library.ron`) unless it is one already.
 pub fn ensure_library(dir: &Path, description: &str) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let info = dir.join(LIBRARY_FILE);
-    if info.is_file() {
+    if cadrs_fs::is_file(&info) {
         return Ok(());
     }
     let text = ron::ser::to_string_pretty(
@@ -366,7 +369,7 @@ pub fn ensure_library(dir: &Path, description: &str) -> Result<(), String> {
         ron_config(),
     )
     .map_err(|e| e.to_string())?;
-    std::fs::write(&info, text).map_err(|e| format!("{}: {e}", info.display()))
+    cadrs_fs::write(&info, text).map_err(|e| format!("{}: {e}", info.display()))
 }
 /// Writes one symbol into a library folder.
 pub fn write_symbol(dir: &Path, s: &Symbol) -> Result<(), String> {
@@ -374,7 +377,7 @@ pub fn write_symbol(dir: &Path, s: &Symbol) -> Result<(), String> {
     s.id = s.name().to_string();
     let text = ron::ser::to_string_pretty(&s, ron_config()).map_err(|e| e.to_string())?;
     let name = format!("{}{SYMBOL_EXT}", file_stem(&s.id));
-    std::fs::write(dir.join(&name), text).map_err(|e| format!("{name}: {e}"))
+    cadrs_fs::write(dir.join(&name), text).map_err(|e| format!("{name}: {e}"))
 }
 
 /// Writes one footprint into a library folder.
@@ -390,7 +393,7 @@ pub fn write_footprint(dir: &Path, f: &Footprint) -> Result<(), String> {
     }
     let text = ron::ser::to_string_pretty(&f, ron_config()).map_err(|e| e.to_string())?;
     let name = format!("{}{FOOTPRINT_EXT}", file_stem(&f.id));
-    std::fs::write(dir.join(&name), text).map_err(|e| format!("{name}: {e}"))
+    cadrs_fs::write(dir.join(&name), text).map_err(|e| format!("{name}: {e}"))
 }
 
 /// Reads a library folder (named after the folder). Parts that don't parse are skipped and
@@ -402,13 +405,13 @@ pub fn load_library(dir: &Path, scope: Scope) -> (Library, Vec<String>) {
         .unwrap_or_default();
     let mut lib = Library::new(name, scope);
     let mut errors = vec![];
-    if let Ok(text) = std::fs::read_to_string(dir.join(LIBRARY_FILE)) {
+    if let Ok(text) = cadrs_fs::read_to_string(dir.join(LIBRARY_FILE)) {
         match ron::from_str::<LibraryInfo>(&text) {
             Ok(info) => lib.description = info.description,
             Err(e) => errors.push(format!("{}: {e}", dir.join(LIBRARY_FILE).display())),
         }
     }
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut files: Vec<PathBuf> = cadrs_fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
@@ -420,7 +423,7 @@ pub fn load_library(dir: &Path, scope: Scope) -> (Library, Vec<String>) {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let text = || std::fs::read_to_string(&path).map_err(|e| e.to_string());
+        let text = || cadrs_fs::read_to_string(&path).map_err(|e| e.to_string());
         if file.ends_with(SYMBOL_EXT) {
             match text().and_then(|t| ron::from_str::<Symbol>(&t).map_err(|e| e.to_string())) {
                 Ok(s) => lib.put_symbol(s),
@@ -432,7 +435,9 @@ pub fn load_library(dir: &Path, scope: Scope) -> (Library, Vec<String>) {
                     set_footprint_ids(&mut f, uuid::Uuid::new_v4);
                     for m in &mut f.models {
                         let p = dir.join(&m.source);
-                        if !m.source.is_empty() && Path::new(&m.source).is_relative() && p.is_file()
+                        if !m.source.is_empty()
+                            && Path::new(&m.source).is_relative()
+                            && cadrs_fs::is_file(&p)
                         {
                             m.source = std::path::absolute(&p)
                                 .unwrap_or(p)
@@ -455,12 +460,12 @@ pub fn load_libraries(dirs: &[PathBuf], scope: Scope) -> (Vec<Library>, Vec<Stri
     let mut out: Vec<Library> = vec![];
     let mut errors = vec![];
     for dir in dirs {
-        let mut subs: Vec<PathBuf> = std::fs::read_dir(dir)
+        let mut subs: Vec<PathBuf> = cadrs_fs::read_dir(dir)
             .into_iter()
             .flatten()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.is_dir())
+            .filter(|p| cadrs_fs::is_dir(p))
             .collect();
         subs.sort();
         for sub in subs {
@@ -584,7 +589,7 @@ mod builtin_tests {
             .join("Package_SO");
         save_library(lib, &dir).unwrap();
         let (back, errors) = load_library(&dir, Scope::Global);
-        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+        cadrs_fs::remove_dir_all(dir.parent().unwrap()).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(
             (back.name.as_str(), &back.description),

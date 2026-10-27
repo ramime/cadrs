@@ -61,7 +61,7 @@ const FIELD_H: f32 = 26.0;
 fn browse_folder(world: &mut World) {
     let typed = field(world, "drawing-export-folder-field");
     let dir = std::path::PathBuf::from(typed.trim());
-    let dir = if dir.is_dir() {
+    let dir = if cadrs_fs::is_dir(&dir) {
         dir
     } else {
         std::env::current_dir().unwrap_or_default()

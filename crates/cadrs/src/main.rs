@@ -19,21 +19,39 @@
 //! (`~/.local/share/cadrs/documents`, `%APPDATA%\cadrs\documents`). Scenarios use a fresh
 //! `<out dir>/data` instead, a fixed clock and a fixed user, so their screenshots are
 //! reproducible.
+//!
+//! In a browser (`wasm32`) there are no arguments: [`web`] runs the app in its page.
 
 use bevy::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use cadrs_app::{AppClock, CadrsAppPlugin, DocumentStore, OpenAtStart, StartState, UserProfile};
+#[cfg(not(target_arch = "wasm32"))]
 use cadrs_core::Store;
+#[cfg(not(target_arch = "wasm32"))]
 use cadrs_harness::{HarnessOptions, HarnessPlugin};
+#[cfg(not(target_arch = "wasm32"))]
 use cadrs_ui::CadrsUiPlugin;
 
 /// "Now" in scenarios: 2026-09-24 15:30 UTC.
+#[cfg(not(target_arch = "wasm32"))]
 const SCENARIO_NOW: i64 = 1_790_263_800;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod batch;
+#[cfg(not(target_arch = "wasm32"))]
 mod check;
+#[cfg(not(target_arch = "wasm32"))]
 mod install;
+#[cfg(target_arch = "wasm32")]
+mod web;
+
+#[cfg(target_arch = "wasm32")]
+fn main() -> AppExit {
+    web::run()
+}
 
 /// Every way to run cadrs (`-h`, `--help`).
+#[cfg(not(target_arch = "wasm32"))]
 const HELP: &str = "\
 cadrs: an Onshape-style CAD app.
 
@@ -60,6 +78,7 @@ Usage:
 Documents live in --data-dir, else $CADRS_DATA_DIR, else the platform data dir
 (~/.local/share/cadrs/documents on Linux).";
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> AppExit {
     // `--jobs N` / `--scenarios a,b` / `--all`: many scenarios in parallel child processes.
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -282,6 +301,7 @@ fn main() -> AppExit {
 
 /// Lets scenarios address sketch-plane points (`world(x, y)`): the harness reads the app's
 /// current sketch-plane-to-screen mapping (on a Drawing tab, the sheet's, in mm).
+#[cfg(not(target_arch = "wasm32"))]
 fn share_sketch_mapping(
     screen: Res<cadrs_app::sketch_tools::SketchScreen>,
     sheet: Res<cadrs_app::drawing::SheetScreen>,
@@ -310,6 +330,7 @@ fn share_sketch_mapping(
 
 /// Lets scenarios address points of the sheet metal flat view, or of a native board's
 /// Schematic or Layout view (design millimetres), as `flat(x, y)`.
+#[cfg(not(target_arch = "wasm32"))]
 fn share_flat_mapping(
     table: Res<cadrs_app::sheetmetal_table::SmTable>,
     eda: Res<cadrs_app::eda::Eda2d>,
@@ -353,6 +374,7 @@ fn share_flat_mapping(
 }
 
 /// Lets scenarios address 3D points (`xyz(x, y, z)`): the current view's projection.
+#[cfg(not(target_arch = "wasm32"))]
 fn share_view_mapping(
     view: Res<cadrs_app::viewport::ViewportView>,
     rect: Res<cadrs_app::viewport::ViewportRect>,
@@ -375,6 +397,7 @@ fn share_view_mapping(
 
 /// Runs a scenario an MCP client sent (`run_scenario`) in the running app: its RON is a list of
 /// steps or a whole `Scenario(...)`; screenshots go to a temporary folder.
+#[cfg(not(target_arch = "wasm32"))]
 fn run_live_scenario(
     world: &mut World,
     ron_text: &str,

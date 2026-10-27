@@ -406,7 +406,7 @@ fn load_import(tag: &str, path: &std::path::Path) -> Result<SketchItem, String> 
         "insert-dxf" => cadrs_drawing::export::block_from_file(path, [0.0, 0.0])
             .map(|b| SketchItem::new(ItemKind::Block(b))),
         "insert-image" => {
-            let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let data = cadrs_fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
             let px = cadrs_drawing::export::image_size(&data).ok_or("not a PNG or JPEG image")?;
             let name = path
                 .file_name()

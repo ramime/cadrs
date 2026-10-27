@@ -299,7 +299,7 @@ pub fn read_file(path: &std::path::Path) -> Result<DxfDrawing, String> {
         let conv = cadrs_drawing::dwg::find_converter().ok_or(cadrs_drawing::dwg::INSTALL_HINT)?;
         cadrs_drawing::dwg::dwg_to_dxf(&conv, path)?
     } else {
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let bytes = cadrs_fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         String::from_utf8_lossy(&bytes).into_owned()
     };
     cadrs_drawing::dxf::read_dxf(&text)

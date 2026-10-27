@@ -301,7 +301,7 @@ fn remap(el: &mut Element, map: &HashMap<ElementId, ElementId>) {
 
 /// True if the store holds document `id`.
 fn stored(store: &Store, id: DocumentId) -> bool {
-    store.document_path(id).is_file()
+    cadrs_fs::is_file(store.document_path(id))
 }
 
 /// Moves `tabs` of `doc` (the tabs picked plus the referenced tabs chosen to go with them) to

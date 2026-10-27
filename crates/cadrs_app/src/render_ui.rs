@@ -22,7 +22,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
@@ -285,67 +285,65 @@ fn spawn_job(
     }));
     let (c2, s2) = (cancel.clone(), shared.clone());
     let final_render = save.is_some();
-    std::thread::Builder::new()
-        .name("render".into())
-        .spawn(move || {
-            let (parts, props, appearances) = input;
-            let scene = Arc::new(model::scene(&parts, &props, &appearances));
-            let camera = model::camera(&studio, &scene, width as f32 / height as f32);
-            let settings = model::settings(&studio, width, height, samples);
-            // The preview leaves the app some threads; a final render takes the renderer's share.
-            let threads = if final_render {
-                cadrs_render::default_threads()
-            } else {
-                cadrs_render::default_threads().min(4)
-            };
-            let mut r = cadrs_render::Renderer::new(scene, camera, settings, threads);
-            let publish = |r: &cadrs_render::Renderer, img: RgbaImage, finished: bool| {
-                let mut s = s2.lock().unwrap();
-                s.done = r.samples_done();
-                s.image = Some(Arc::new(img));
-                s.version += 1;
-                s.finished = finished;
-            };
-            let mut last_publish = Instant::now();
-            while !r.is_done() {
-                if c2.load(Ordering::Relaxed) {
-                    return;
-                }
-                // A scripted hold: show the image so far and wait.
-                if let Some(h) = &hold
-                    && r.samples_done() >= h.load(Ordering::Relaxed)
-                {
-                    if !s2.lock().unwrap().held {
-                        publish(&r, r.image_noisy(), false);
-                        s2.lock().unwrap().held = true;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                    continue;
-                }
-                s2.lock().unwrap().held = false;
-                r.pass();
-                // Progress images: every pass of a preview, about twice a second for a big render.
-                let big = (width as u64) * (height as u64) > 1_500_000;
-                if !r.is_done() && (!big || last_publish.elapsed().as_millis() > 500) {
-                    publish(&r, r.image_noisy(), false);
-                    last_publish = Instant::now();
-                } else if !r.is_done() {
-                    s2.lock().unwrap().done = r.samples_done();
-                }
+    cadrs_core::background::spawn("render", move || {
+        let (parts, props, appearances) = input;
+        let scene = Arc::new(model::scene(&parts, &props, &appearances));
+        let camera = model::camera(&studio, &scene, width as f32 / height as f32);
+        let settings = model::settings(&studio, width, height, samples);
+        // The preview leaves the app some threads; a final render takes the renderer's share.
+        let threads = if final_render {
+            cadrs_render::default_threads()
+        } else {
+            cadrs_render::default_threads().min(4)
+        };
+        let mut r = cadrs_render::Renderer::new(scene, camera, settings, threads);
+        let publish = |r: &cadrs_render::Renderer, img: RgbaImage, finished: bool| {
+            let mut s = s2.lock().unwrap();
+            s.done = r.samples_done();
+            s.image = Some(Arc::new(img));
+            s.version += 1;
+            s.finished = finished;
+        };
+        let mut last_publish = Instant::now();
+        while !r.is_done() {
+            if c2.load(Ordering::Relaxed) {
+                return;
             }
-            let img = r.image();
-            let saved = save.map(|path| {
-                if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            // A scripted hold: show the image so far and wait.
+            if let Some(h) = &hold
+                && r.samples_done() >= h.load(Ordering::Relaxed)
+            {
+                if !s2.lock().unwrap().held {
+                    publish(&r, r.image_noisy(), false);
+                    s2.lock().unwrap().held = true;
                 }
-                img.save(&path)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                Ok(path)
-            });
-            s2.lock().unwrap().saved = saved;
-            publish(&r, img, true);
-        })
-        .expect("render thread");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+            s2.lock().unwrap().held = false;
+            r.pass();
+            // Progress images: every pass of a preview, about twice a second for a big render.
+            let big = (width as u64) * (height as u64) > 1_500_000;
+            if !r.is_done() && (!big || last_publish.elapsed().as_millis() > 500) {
+                publish(&r, r.image_noisy(), false);
+                last_publish = Instant::now();
+            } else if !r.is_done() {
+                s2.lock().unwrap().done = r.samples_done();
+            }
+        }
+        let img = r.image();
+        let saved = save.map(|path| {
+            if let Some(dir) = path.parent() {
+                cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            img.save(&path)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(path)
+        });
+        s2.lock().unwrap().saved = saved;
+        publish(&r, img, true);
+    })
+    .expect("render thread");
     Job {
         element,
         cancel,
@@ -1480,7 +1478,7 @@ fn on_activate(ev: On<Activate>, q: Query<&Name>, mut commands: Commands) {
         "render-dialog-browse" => commands.queue(|world: &mut World| {
             let typed = field(world, "render-dialog-folder-field");
             let dir = PathBuf::from(typed.trim());
-            let dir = if dir.is_dir() {
+            let dir = if cadrs_fs::is_dir(&dir) {
                 dir
             } else {
                 std::env::current_dir().unwrap_or_default()

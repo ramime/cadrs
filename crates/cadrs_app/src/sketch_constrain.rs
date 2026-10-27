@@ -124,12 +124,12 @@ type LostKey = (PartsKey, HashSet<FeatureId>);
 /// A result being worked out on a background thread (taken once it is there).
 type Pending<T> = std::sync::Arc<std::sync::Mutex<Option<T>>>;
 
-/// Runs `f` on a background thread, or right here when `wait` (scripted runs).
+/// Runs `f` on a background thread, or right here when `wait` (scripted runs) or in a page.
 fn run_or_spawn<T: Send + 'static>(
     wait: bool,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Pending<T> {
-    if wait {
+    if wait || cfg!(target_arch = "wasm32") {
         return std::sync::Arc::new(std::sync::Mutex::new(Some(f())));
     }
     let slot: Pending<T> = Default::default();

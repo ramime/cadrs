@@ -1577,7 +1577,7 @@ fn sync_chrome(
 /// in the source tree.
 pub fn idf_fixtures_dir() -> std::path::PathBuf {
     let local = std::path::PathBuf::from("fixtures/idf");
-    if local.is_dir() {
+    if cadrs_fs::is_dir(&local) {
         return local;
     }
     std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/idf"))

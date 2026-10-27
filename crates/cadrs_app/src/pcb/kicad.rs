@@ -96,8 +96,8 @@ fn load_models(design: &mut cadrs_eda::Design, project_dir: &Path) -> Vec<String
                 .or_insert_with(|| {
                     let p = cadrs_kicad::resolve_model(&m.source, project_dir)?;
                     let wrl = p.with_extension("wrl");
-                    let p = if wrl.is_file() { wrl } else { p };
-                    let bytes = std::fs::read(&p).ok()?;
+                    let p = if cadrs_fs::is_file(&wrl) { wrl } else { p };
+                    let bytes = cadrs_fs::read(&p).ok()?;
                     Some((
                         cadrs_core::blobs::insert(bytes),
                         p.to_string_lossy().into_owned(),

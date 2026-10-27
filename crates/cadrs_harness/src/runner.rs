@@ -98,7 +98,7 @@ enum Op {
 /// Frame timing between `MeasureStart` and `MeasureEnd`.
 struct Measure {
     label: String,
-    last: std::time::Instant,
+    last: web_time::Instant,
     frames: Vec<f64>,
 }
 
@@ -128,7 +128,7 @@ pub struct Runner {
     /// How long one step may wait (to settle, or for its target) before the scenario fails.
     timeout: std::time::Duration,
     /// When the current step started waiting.
-    waiting: Option<std::time::Instant>,
+    waiting: Option<web_time::Instant>,
     /// Frames in a row with no pending work, before the current step.
     quiet: u8,
     /// Shared with the [`watchdog`]: when the last frame ran and the step timeout (both ms).
@@ -151,12 +151,12 @@ pub type LiveDone = std::sync::Mutex<Option<Box<dyn FnOnce(Result<Vec<PathBuf>, 
 struct Heartbeat {
     last_frame: AtomicU64,
     timeout: AtomicU64,
-    start: std::sync::OnceLock<std::time::Instant>,
+    start: std::sync::OnceLock<web_time::Instant>,
 }
 
 impl Heartbeat {
     fn beat(&self) {
-        let start = *self.start.get_or_init(std::time::Instant::now);
+        let start = *self.start.get_or_init(web_time::Instant::now);
         self.last_frame
             .store(start.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
     }
@@ -196,7 +196,7 @@ fn watchdog(heartbeat: Arc<Heartbeat>, out_dir: PathBuf) {
                     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
                     .unwrap_or_else(|| "(no eu-stack or gdb to dump the stacks)".into());
                 let path = out_dir.join("hang-stacks.txt");
-                let _ = std::fs::write(&path, &stacks);
+                let _ = cadrs_fs::write(&path, &stacks);
                 eprintln!("{stacks}");
                 let msg = format!(
                     "the app ran no frame for {} s (hung); thread stacks in {}",
@@ -223,8 +223,8 @@ pub fn start_live(
     if world.contains_resource::<Runner>() {
         return Err("a scenario is already running".into());
     }
-    let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir)
+    let _ = cadrs_fs::remove_dir_all(&out_dir);
+    cadrs_fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     world.init_resource::<WorldToScreen>();
     world.init_resource::<SpaceToScreen>();
@@ -273,8 +273,8 @@ fn is_live(world: &World) -> bool {
 }
 
 pub fn add_runner(app: &mut App, scenario: Scenario, name: String, out_dir: PathBuf) {
-    let _ = std::fs::remove_dir_all(&out_dir);
-    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+    let _ = cadrs_fs::remove_dir_all(&out_dir);
+    if let Err(e) = cadrs_fs::create_dir_all(&out_dir) {
         panic!("cannot create {}: {e}", out_dir.display());
     }
     let heartbeat = Arc::new(Heartbeat::default());
@@ -344,7 +344,7 @@ pub fn drive(world: &mut World) {
         return;
     }
     if let Some(m) = runner.measure.as_mut() {
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         m.frames
             .push(now.duration_since(m.last).as_secs_f64() * 1000.0);
         m.last = now;
@@ -384,7 +384,7 @@ pub fn drive(world: &mut World) {
         );
         // Everything the app saved is on disk (saves are synchronous): a relaunch scenario
         // (`data_from`) may now take its documents.
-        if let Err(e) = std::fs::write(dir.join(crate::COMPLETE_MARKER), b"") {
+        if let Err(e) = cadrs_fs::write(dir.join(crate::COMPLETE_MARKER), b"") {
             warn!("cannot mark {} complete: {e}", dir.display());
         }
         world.write_message(AppExit::Success);
@@ -414,7 +414,7 @@ pub fn drive(world: &mut World) {
             .get_resource::<cadrs_ui::PendingWork>()
             .is_some_and(|w| w.0);
         let mut runner = world.resource_mut::<Runner>();
-        let since = *runner.waiting.get_or_insert_with(std::time::Instant::now);
+        let since = *runner.waiting.get_or_insert_with(web_time::Instant::now);
         runner.quiet = if busy {
             0
         } else {
@@ -501,7 +501,7 @@ pub fn drive(world: &mut World) {
             let mut runner = world.resource_mut::<Runner>();
             runner.retries += 1;
             // (A WaitFor skips the settle wait, so its clock may only start here.)
-            let since = *runner.waiting.get_or_insert_with(std::time::Instant::now);
+            let since = *runner.waiting.get_or_insert_with(web_time::Instant::now);
             let timed_out = since.elapsed() > runner.timeout;
             if runner.retries > TARGET_MIN_FRAMES && timed_out {
                 if let Step::ExpectClipboard(_) = &step {
@@ -1023,7 +1023,7 @@ fn execute(world: &mut World, op: Op) {
         Op::MeasureStart(label) => {
             world.resource_mut::<Runner>().measure = Some(Measure {
                 label,
-                last: std::time::Instant::now(),
+                last: web_time::Instant::now(),
                 frames: Vec::new(),
             });
         }
@@ -1037,7 +1037,7 @@ fn execute(world: &mut World, op: Op) {
                 let path = dir.join(format!("perf-{}.txt", m.label));
                 info!("perf {}: {report}", m.label);
                 println!("perf {}: {report}", m.label);
-                if let Err(e) = std::fs::write(&path, format!("{report}\n")) {
+                if let Err(e) = cadrs_fs::write(&path, format!("{report}\n")) {
                     error!("cannot write {}: {e}", path.display());
                 }
             }

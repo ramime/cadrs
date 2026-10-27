@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cadrs_fs.workspace = true
 blake3.workspace = true
 resvg.workspace = true
 bevy.workspace = true
@@ -30,17 +31,22 @@ cadrs_eda.workspace = true
 cadrs_router.workspace = true
 # KiCad project import: a crutch that can be dropped (remove the feature and `pcb::kicad`).
 cadrs_kicad = { workspace = true, optional = true }
-cadrs_easyeda = { workspace = true, optional = true }
-cadrs_mcp.workspace = true
 cadrs_net.workspace = true
 serde_json.workspace = true
 directories.workspace = true
 winit.workspace = true
+flate2.workspace = true
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+
+# Not in the browser build (`tools/web`): the MCP server listens on a port, updates replace the
+# executable, and the online part search asks JLCPCB over plain HTTP.
+web-time.workspace = true
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cadrs_mcp.workspace = true
+cadrs_easyeda = { workspace = true, optional = true }
 # Updates from GitHub releases (`update`).
 ureq.workspace = true
-flate2.workspace = true
 tar.workspace = true
-zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 # The network button's icons exist (`network`).

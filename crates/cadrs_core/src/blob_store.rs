@@ -11,7 +11,9 @@
 //! [`BlobStore`] the same way, or wrap a local one and fall back to peers.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+
+use cadrs_fs::SystemTime;
 
 /// A blob's key: a BLAKE3 hash of what it was made from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,7 +64,7 @@ impl DiskStore {
     /// Removes the blobs not used for `max_age`, then the least recently used ones while the
     /// folder holds more than `max_bytes`; and writes interrupted long ago.
     pub fn prune(&self, max_age: Duration, max_bytes: u64) {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+        let Ok(entries) = cadrs_fs::read_dir(&self.dir) else {
             return;
         };
         let now = SystemTime::now();
@@ -79,7 +81,7 @@ impl DiskStore {
                         .duration_since(used)
                         .is_ok_and(|age| age > Duration::from_secs(3600)))
             {
-                let _ = std::fs::remove_file(&path);
+                let _ = cadrs_fs::remove_file(&path);
             } else if blob {
                 kept.push((used, meta.len(), path));
             }
@@ -90,7 +92,7 @@ impl DiskStore {
             if total <= max_bytes {
                 break;
             }
-            if std::fs::remove_file(&path).is_ok() {
+            if cadrs_fs::remove_file(&path).is_ok() {
                 total -= len;
             }
         }
@@ -100,8 +102,8 @@ impl DiskStore {
 impl BlobStore for DiskStore {
     fn get(&self, key: &BlobKey) -> Option<Vec<u8>> {
         let path = self.path(key);
-        let bytes = std::fs::read(&path).ok()?;
-        let _ = std::fs::File::options()
+        let bytes = cadrs_fs::read(&path).ok()?;
+        let _ = cadrs_fs::File::options()
             .write(true)
             .open(&path)
             .and_then(|f| f.set_modified(SystemTime::now()));
@@ -109,13 +111,13 @@ impl BlobStore for DiskStore {
     }
 
     fn put(&self, key: &BlobKey, bytes: &[u8]) {
-        if std::fs::create_dir_all(&self.dir).is_err() {
+        if cadrs_fs::create_dir_all(&self.dir).is_err() {
             return;
         }
         let path = self.path(key);
         let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-        if std::fs::write(&tmp, bytes).is_err() || std::fs::rename(&tmp, &path).is_err() {
-            let _ = std::fs::remove_file(&tmp);
+        if cadrs_fs::write(&tmp, bytes).is_err() || cadrs_fs::rename(&tmp, &path).is_err() {
+            let _ = cadrs_fs::remove_file(&tmp);
         }
     }
 }
@@ -140,19 +142,19 @@ mod tests {
         s.put(&b, b"second, longer");
         assert_eq!(s.get(&a).as_deref(), Some(&b"first"[..]));
         // Over the size limit: the least recently used goes first.
-        let _ = std::fs::File::options()
+        let _ = cadrs_fs::File::options()
             .write(true)
             .open(s.path(&b))
             .and_then(|f| f.set_modified(SystemTime::now() - Duration::from_secs(60)));
         s.prune(Duration::from_secs(3600), 10);
         assert!(s.get(&a).is_some() && s.get(&b).is_none());
         // Unused for longer than the age limit: gone.
-        let _ = std::fs::File::options()
+        let _ = cadrs_fs::File::options()
             .write(true)
             .open(s.path(&a))
             .and_then(|f| f.set_modified(SystemTime::now() - Duration::from_secs(7200)));
         s.prune(Duration::from_secs(3600), u64::MAX);
         assert!(s.get(&a).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = cadrs_fs::remove_dir_all(&dir);
     }
 }

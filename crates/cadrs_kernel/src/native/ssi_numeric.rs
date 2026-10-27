@@ -1503,7 +1503,7 @@ pub fn intersect_stats(
                 .map(move |cb| (*ca, *cb))
         })
         .collect();
-    let clock = std::time::Instant::now();
+    let clock = web_time::Instant::now();
     let found: Vec<Found> = pairs
         .into_par_iter()
         .map(|(ca, cb)| search(&ctx, ca, cb))

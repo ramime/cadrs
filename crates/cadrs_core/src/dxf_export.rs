@@ -246,7 +246,7 @@ pub fn write_file(
     dir: &std::path::Path,
     stem: &str,
 ) -> Result<std::path::PathBuf, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let ext = if dwg { "dwg" } else { "dxf" };
     let path = crate::export::unique_path_ext(dir, stem, ext);
     let text = write_dxf(page, version);
@@ -256,7 +256,7 @@ pub fn write_file(
             .ok_or(cadrs_drawing::dwg::INSTALL_HINT)?;
         cadrs_drawing::dwg::dxf_to_dwg(&conv, &text, &path, version)?;
     } else {
-        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        cadrs_fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(path)
 }

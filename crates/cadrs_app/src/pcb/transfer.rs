@@ -378,12 +378,12 @@ pub fn open_export_dialog(world: &mut World) {
 /// `<stem>.zip` in `dir`, else `<stem> (2).zip`, …
 pub fn unique_zip(dir: &Path, stem: &str) -> PathBuf {
     let first = dir.join(format!("{stem}.zip"));
-    if !first.exists() {
+    if !cadrs_fs::exists(&first) {
         return first;
     }
     (2..)
         .map(|n| dir.join(format!("{stem} ({n}).zip")))
-        .find(|p| !p.exists())
+        .find(|p| !cadrs_fs::exists(p))
         .expect("an unused name")
 }
 
@@ -437,7 +437,7 @@ pub fn export_shown(world: &mut World, version: IdfVersion) {
     };
     let bytes = cadrs_idf::write_zip(&board, &b.library, version);
     let path = unique_zip(&dir, &cadrs_idf::safe_file_name(&board.name));
-    let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &bytes));
+    let written = cadrs_fs::create_dir_all(&dir).and_then(|_| cadrs_fs::write(&path, &bytes));
     if let Err(e) = written {
         toast(
             world,

@@ -26,7 +26,8 @@ fn writer() -> &'static Writer {
         let (tx, rx) = mpsc::channel::<(PathBuf, MakeText)>();
         let queued = Arc::new((Mutex::new(0usize), Condvar::new()));
         let counts = queued.clone();
-        std::thread::Builder::new()
+        // Without the thread (a page has none), [`queue`] writes each log itself.
+        let _ = std::thread::Builder::new()
             .name("history-writer".into())
             .spawn(move || {
                 while let Ok(first) = rx.recv() {
@@ -53,8 +54,7 @@ fn writer() -> &'static Writer {
                         idle.notify_all();
                     }
                 }
-            })
-            .expect("cannot start the history writer");
+            });
         Writer {
             jobs: Mutex::new(tx),
             queued,
@@ -99,10 +99,10 @@ pub fn flush() {
 /// Writes `text` to `path` through a temporary file, so a reader never sees half of it.
 pub(super) fn write(path: &Path, text: &str) -> Result<(), StoreError> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        cadrs_fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("ron.tmp");
-    std::fs::write(&tmp, text.as_bytes())?;
-    std::fs::rename(&tmp, path)?;
+    cadrs_fs::write(&tmp, text.as_bytes())?;
+    cadrs_fs::rename(&tmp, path)?;
     Ok(())
 }

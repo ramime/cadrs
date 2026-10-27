@@ -181,8 +181,8 @@ mod tests {
     }
 
     fn temp_store(tag: &str) -> Store {
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let n = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         Store::new(
@@ -210,7 +210,7 @@ mod tests {
                 .count(),
             1
         );
-        let _ = std::fs::remove_dir_all(store.root());
+        let _ = cadrs_fs::remove_dir_all(store.root());
     }
 
     #[test]
@@ -239,6 +239,6 @@ mod tests {
             lib.folders.iter().map(|f| f.id).collect::<Vec<_>>(),
             [made.id]
         );
-        let _ = std::fs::remove_dir_all(store.root());
+        let _ = cadrs_fs::remove_dir_all(store.root());
     }
 }

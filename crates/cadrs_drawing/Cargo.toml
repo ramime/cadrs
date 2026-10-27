@@ -8,6 +8,7 @@ repository.workspace = true
 # The drawing model (P3C): sheets, templates, title blocks, drawing properties, views. No Bevy.
 # cadrs_kernel is used for its plain data types only (view frames and projections), without a backend.
 [dependencies]
+cadrs_fs.workspace = true
 cadrs_sketch.workspace = true
 cadrs_kernel.workspace = true
 nalgebra.workspace = true

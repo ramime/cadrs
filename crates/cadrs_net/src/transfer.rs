@@ -286,7 +286,7 @@ impl Handler {
                 reply,
             })
             .map_err(|_| "The owner's cadrs is closing".to_string())?;
-        match tokio::time::timeout(ANSWER_WITHIN, answer).await {
+        match n0_future::time::timeout(ANSWER_WITHIN, answer).await {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => Err("The owner's cadrs refused the request".into()),
             Err(_) => Err("The owner's cadrs did not answer".into()),
@@ -322,10 +322,11 @@ impl ProtocolHandler for Handler {
 
 /// Sends `wire` to `owner` and reads the answer.
 async fn ask<T: DeserializeOwned>(
-    endpoint: Endpoint,
+    endpoint: Result<Endpoint, String>,
     owner: EndpointAddr,
     wire: Wire,
 ) -> Result<T, String> {
+    let endpoint = endpoint?;
     let who = owner.id.fmt_short();
     let reach = async {
         let conn = endpoint
@@ -364,12 +365,22 @@ pub async fn fetch(endpoint: Endpoint, link: ShareLink) -> Result<Welcome, Strin
         topic: link.topic,
         ask: WireAsk::Join,
     };
-    ask(endpoint, link.owner, wire).await
+    ask(Ok(endpoint), link.owner, wire).await
+}
+
+/// The endpoint to dial from. In a page it binds a few frames after startup, not before it.
+fn dial_from(iroh: &Iroh) -> Result<Endpoint, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return Ok(iroh.endpoint());
+    #[cfg(target_arch = "wasm32")]
+    iroh.endpoint()
+        .ok_or_else(|| "Not connected to the network yet".to_string())
 }
 
 /// [`fetch`] on the network runtime: poll the task from a system.
 pub fn start_fetch(iroh: &Iroh, link: ShareLink) -> IrohTask<Result<Welcome, String>> {
-    iroh.spawn(fetch(iroh.endpoint(), link))
+    let endpoint = dial_from(iroh);
+    iroh.spawn(async move { fetch(endpoint?, link).await })
 }
 
 /// Sends edit `id` (made from edit `base` of session `epoch`) to the link's owner. `Err` is a
@@ -392,7 +403,7 @@ pub fn start_propose(
             change,
         },
     });
-    let (endpoint, owner) = (iroh.endpoint(), link.owner.clone());
+    let (endpoint, owner) = (dial_from(iroh), link.owner.clone());
     iroh.spawn(async move { ask(endpoint, owner, wire?).await })
 }
 
@@ -408,7 +419,7 @@ pub fn start_invite(
         topic: link.topic,
         ask: WireAsk::Invite(invite),
     };
-    iroh.spawn(ask(iroh.endpoint(), EndpointAddr::new(to), wire))
+    iroh.spawn(ask(dial_from(iroh), EndpointAddr::new(to), wire))
 }
 
 /// Asks the link's owner to share the document with someone (a member who may share).
@@ -424,7 +435,7 @@ pub fn start_add_member(
         topic: link.topic,
         ask: WireAsk::AddMember { id, name, access },
     };
-    iroh.spawn(ask(iroh.endpoint(), link.owner.clone(), wire))
+    iroh.spawn(ask(dial_from(iroh), link.owner.clone(), wire))
 }
 
 /// Tells the link's owner this user no longer wants the document ("Unshare with me").
@@ -434,7 +445,7 @@ pub fn start_leave(iroh: &Iroh, link: &ShareLink) -> IrohTask<Result<Verdict, St
         topic: link.topic,
         ask: WireAsk::Leave,
     };
-    iroh.spawn(ask(iroh.endpoint(), link.owner.clone(), wire))
+    iroh.spawn(ask(dial_from(iroh), link.owner.clone(), wire))
 }
 
 /// Sends a change to the comments to the link's owner.
@@ -448,7 +459,7 @@ pub fn start_comment(
         topic: link.topic,
         ask: WireAsk::Comment(op),
     });
-    let (endpoint, owner) = (iroh.endpoint(), link.owner.clone());
+    let (endpoint, owner) = (dial_from(iroh), link.owner.clone());
     iroh.spawn(async move { ask(endpoint, owner, wire?).await })
 }
 
@@ -469,7 +480,7 @@ pub fn start_create_version(
             description,
         },
     };
-    iroh.spawn(ask(iroh.endpoint(), link.owner.clone(), wire))
+    iroh.spawn(ask(dial_from(iroh), link.owner.clone(), wire))
 }
 
 /// Asks the link's owner to open a tab for this user only (`take`: from whoever has it), or
@@ -491,7 +502,7 @@ pub fn start_lock(
         topic: link.topic,
         ask: request,
     };
-    iroh.spawn(ask(iroh.endpoint(), link.owner.clone(), wire))
+    iroh.spawn(ask(dial_from(iroh), link.owner.clone(), wire))
 }
 
 /// Gives the real owner (back from away) the document as it is now: from whoever kept the
@@ -506,7 +517,7 @@ pub fn start_handover(
         topic: link.topic,
         ask: WireAsk::Handover(s),
     });
-    let (endpoint, owner) = (iroh.endpoint(), link.owner.clone());
+    let (endpoint, owner) = (dial_from(iroh), link.owner.clone());
     iroh.spawn(async move { ask(endpoint, owner, wire?).await })
 }
 
@@ -522,7 +533,7 @@ pub fn start_transfer(
         topic: link.topic,
         ask: WireAsk::TakeOwnership(o),
     });
-    let endpoint = iroh.endpoint();
+    let endpoint = dial_from(iroh);
     iroh.spawn(async move { ask(endpoint, EndpointAddr::new(to), wire?).await })
 }
 
@@ -534,5 +545,5 @@ pub fn start_status(iroh: &Iroh, link: &ShareLink) -> IrohTask<Result<Verdict, S
         topic: link.topic,
         ask: WireAsk::Status,
     };
-    iroh.spawn(ask(iroh.endpoint(), link.owner.clone(), wire))
+    iroh.spawn(ask(dial_from(iroh), link.owner.clone(), wire))
 }

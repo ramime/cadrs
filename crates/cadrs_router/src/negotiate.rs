@@ -304,7 +304,7 @@ impl<'a> Negotiation<'a> {
         let trace = std::env::var_os("CADRS_ROUTER_TRACE").is_some();
         for pass in 0..pricing.passes.max(1) {
             self.passes = pass + 1;
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             for &j in &todo {
                 self.rip(j);
                 let r = route_net(&mut search, &self.costs(), &self.jobs[j]);

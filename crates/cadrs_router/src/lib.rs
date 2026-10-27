@@ -249,7 +249,7 @@ pub fn pricing(opts: &Options) -> Pricing {
 /// outcome down with [`apply`]. `CADRS_ROUTER_TRACE=1` prints where the time goes.
 pub fn route(board: &Board, opts: &Options) -> Outcome {
     let trace = std::env::var_os("CADRS_ROUTER_TRACE").is_some();
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let mut grid = Grid::build(board, opts.pitch);
     tune(&mut grid, opts);
     let t_grid = t0.elapsed();

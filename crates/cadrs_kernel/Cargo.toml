@@ -13,6 +13,7 @@ uuid.workspace = true
 rayon.workspace = true
 spade = "2.15"
 cadrs_gpu = { path = "../cadrs_gpu", optional = true }
+web-time.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

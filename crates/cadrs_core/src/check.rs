@@ -7,7 +7,8 @@
 //! is broken, or the face it lies on is gone; the same tests the feature list colours rows red
 //! by. A warning is the rebuild's yellow state.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use crate::document::{Document, ElementKind, Feature};
 

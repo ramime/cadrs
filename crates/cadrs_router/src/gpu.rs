@@ -60,6 +60,10 @@ impl Gpu {
 
     /// A device running the kernels, or why there is none (no shader built, no adapter).
     pub fn new() -> Result<Gpu, String> {
+        // WebGPU takes no SPIR-V, and a page can't wait for an adapter.
+        if cfg!(target_arch = "wasm32") {
+            return Err("no GPU search in the browser".into());
+        }
         if SPIRV.len() < 20 || !SPIRV.len().is_multiple_of(4) {
             return Err("no router shader built (cargo gpu build --shader-crate crates/cadrs_router_kernels --output-dir crates/cadrs_router/shaders)".into());
         }
@@ -206,7 +210,7 @@ impl Gpu {
         let zeros = vec![0u32; slots as usize];
         // Bellman–Ford needs at most as many passes as cells; a wavefront settles long before.
         let mut left = cells / PASSES + 2;
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let mut rounds = 0;
         loop {
             rounds += 1;

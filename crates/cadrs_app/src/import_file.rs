@@ -103,7 +103,7 @@ fn start_dir() -> PathBuf {
     user.and_then(|u| u.download_dir())
         .or_else(|| user.and_then(|u| u.document_dir()))
         .map(|d| d.to_path_buf())
-        .filter(|d| d.is_dir())
+        .filter(|d| cadrs_fs::is_dir(d))
         .or_else(|| user.map(|u| u.home_dir().to_path_buf()))
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default()
@@ -183,7 +183,7 @@ pub fn read(commands: &mut Commands, theme: &Theme, target: ImportTarget, path: 
         );
         return;
     };
-    let bytes = match std::fs::read(path) {
+    let bytes = match cadrs_fs::read(path) {
         Ok(b) => b,
         Err(e) => {
             show_notification(

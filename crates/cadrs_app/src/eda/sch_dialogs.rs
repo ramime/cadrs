@@ -947,7 +947,7 @@ pub fn export_bom(w: &mut World, dir: &std::path::Path) -> Option<std::path::Pat
         .name()
         .to_string();
     let path = dir.join(format!("{}.csv", cadrs_idf::safe_file_name(&name)));
-    match std::fs::write(&path, cadrs_eda::bom::csv(&d.schematic)) {
+    match cadrs_fs::write(&path, cadrs_eda::bom::csv(&d.schematic)) {
         Ok(()) => {
             ui::toast(w, &format!("Wrote {}", path.display()));
             Some(path)
@@ -1096,7 +1096,7 @@ pub fn plot_schematic_to(
         .and_then(|s| s.board(b))
         .map(|x| cadrs_idf::safe_file_name(x.name()))
         .unwrap_or_else(|| "schematic".into());
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let (file, bytes): (String, Vec<u8>) = match kind {
         "svg" => (
             format!("{name}.svg"),
@@ -1115,7 +1115,7 @@ pub fn plot_schematic_to(
         ),
     };
     let path = dir.join(&file);
-    std::fs::write(&path, bytes).map_err(|e| format!("{file}: {e}"))?;
+    cadrs_fs::write(&path, bytes).map_err(|e| format!("{file}: {e}"))?;
     Ok(path)
 }
 

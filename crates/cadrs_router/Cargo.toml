@@ -20,6 +20,7 @@ uuid.workspace = true
 wgpu = { workspace = true, optional = true }
 futures-lite = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
+web-time.workspace = true
 
 [dev-dependencies]
 cadrs_kicad.workspace = true

@@ -94,12 +94,12 @@ fn script_dir(mut msgs: MessageReader<ScriptCommand>, mut dir: ResMut<SketchDxfD
 
 /// The DXF, DWG and other vector files of a folder, by name.
 fn files(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut v: Vec<PathBuf> = cadrs_fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_file() && VectorFormat::of_path(p).is_some())
+        .filter(|p| cadrs_fs::is_file(p) && VectorFormat::of_path(p).is_some())
         .collect();
     v.sort();
     v.truncate(60);
@@ -114,7 +114,7 @@ fn thumbnail(path: &Path, w: u32, h: u32) -> Image {
     }
     let format = VectorFormat::of_path(path);
     let drawing = if format == Some(VectorFormat::Dxf) {
-        std::fs::read_to_string(path)
+        cadrs_fs::read_to_string(path)
             .ok()
             .and_then(|t| cadrs_drawing::dxf::read_dxf(&t).ok())
     } else {
@@ -123,7 +123,7 @@ fn thumbnail(path: &Path, w: u32, h: u32) -> Image {
     // An SVG drawn from its sketch geometry (EPS and PDF would need their converters run for
     // each thumbnail: they stay blank).
     let svg = if format == Some(VectorFormat::Svg) {
-        std::fs::read(path)
+        cadrs_fs::read(path)
             .ok()
             .and_then(|b| cadrs_core::vector_import::sketch_of_svg(&b).ok())
     } else {

@@ -3,10 +3,10 @@ use crate::{
     Document, DocumentId, DocumentMeta, Store, blobs,
     store::{DocumentFile, SCHEMA_VERSION, StoreError},
 };
+use cadrs_fs::File;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs::File,
     io::{Read, Write},
     path::Path,
 };
@@ -53,7 +53,7 @@ pub fn export(
     }
     for name in ["thumbnail.png", "thumbnail-large.png"] {
         let p = store.doc_dir(doc.id).join(name);
-        match std::fs::read(p) {
+        match cadrs_fs::read(p) {
             Ok(bytes) => {
                 entries.insert(name.into(), bytes);
             }
@@ -66,27 +66,36 @@ pub fn export(
     {
         return Err("Document exceeds native package limits".into());
     }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    {
-        let mut zip = zip::ZipWriter::new(temp.as_file_mut());
-        for (name, bytes) in entries {
-            zip.start_file(
-                name,
-                zip::write::SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Deflated),
-            )
-            .map_err(|e| e.to_string())?;
-            zip.write_all(&bytes).map_err(|e| e.to_string())?;
-        }
-        zip.finish().map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, bytes) in entries {
+        zip.start_file(
+            name,
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .map_err(|e| e.to_string())?;
+        zip.write_all(&bytes).map_err(|e| e.to_string())?;
     }
-    temp.as_file().sync_all().map_err(|e| e.to_string())?;
-    temp.persist_noclobber(path).map_err(|e| e.to_string())?;
-    Ok(())
+    let bytes = zip.finish().map_err(|e| e.to_string())?.into_inner();
+    // Written beside it and then renamed, so no one sees half of it; never over a file there.
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = File::create_new(&temp)
+        .and_then(|mut f| f.write_all(&bytes).and_then(|()| f.sync_all()))
+        .and_then(|()| {
+            if cadrs_fs::exists(path) {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "File exists",
+                ))
+            } else {
+                cadrs_fs::rename(&temp, path)
+            }
+        });
+    if written.is_err() {
+        let _ = cadrs_fs::remove_file(&temp);
+    }
+    written.map_err(|e| e.to_string())
 }
 
 /// Validates a complete package, then installs a fresh library copy in one directory rename.
@@ -187,23 +196,28 @@ pub fn import(
     file.document.id = DocumentId::new();
     file.meta = DocumentMeta::new(user, now);
     file.meta.last_opened = Some(now);
-    std::fs::create_dir_all(store.root()).map_err(|e| e.to_string())?;
-    let stage = tempfile::tempdir_in(store.root()).map_err(|e| e.to_string())?;
-    let staging = Store::new(stage.path());
+    cadrs_fs::create_dir_all(store.root()).map_err(|e| e.to_string())?;
+    let stage = Staging(
+        store
+            .root()
+            .join(format!(".import-{}", uuid::Uuid::new_v4().simple())),
+    );
+    cadrs_fs::create_dir(&stage.0).map_err(|e| e.to_string())?;
+    let staging = Store::new(&stage.0);
     // Persist source bytes before saving; Store::save may also find these in its cache.
     for (name, bytes) in &assets {
         let dir = staging.blobs_dir(file.document.id);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join(name), bytes).map_err(|e| e.to_string())?;
+        cadrs_fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        cadrs_fs::write(dir.join(name), bytes).map_err(|e| e.to_string())?;
     }
     staging
         .create(&file.document, &file.meta)
         .map_err(|e| e.to_string())?;
     for (name, bytes) in thumbnails {
-        std::fs::write(staging.doc_dir(file.document.id).join(name), bytes)
+        cadrs_fs::write(staging.doc_dir(file.document.id).join(name), bytes)
             .map_err(|e| e.to_string())?;
     }
-    std::fs::rename(
+    cadrs_fs::rename(
         staging.doc_dir(file.document.id),
         store.doc_dir(file.document.id),
     )
@@ -212,6 +226,15 @@ pub fn import(
         blobs::insert(bytes);
     }
     Ok(file)
+}
+
+/// A folder in the store that an import is put together in, removed with what is left in it.
+struct Staging(std::path::PathBuf);
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = cadrs_fs::remove_dir_all(&self.0);
+    }
 }
 
 /// A document's read error as the import reports it.

@@ -17,12 +17,18 @@
 //!   is one for now: its release is a disk image of a signed app bundle (#103), and swapping files
 //!   inside the bundle would break its signature, so the new disk image is downloaded from the
 //!   page and dragged over the old app.
+//! - The browser build (`tools/web`) is deployed with the site, so it is always the latest: it
+//!   never checks.
+
+// The check and the install are unused in a page.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use bevy::prelude::*;
 use bevy::text::{FontWeight, Justify, LineBreak};
@@ -176,6 +182,7 @@ struct UpdateFooter {
 #[derive(Component)]
 struct ProgressLabel;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn agent(timeout: u64) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(timeout)))
@@ -859,7 +866,7 @@ fn archive_name(version: &str) -> Option<String> {
 fn install_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?.to_path_buf();
-    dir.join("libraries").is_dir().then_some(dir)
+    cadrs_fs::is_dir(dir.join("libraries")).then_some(dir)
 }
 
 /// Reads GitHub's answer for the latest release: the newer release, if it is newer.
@@ -895,6 +902,12 @@ fn parse_release(json: &serde_json::Value, current: &str, in_place: bool) -> Opt
     })
 }
 
+#[cfg(target_arch = "wasm32")]
+fn latest_release() -> Result<Option<Release>, String> {
+    Ok(None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn latest_release() -> Result<Option<Release>, String> {
     let mut r = agent(20)
         .get(LATEST_URL)
@@ -923,8 +936,8 @@ fn old_exe(exe: &Path) -> PathBuf {
 fn remove_old_executable() {
     if let Ok(exe) = std::env::current_exe() {
         let old = old_exe(&exe);
-        if old.is_file() {
-            let _ = std::fs::remove_file(old);
+        if cadrs_fs::is_file(&old) {
+            let _ = cadrs_fs::remove_file(old);
         }
     }
 }
@@ -935,12 +948,12 @@ fn install(archive: &Archive, tx: &Sender<Msg>) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?;
     let dir = install_dir().ok_or("this build is not an install")?;
     let staging = dir.join("update.new");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| err("remove", &staging, e))?;
+    if cadrs_fs::exists(&staging) {
+        cadrs_fs::remove_dir_all(&staging).map_err(|e| err("remove", &staging, e))?;
     }
-    std::fs::create_dir_all(&staging).map_err(|e| err("create", &staging, e))?;
+    cadrs_fs::create_dir_all(&staging).map_err(|e| err("create", &staging, e))?;
     let result = download_and_swap(archive, tx, &exe, &dir, &staging);
-    let _ = std::fs::remove_dir_all(&staging);
+    let _ = cadrs_fs::remove_dir_all(&staging);
     result.map(|()| exe)
 }
 
@@ -957,16 +970,16 @@ fn download_and_swap(
     let unpacked = staging.join("unpacked");
     unpack(&archive, &unpacked)?;
     // The archive holds one folder, `cadrs-v<version>-x86_64-<platform>/`.
-    let root = std::fs::read_dir(&unpacked)
+    let root = cadrs_fs::read_dir(&unpacked)
         .map_err(|e| err("read", &unpacked, e))?
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .find(|p| p.is_dir())
+        .find(|p| cadrs_fs::is_dir(p))
         .ok_or("the archive holds no folder")?;
     let exe_name = exe.file_name().ok_or("no executable name")?;
     let new_exe = root.join(format!("cadrs{}", std::env::consts::EXE_SUFFIX));
     let new_libraries = root.join("libraries");
-    if !new_exe.is_file() || !new_libraries.is_dir() {
+    if !cadrs_fs::is_file(&new_exe) || !cadrs_fs::is_dir(&new_libraries) {
         return Err("the archive has no cadrs executable or libraries".into());
     }
     swap(
@@ -978,14 +991,20 @@ fn download_and_swap(
     )?;
     // The rest (README.md, the licenses) is nice to have.
     for f in ["README.md", "LICENSE-APACHE", "LICENSE-MIT"] {
-        if root.join(f).is_file() {
-            let _ = std::fs::copy(root.join(f), dir.join(f));
+        if cadrs_fs::is_file(root.join(f)) {
+            let _ = cadrs_fs::copy(root.join(f), dir.join(f));
         }
     }
     Ok(())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn download(_: &Archive, _: &Sender<Msg>, _: &Path) -> Result<(), String> {
+    Err("a page is updated with the site".into())
+}
+
 /// Downloads the archive to `to`, telling `tx` the bytes so far about ten times a second.
+#[cfg(not(target_arch = "wasm32"))]
 fn download(from: &Archive, tx: &Sender<Msg>, to: &Path) -> Result<(), String> {
     let mut r = agent(1800)
         .get(&from.url)
@@ -997,7 +1016,7 @@ fn download(from: &Archive, tx: &Sender<Msg>, to: &Path) -> Result<(), String> {
         .and_then(|v| v.to_str().ok()?.parse().ok())
         .unwrap_or(from.size);
     let mut body = r.body_mut().with_config().limit(MAX_ARCHIVE).reader();
-    let mut f = std::fs::File::create(to).map_err(|e| err("create", to, e))?;
+    let mut f = cadrs_fs::File::create(to).map_err(|e| err("create", to, e))?;
     let mut buf = vec![0u8; 1 << 16];
     let mut done = 0u64;
     let mut told = Instant::now();
@@ -1023,16 +1042,16 @@ fn download(from: &Archive, tx: &Sender<Msg>, to: &Path) -> Result<(), String> {
 }
 
 fn unpack(archive: &Path, to: &Path) -> Result<(), String> {
-    let f = std::fs::File::open(archive).map_err(|e| err("open", archive, e))?;
-    if cfg!(windows) {
-        zip::ZipArchive::new(f)
-            .and_then(|mut z| z.extract(to))
-            .map_err(|e| err("unpack", archive, e))
-    } else {
-        tar::Archive::new(flate2::read::GzDecoder::new(f))
-            .unpack(to)
-            .map_err(|e| err("unpack", archive, e))
-    }
+    let f = cadrs_fs::File::open(archive).map_err(|e| err("open", archive, e))?;
+    #[cfg(not(any(windows, target_arch = "wasm32")))]
+    return tar::Archive::new(flate2::read::GzDecoder::new(f))
+        .unpack(to)
+        .map_err(|e| err("unpack", archive, e));
+    // Windows' archive is a zip (and a page never gets this far).
+    #[cfg(any(windows, target_arch = "wasm32"))]
+    zip::ZipArchive::new(f)
+        .and_then(|mut z| z.extract(to))
+        .map_err(|e| err("unpack", archive, e))
 }
 
 /// Moves the new executable and libraries in, keeping the old ones until both are in place.
@@ -1046,33 +1065,33 @@ fn swap(
     let old = old_exe(running);
     let old_libraries = libraries.with_extension("old");
     for p in [&old, &old_libraries] {
-        if p.is_dir() {
-            std::fs::remove_dir_all(p).map_err(|e| err("remove", p, e))?;
-        } else if p.exists() {
-            std::fs::remove_file(p).map_err(|e| err("remove", p, e))?;
+        if cadrs_fs::is_dir(p) {
+            cadrs_fs::remove_dir_all(p).map_err(|e| err("remove", p, e))?;
+        } else if cadrs_fs::exists(p) {
+            cadrs_fs::remove_file(p).map_err(|e| err("remove", p, e))?;
         }
     }
-    std::fs::rename(running, &old).map_err(|e| err("move", running, e))?;
-    if let Err(e) = std::fs::rename(new_exe, exe) {
-        let _ = std::fs::rename(&old, running);
+    cadrs_fs::rename(running, &old).map_err(|e| err("move", running, e))?;
+    if let Err(e) = cadrs_fs::rename(new_exe, exe) {
+        let _ = cadrs_fs::rename(&old, running);
         return Err(err("move", new_exe, e));
     }
-    if let Err(e) = std::fs::rename(libraries, &old_libraries)
+    if let Err(e) = cadrs_fs::rename(libraries, &old_libraries)
         .map_err(|e| err("move", libraries, e))
         .and_then(|()| {
-            std::fs::rename(new_libraries, libraries).map_err(|e| err("move", new_libraries, e))
+            cadrs_fs::rename(new_libraries, libraries).map_err(|e| err("move", new_libraries, e))
         })
     {
         // Put everything back.
-        let _ = std::fs::rename(&old_libraries, libraries);
-        let _ = std::fs::remove_file(exe);
-        let _ = std::fs::rename(&old, running);
+        let _ = cadrs_fs::rename(&old_libraries, libraries);
+        let _ = cadrs_fs::remove_file(exe);
+        let _ = cadrs_fs::rename(&old, running);
         return Err(e);
     }
-    let _ = std::fs::remove_dir_all(&old_libraries);
+    let _ = cadrs_fs::remove_dir_all(&old_libraries);
     if !cfg!(windows) {
         // Not running from it any more; Windows keeps it until the next start.
-        let _ = std::fs::remove_file(&old);
+        let _ = cadrs_fs::remove_file(&old);
     }
     Ok(())
 }
@@ -1163,14 +1182,14 @@ mod tests {
     #[test]
     fn the_swap_replaces_the_executable_and_libraries() {
         let dir = std::env::temp_dir().join(format!("cadrs-update-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = cadrs_fs::remove_dir_all(&dir);
         let new = dir.join("new");
-        std::fs::create_dir_all(dir.join("libraries")).unwrap();
-        std::fs::create_dir_all(new.join("libraries")).unwrap();
-        std::fs::write(dir.join("cadrs"), "old").unwrap();
-        std::fs::write(dir.join("libraries/a"), "old").unwrap();
-        std::fs::write(new.join("cadrs"), "new").unwrap();
-        std::fs::write(new.join("libraries/b"), "new").unwrap();
+        cadrs_fs::create_dir_all(dir.join("libraries")).unwrap();
+        cadrs_fs::create_dir_all(new.join("libraries")).unwrap();
+        cadrs_fs::write(dir.join("cadrs"), "old").unwrap();
+        cadrs_fs::write(dir.join("libraries/a"), "old").unwrap();
+        cadrs_fs::write(new.join("cadrs"), "new").unwrap();
+        cadrs_fs::write(new.join("libraries/b"), "new").unwrap();
         let exe = dir.join("cadrs");
         swap(
             &exe,
@@ -1180,10 +1199,10 @@ mod tests {
             &new.join("libraries"),
         )
         .unwrap();
-        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        assert_eq!(cadrs_fs::read_to_string(&exe).unwrap(), "new");
         assert!(dir.join("libraries/b").is_file());
         assert!(!dir.join("libraries/a").exists());
         assert!(!dir.join("libraries.old").exists());
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = cadrs_fs::remove_dir_all(&dir);
     }
 }

@@ -8,6 +8,7 @@ repository.workspace = true
 # KiCad project import (and later export) to and from cadrs_eda. A crutch: nothing but the app's
 # `kicad` feature depends on it, so it can be deleted without touching the rest.
 [dependencies]
+cadrs_fs.workspace = true
 cadrs_eda.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

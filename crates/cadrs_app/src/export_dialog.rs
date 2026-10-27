@@ -534,7 +534,7 @@ pub fn open(world: &mut World, source: ExportSource) {
 fn browse_folder(world: &mut World) {
     let typed = field(world, "export-folder-field");
     let dir = PathBuf::from(typed.trim());
-    let dir = if dir.is_dir() {
+    let dir = if cadrs_fs::is_dir(&dir) {
         dir
     } else {
         std::env::current_dir().unwrap_or_default()
@@ -960,12 +960,12 @@ fn finish_exports(q: Query<(Entity, &RunningExport)>, theme: Res<Theme>, mut com
 
 /// Writes `files` into `dir`; the message for the toast.
 fn write_files(dir: &std::path::Path, base: &str, files: &[ExportFile]) -> Result<String, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut written = Vec::new();
     for f in files {
         let stem = cadrs_core::export::file_name(base, f.part.as_deref());
         let path = cadrs_core::export::unique_path_ext(dir, &stem, f.extension);
-        std::fs::write(&path, &f.bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        cadrs_fs::write(&path, &f.bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         info!("exported {}", path.display());
         written.push(path);
     }

@@ -4,6 +4,8 @@
 #   package.sh windows <cadrs.exe> → dist/cadrs-v<version>-x86_64-windows.zip
 #   package.sh macos <cadrs>       → dist/cadrs-v<version>-universal-macos.dmg (on macOS, from a
 #                                    universal Apple silicon and Intel executable)
+#   package.sh web <dir>           → dist/cadrs-v<version>-web.tar.gz (the browser build's folder,
+#                                    tools/web/build.sh; the site serves it at /cadrs/app/)
 # Each holds the stripped executable, the built-in libraries/, README.md and the licenses; the
 # macOS one holds them as the app bundle cadrs.app (`cadrs --bundle`, as `cadrs --install` makes
 # it), ad-hoc signed, beside a link to /Applications to drag it to. Used by
@@ -20,6 +22,17 @@ dist="$root/dist"
 dir="$dist/$name"
 
 case "$platform" in
+    web)
+        name="cadrs-v$version-web"
+        dir="$dist/$name"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        cp -r "$exe"/. "$dir/"
+        cp LICENSE-APACHE LICENSE-MIT "$dir/"
+        tar -C "$dist" -czf "$dist/$name.tar.gz" "$name"
+        ls -l "$dist/$name.tar.gz"
+        exit 0
+        ;;
     linux) exe_name=cadrs strip=strip ;;
     windows) exe_name=cadrs.exe strip=x86_64-w64-mingw32-strip ;;
     macos)

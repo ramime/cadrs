@@ -1,6 +1,6 @@
 # cadrs site
 
-The project page at <https://rvdende.github.io/cadrs/>: a [Proa](https://proa.so) site,
+The project page at <https://cadrs.net/>: a [Proa](https://proa.so) site,
 exported to static files for GitHub Pages by `.github/workflows/pages.yml`.
 
 - `src/pages/home.rs`: the page, as HTML and as Markdown (`/index.md`).
@@ -48,11 +48,14 @@ RUSTFLAGS= proa dev --open
 ## Export it
 
 ```sh
-./export.sh            # into site/dist, for https://rvdende.github.io/cadrs/
-./export.sh out ''     # into site/out, served from the root of a domain
+./export.sh                # into site/dist, for https://cadrs.net/
+./export.sh out /cadrs     # into site/out, served under /cadrs/ (as rvdende.github.io/cadrs/ was)
 ```
 
-`export.sh` builds the release binary and renders it with `proa export`. The download links
+`export.sh` builds the release binary and renders it with `proa export`. It puts the browser
+build of cadrs in `app/`: the latest release's `cadrs-web.tar.gz`, or a local
+`tools/web/build.sh` output with `CADRS_WEB_DIR=target/web`; the page links to it when there is
+one. The download links
 point at the latest GitHub release at export time (set `CADRS_RELEASE=v0.1.5` to choose one);
 when the page loads, `RELEASE_SCRIPT` (`src/pages/home.rs`) points them at whatever release is
 latest now, so publishing, replacing or deleting a release needs no redeploy. `index.md` keeps
