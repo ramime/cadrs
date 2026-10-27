@@ -146,7 +146,3 @@ opt-level = 3
 inherits = "release"
 incremental = true
 codegen-units = 64
-
-# Until bevy_iroh 0.4.6 (its tag) is on crates.io.
-[patch.crates-io]
-bevy_iroh = { git = "https://github.com/rvdende/bevy_iroh", tag = "v0.4.6" }

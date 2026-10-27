@@ -1231,7 +1231,8 @@ dependencies = [
 [[package]]
 name = "bevy_iroh"
 version = "0.4.6"
-source = "git+https://github.com/rvdende/bevy_iroh?tag=v0.4.6#767de365d620337c03e83eb3cba5b3e307852159"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4870527f7bd96145cacb8c8ed7051c88999fef5df863893046222c7ca0a7a836"
 dependencies = [
  "anyhow",
  "bevy",
@@ -3176,7 +3177,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -6963,7 +6964,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.42.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
