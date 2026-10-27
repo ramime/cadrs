@@ -35,6 +35,7 @@ pub struct CollabPlugin;
 impl Plugin for CollabPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Joins>()
+            .init_resource::<PendingJoin>()
             .add_systems(Update, poll_joins.run_if(resource_exists::<Iroh>));
         comments::plugin(app);
         live::plugin(app);
@@ -48,13 +49,23 @@ impl Plugin for CollabPlugin {
     }
 }
 
-/// Why a shared document opens read-only: until its room is joined ([`live`]), or for good
-/// without the network.
+/// Why a shared document opens read-only: until its room is joined ([`live`]), or while
+/// cadrs is offline ([`crate::network`]).
 pub fn read_only_reason(shared: &SharedInfo) -> String {
     format!(
-        "Connecting to {}… (with the network off, CADRS_NET=0, this is the last copy)",
+        "Connecting to {}… (while cadrs is offline, this is the last copy)",
         shared.owner_name
     )
+}
+
+/// Before going offline ([`crate::network::disconnect`]): the open shared document's session
+/// ends (someone else's document turns read-only until online again), and who is here, who
+/// holds which tab and who is followed are forgotten.
+pub fn go_offline(world: &mut World) {
+    live::end(world);
+    *world.resource_mut::<presence::People>() = Default::default();
+    *world.resource_mut::<locks::TabLocks>() = Default::default();
+    world.remove_resource::<presence::Following>();
 }
 
 /// True, with a toast saying why, when the open document is shared with this user without
@@ -76,10 +87,7 @@ pub fn lacks(world: &mut World, right: fn(&Rights) -> bool, what: &str) -> bool 
 /// The **Share** button: the share dialog, for the owner or someone who may share.
 pub fn open_share(world: &mut World) {
     if world.get_resource::<Iroh>().is_none() {
-        crate::linked::toast(
-            world,
-            "Sharing needs the network, which is off (CADRS_NET=0)",
-        );
+        crate::network::offer_connect(world, "Sharing needs the network", open_share);
         return;
     }
     let Some((id, meta)) = world
@@ -184,6 +192,16 @@ pub fn copy_link(world: &mut World, link: &ShareLink) {
 #[derive(Resource, Default)]
 struct Joins(Vec<(ShareLink, bool, Answer<Welcome>)>);
 
+/// The link of a join that waits for the user to go online.
+#[derive(Resource, Default)]
+struct PendingJoin(Option<String>);
+
+fn join_pending(world: &mut World) {
+    if let Some(text) = world.resource_mut::<PendingJoin>().0.take() {
+        start_join(world, &text);
+    }
+}
+
 /// Join shared document: fetches the document a link names, and opens it.
 pub fn start_join(world: &mut World, text: &str) {
     let link = match text.parse::<ShareLink>() {
@@ -194,10 +212,9 @@ pub fn start_join(world: &mut World, text: &str) {
         }
     };
     let Some(iroh) = world.get_resource::<Iroh>() else {
-        crate::linked::toast(
-            world,
-            "Joining needs the network, which is off (CADRS_NET=0)",
-        );
+        // Asked again once online: the link is kept for it.
+        world.resource_mut::<PendingJoin>().0 = Some(text.to_string());
+        crate::network::offer_connect(world, "Joining needs the network", join_pending);
         return;
     };
     if link.owner.id == iroh.id() {

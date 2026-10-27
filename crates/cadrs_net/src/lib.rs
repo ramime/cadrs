@@ -2,9 +2,10 @@
 //! [`bevy_iroh`] (QUIC dialled by public key, hole punching with relay fallback, gossip rooms,
 //! signed typed messages).
 //!
-//! - [`NetPlugin`] starts this node: its identity is a key kept next to the documents
+//! - [`NetPlugin`] makes this node: its identity is a key kept next to the documents
 //!   ([`IDENTITY_FILE`]), so peers recognise it from run to run, and its public key is the
-//!   user's **cadrs ID** ([`cadrs_id`]).
+//!   user's **cadrs ID** ([`cadrs_id`]). It goes online only when asked ([`start`], or at
+//!   once with [`NetPlugin::autostart`]) and off again with [`stop`] (issue #148).
 //! - A document is shared by a [`ShareLink`]; whoever opens one fetches the document from its
 //!   owner over [`transfer`], and proposes their edits the same way. The owner's app decides
 //!   through [`Requests`], and its numbered edits ([`Sequenced`]) reach everyone over
@@ -20,7 +21,7 @@ pub mod transfer;
 
 use bevy::prelude::*;
 use bevy_iroh::iroh::protocol::DynProtocolHandler;
-use bevy_iroh::{Identity, Iroh, IrohPlugin, Relays};
+use bevy_iroh::{Identity, Iroh, IrohPlugin, Relays, StartError, StartIroh, StopIroh};
 
 pub use bevy_iroh;
 pub use link::ShareLink;
@@ -38,8 +39,9 @@ pub use transfer::{Ask, Invite, Ownership, Request, Requests, Verdict, Welcome};
 /// with each other on one machine.
 pub const IDENTITY_FILE: &str = "identity.key";
 
-/// Starts this node. Added by the app itself, not by scenarios, headless runs or tests: the
-/// endpoint binds and reaches the relays as soon as it is built.
+/// This node. Added by the app itself, not by scenarios, headless runs or tests. Nothing
+/// touches the network until the node starts: the endpoint binds and reaches the relays as
+/// soon as it does.
 pub struct NetPlugin {
     /// Where the identity is kept; `None` is a fresh key each run.
     pub identity: Option<PathBuf>,
@@ -47,6 +49,9 @@ pub struct NetPlugin {
     pub display_name: String,
     /// n0's relays for the app; none in tests, which stay on the machine.
     pub relays: Relays,
+    /// Go online at once (the user's *Connect when cadrs starts*); otherwise only on
+    /// [`start`].
+    pub autostart: bool,
 }
 
 impl Plugin for NetPlugin {
@@ -60,17 +65,64 @@ impl Plugin for NetPlugin {
             .with_identity(identity)
             .with_relays(self.relays.clone())
             .with_display_name(self.display_name.clone())
-            .with_protocol(
-                transfer::ALPN,
-                Box::new(handler) as Box<dyn DynProtocolHandler>,
-            );
+            .with_autostart(self.autostart)
+            // A handler for each start: they all feed the same `Requests`.
+            .with_protocol_factory(transfer::ALPN, move || {
+                Box::new(handler.clone()) as Box<dyn DynProtocolHandler>
+            });
         // Documents travel as their own messages, never as replicated entities.
         iroh.replicate_transform = false;
-        app.add_plugins(iroh).insert_resource(requests);
+        app.add_plugins(iroh)
+            .insert_resource(requests)
+            .insert_resource(CanConnect);
         if let Some(id) = cadrs_id(app.world().get_resource::<Iroh>()) {
             info!("cadrs ID: {id}");
         }
         session::register(app);
+    }
+}
+
+/// Present when this run can go online: [`NetPlugin`] is added, whether or not the node is
+/// running. Absent in scenarios, headless runs, tests and with `CADRS_NET=0`.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct CanConnect;
+
+/// Takes this node online, as the identity whose key is at `identity` (the one in use now: it
+/// can change while offline), under `display_name`. Does nothing while it is online already.
+pub fn start(
+    world: &mut World,
+    identity: Option<PathBuf>,
+    display_name: String,
+) -> Result<(), String> {
+    if world.contains_resource::<Iroh>() {
+        return Ok(());
+    }
+    if !world.contains_resource::<CanConnect>() {
+        return Err("The network is off for this run".into());
+    }
+    world.commands().queue(StartIroh {
+        identity: identity.map(Identity::File),
+        display_name: Some(display_name),
+    });
+    world.flush();
+    match cadrs_id(world.get_resource::<Iroh>()) {
+        Some(id) => {
+            info!("online; cadrs ID: {id}");
+            Ok(())
+        }
+        None => Err(world
+            .get_resource::<StartError>()
+            .map_or_else(|| "The network did not start".to_string(), |e| e.0.clone())),
+    }
+}
+
+/// Takes this node offline: every room is left (see [`StopIroh`]) and nothing reaches the
+/// network until [`start`].
+pub fn stop(world: &mut World) {
+    if world.contains_resource::<Iroh>() {
+        world.commands().queue(StopIroh);
+        world.flush();
+        info!("offline");
     }
 }
 

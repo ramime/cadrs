@@ -42,6 +42,10 @@ flate2.workspace = true
 tar.workspace = true
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
+[dev-dependencies]
+# The network button's icons exist (`network`).
+icon-rs.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client.workspace = true
 wayland-backend.workspace = true

@@ -64,6 +64,7 @@ pub mod mcp_board;
 pub mod measure;
 pub mod move_document;
 pub mod native_document;
+pub mod network;
 pub mod notifications;
 pub mod part_shading;
 pub mod parts;
@@ -700,6 +701,7 @@ impl Plugin for CadrsAppPlugin {
                 collab::CollabPlugin,
                 update::UpdatePlugin,
                 notifications::NotificationsPlugin,
+                network::NetworkPlugin,
                 identity::IdentityPlugin,
                 app_menu::AppMenuPlugin,
             ))

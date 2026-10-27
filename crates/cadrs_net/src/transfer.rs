@@ -43,6 +43,10 @@ pub const ALPN: &[u8] = b"cadrs/doc/2";
 const MAX_MESSAGE: usize = 1 << 30;
 /// How long the owner's app has to answer before the peer is told it did not.
 const ANSWER_WITHIN: Duration = Duration::from_secs(60);
+/// How long reaching the owner may take. A dial can hang rather than fail (an owner who went
+/// offline and came back on new addresses), and a peer waits for each answer before it asks
+/// again, so it would never ask again.
+const REACH_WITHIN: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Wire {
@@ -323,13 +327,18 @@ async fn ask<T: DeserializeOwned>(
     wire: Wire,
 ) -> Result<T, String> {
     let who = owner.id.fmt_short();
-    let conn = endpoint
-        .connect(owner, ALPN)
+    let reach = async {
+        let conn = endpoint
+            .connect(owner, ALPN)
+            .await
+            .map_err(|e| e.to_string())?;
+        let streams = conn.open_bi().await.map_err(|e| e.to_string())?;
+        Ok::<_, String>((conn, streams))
+    };
+    let (conn, (mut send, mut recv)) = tokio::time::timeout(REACH_WITHIN, reach)
         .await
-        .map_err(|e| format!("Cannot reach the owner ({who}): {e}"))?;
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
+        .map_err(|_| "timed out".to_string())
+        .and_then(|r| r)
         .map_err(|e| format!("Cannot reach the owner ({who}): {e}"))?;
     let request = postcard::to_stdvec(&wire).map_err(|e| e.to_string())?;
     send.write_all(&request)

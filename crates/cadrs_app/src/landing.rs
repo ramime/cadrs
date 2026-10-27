@@ -405,7 +405,7 @@ fn top_bar(p: &mut ChildSpawnerCommands, t: &Theme, profile: &UserProfile) {
             flex_grow: 1.0,
             ..default()
         });
-        // Right side: the version, notifications, the color scheme and the account.
+        // Right side: the version, the network, notifications, the color scheme and the account.
         bar.spawn(Node {
             align_items: AlignItems::Center,
             column_gap: Val::Px(6.0),
@@ -414,6 +414,7 @@ fn top_bar(p: &mut ChildSpawnerCommands, t: &Theme, profile: &UserProfile) {
         })
         .with_children(|r| {
             crate::update::spawn_version(r, t);
+            crate::network::spawn_button(r, t);
             crate::notifications::spawn_bell(r, t);
             // Light, dark or the system's scheme.
             r.spawn((

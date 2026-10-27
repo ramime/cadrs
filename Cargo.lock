@@ -1230,9 +1230,8 @@ dependencies = [
 
 [[package]]
 name = "bevy_iroh"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff09da1060bbe2ab3a52ae494d17f55ce75628d85d6ad18228b7d674790d9d6b"
+version = "0.4.6"
+source = "git+https://github.com/rvdende/bevy_iroh?tag=v0.4.6#767de365d620337c03e83eb3cba5b3e307852159"
 dependencies = [
  "anyhow",
  "bevy",
@@ -2234,6 +2233,7 @@ dependencies = [
  "chrono",
  "directories",
  "flate2",
+ "icon-rs",
  "image",
  "nalgebra",
  "raw-window-handle",
@@ -3176,7 +3176,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.6",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4787,9 +4787,9 @@ dependencies = [
 
 [[package]]
 name = "icon-rs"
-version = "0.4.6"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "925077bb566e6524099bbb3e96bec3939e0711e2b42cc5ed83eb48fc5e5ce2dc"
+checksum = "dc77603b1c48e26ce8433673bdf9824a9c96414792c66248255ee458fbbb9d36"
 
 [[package]]
 name = "icu_collections"
@@ -6963,7 +6963,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.42.0",
 ]
 
 [[package]]

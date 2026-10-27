@@ -242,6 +242,27 @@ impl Live {
 #[derive(Resource, Default)]
 struct Leaving(Vec<(Entity, f64)>);
 
+/// Ends the session at once, the node about to go offline ([`super::go_offline`]): its room
+/// and the ones on their way out are left. Someone else's document turns read-only, as when it
+/// is opened offline; online again, [`start_stop`] starts a new session.
+pub(super) fn end(world: &mut World) {
+    let mut rooms: Vec<Entity> = std::mem::take(&mut world.resource_mut::<Leaving>().0)
+        .into_iter()
+        .map(|(room, _)| room)
+        .collect();
+    rooms.extend(world.remove_resource::<Live>().map(|l| l.room));
+    for room in rooms {
+        if let Ok(e) = world.get_entity_mut(room) {
+            e.despawn();
+        }
+    }
+    if let Some(mut d) = world.get_resource_mut::<ActiveDocument>()
+        && let Some(shared) = d.meta.as_ref().and_then(|m| m.shared.clone())
+    {
+        d.read_only = Some(super::read_only_reason(&shared));
+    }
+}
+
 fn leave_rooms(world: &mut World) {
     let t = now(world);
     let gone: Vec<Entity> = {
@@ -977,6 +998,9 @@ fn rejoin(world: &mut World, g: &Guest, room: &mut Entity) {
 }
 
 /// Follows `host` from now on: the room joined through them, the document fetched from them.
+/// The room is joined again even when the host is the same one: one who was away (offline, or
+/// their cadrs started again) is a new node in the room, which waits to be dialled, and the
+/// old link to them in the room is gone (issue #148: Disconnect, then Connect).
 fn follow_host(
     world: &mut World,
     g: &mut Guest,
@@ -984,12 +1008,9 @@ fn follow_host(
     host: EndpointId,
     name: String,
 ) {
-    let changed = g.host != host;
     g.host = host;
     g.host_name = name;
-    if changed {
-        rejoin(world, g, room);
-    }
+    rejoin(world, g, room);
     reconnect(world, g);
 }
 
@@ -1275,7 +1296,10 @@ fn propose_next(world: &mut World, g: &mut Guest, changed: bool) {
                 crate::linked::toast(world, why);
             }
             Ok(Verdict::Resync) => return reconnect(world, g),
-            Ok(Verdict::Closed) | Err(_) => {
+            other => {
+                if let Err(why) = other {
+                    info!("cannot propose to {}: {why}", g.owner_name);
+                }
                 g.state = GuestState::Away {
                     since: now(world),
                     ping: None,
