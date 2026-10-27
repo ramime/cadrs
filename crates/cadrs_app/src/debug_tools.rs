@@ -7,7 +7,7 @@
 //!   `profiler` feature for the system times). `CADRS_SLOW_FRAMES=1` (or any value that isn't a
 //!   number) uses 50 ms.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::prelude::*;
 

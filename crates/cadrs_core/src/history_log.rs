@@ -760,7 +760,7 @@ impl HistoryLog {
         // (A first log may still be on its way.)
         writer::flush();
         let path = Self::path(store, id);
-        if !path.is_file() {
+        if !cadrs_fs::is_file(&path) {
             return Ok(None);
         }
         Self::load_path(&path).map(Some)
@@ -769,7 +769,7 @@ impl HistoryLog {
     /// Reads a log file (after the saves still being written in the background).
     pub fn load_path(path: &Path) -> Result<Self, StoreError> {
         writer::flush();
-        let text = std::fs::read_to_string(path)?;
+        let text = cadrs_fs::read_to_string(path)?;
         let mut log: Self = ron::from_str(&text).map_err(|e| StoreError::Parse(e.to_string()))?;
         if log.version > HISTORY_VERSION {
             return Err(StoreError::UnsupportedVersion(log.version));

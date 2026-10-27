@@ -65,6 +65,18 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // P3E.3b, the analysis tools' face colouring (`crate::analysis::ShadingAnalysis`): x the mode
     // (1 zebra, 2 draft, 3 curvature). A selected face keeps its orange.
     let mode = i32(round(params.analysis.x));
+    // The zebra's coordinate (`cadrs_core::analysis::zebra_phase_at`): the view ray reflected off
+    // the face, in the view's frame, its angle out of the plane across a slanted screen axis.
+    // Orthographic views look along −back everywhere; perspective ones along each pixel's ray.
+    // Worked out for every fragment, outside the branches: a derivative (`fwidth`) has to be
+    // taken in uniform control flow, which WebGPU checks.
+    let ortho = view.clip_from_view[3][3] > 0.5;
+    let e = select(normalize(view.world_position.xyz - in.world_position.xyz), back, ortho);
+    let r = reflect(-e, n);
+    let rv = vec3(dot(r, right), dot(r, up), dot(r, back));
+    let phi = asin(clamp(dot(normalize(rv), normalize(vec3(0.5, 0.85, 0.0))), -1.0, 1.0));
+    let zebra_x = phi * params.analysis.z / 3.14159265;
+    let fwidth_x = fwidth(zebra_x);
     if (mode == 2 && in.uv.x < 0.5) {
         // Draft analysis: the band of this point's draft against the pull direction
         // (`cadrs_core::analysis::DraftBand::of`, its tolerance `DRAFT_EPS` in w), lit like the
@@ -96,18 +108,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         lin = params.bands[i].rgb * mix(1.0, b, 0.55);
     } else if (mode == 1 && in.uv.x < 0.5) {
-        // Zebra stripes (`cadrs_core::analysis::zebra_phase_at`): the view ray reflected off the
-        // face, in the view's frame, its angle out of the plane across a slanted screen axis cut
-        // into bands (smoothed over a pixel). Orthographic views look along −back everywhere;
-        // perspective ones along each pixel's ray. The dark band is a dark grey, lit a little,
-        // so faces and their (grey) edges stay apart.
-        let ortho = view.clip_from_view[3][3] > 0.5;
-        let e = select(normalize(view.world_position.xyz - in.world_position.xyz), back, ortho);
-        let r = reflect(-e, n);
-        let rv = vec3(dot(r, right), dot(r, up), dot(r, back));
-        let phi = asin(clamp(dot(normalize(rv), normalize(vec3(0.5, 0.85, 0.0))), -1.0, 1.0));
-        let x = phi * params.analysis.z / 3.14159265;
-        let w = max(fwidth(x), 1e-4);
+        // Zebra stripes: the bands of `zebra_x` (above), smoothed over a pixel. The dark band is
+        // a dark grey, lit a little, so faces and their (grey) edges stay apart.
+        let x = zebra_x;
+        let w = max(fwidth_x, 1e-4);
         let f = abs(fract(x) - 0.5) * 2.0;
         let white = smoothstep(0.5 - w, 0.5 + w, f);
         let g = mix(0.22, 0.96, white) * mix(1.0, b, 0.3);

@@ -73,7 +73,7 @@ impl TemplateLibrary {
         }
         self.loaded = true;
         let path = store.0.root().join(LIBRARY_FILE);
-        if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(text) = cadrs_fs::read_to_string(&path) {
             match ron::from_str::<TemplateLibrary>(&text) {
                 Ok(lib) => {
                     self.custom = lib.custom;
@@ -86,10 +86,10 @@ impl TemplateLibrary {
 
     fn save(&self, store: &DocumentStore) {
         let path = store.0.root().join(LIBRARY_FILE);
-        let _ = std::fs::create_dir_all(store.0.root());
+        let _ = cadrs_fs::create_dir_all(store.0.root());
         match ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
             Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
+                if let Err(e) = cadrs_fs::write(&path, text) {
                     warn!("cannot save {}: {e}", path.display());
                 }
             }

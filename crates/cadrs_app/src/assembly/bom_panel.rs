@@ -1526,22 +1526,22 @@ fn export_csv(world: &mut World) {
     let dir = crate::export_dir(world);
     let result = (|| -> Result<PathBuf, String> {
         let dir = dir.ok_or("no folder to export to")?;
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        cadrs_fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let stem = cadrs_core::export::sanitize(&format!("{name} BOM"));
         let mut path = dir.join(format!("{stem}.csv"));
         let mut n = 2;
-        while path.exists() {
+        while cadrs_fs::exists(&path) {
             path = dir.join(format!("{stem} ({n}).csv"));
             n += 1;
         }
-        std::fs::write(&path, bom.to_csv()).map_err(|e| format!("{}: {e}", path.display()))?;
+        cadrs_fs::write(&path, bom.to_csv()).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
     })();
     let theme = world.resource::<Theme>().clone();
     let note = match result {
         Ok(p) => {
             // The whole, normalised path goes to the log; the toast names the file.
-            let p = std::fs::canonicalize(&p).unwrap_or(p);
+            let p = cadrs_fs::canonicalize(&p).unwrap_or(p);
             info!("exported {}", p.display());
             let file = p
                 .file_name()

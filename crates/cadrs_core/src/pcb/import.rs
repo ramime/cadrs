@@ -165,7 +165,7 @@ pub struct Imported {
 
 /// Reads one pair from disk.
 pub fn read_pair(pair: &FilePair) -> Result<Imported, String> {
-    let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", file_name(p)));
+    let read = |p: &Path| cadrs_fs::read_to_string(p).map_err(|e| format!("{}: {e}", file_name(p)));
     let emn = read(&pair.emn)?;
     let emp = pair.emp.as_deref().map(read).transpose()?;
     let fallback = pair

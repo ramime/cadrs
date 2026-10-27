@@ -584,16 +584,14 @@ fn start_generate(
 fn spawn_generate(input: Arc<OpInput>, model: Arc<Model>, rest: Option<Arc<RestInput>>) -> Stage {
     let (tx, rx) = mpsc::channel();
     let m = model.clone();
-    let spawned = std::thread::Builder::new()
-        .name("cam-toolpath".into())
-        .spawn(move || {
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let rest = rest.map(|r| rest_stock(&input, &r));
-                program::generate(&input, &model, rest.as_ref())
-            }))
-            .unwrap_or_else(|_| Err("The strategy failed unexpectedly".into()));
-            let _ = tx.send(r);
-        });
+    let spawned = cadrs_core::background::spawn("cam-toolpath", move || {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let rest = rest.map(|r| rest_stock(&input, &r));
+            program::generate(&input, &model, rest.as_ref())
+        }))
+        .unwrap_or_else(|_| Err("The strategy failed unexpectedly".into()));
+        let _ = tx.send(r);
+    });
     if spawned.is_err() {
         warn!("cam: couldn't start a toolpath thread");
     }

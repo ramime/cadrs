@@ -236,7 +236,7 @@ impl Contacts {
     pub const FILE: &'static str = "contacts.ron";
 
     pub fn load(root: &std::path::Path) -> Self {
-        std::fs::read_to_string(root.join(Self::FILE))
+        cadrs_fs::read_to_string(root.join(Self::FILE))
             .ok()
             .and_then(|t| ron::from_str(&t).ok())
             .unwrap_or_default()
@@ -245,11 +245,11 @@ impl Contacts {
     pub fn save(&self, root: &std::path::Path) -> std::io::Result<()> {
         let text =
             ron::ser::to_string_pretty(self, Default::default()).map_err(std::io::Error::other)?;
-        std::fs::create_dir_all(root)?;
+        cadrs_fs::create_dir_all(root)?;
         let path = root.join(Self::FILE);
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path)
+        cadrs_fs::write(&tmp, text)?;
+        cadrs_fs::rename(&tmp, path)
     }
 
     /// Adds or renames `id`; true if anything changed. The most recent comes first.
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(c.0.len(), 2);
         c.save(&dir).unwrap();
         assert_eq!(Contacts::load(&dir), c);
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = cadrs_fs::remove_dir_all(dir);
     }
 
     #[test]

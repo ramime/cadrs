@@ -407,6 +407,8 @@ fn detect_system_scheme(
         if let Some(t) = windows.single().ok().and_then(|w| w.window_theme) {
             system = Some(from_window(t));
         }
+        // A page has no thread for it, and the browser tells the window (`window_theme`).
+        #[cfg(not(target_arch = "wasm32"))]
         if probe.pending.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
@@ -484,7 +486,8 @@ fn desktop_scheme() -> Option<ColorScheme> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+// (A page asks the browser instead.)
+#[cfg(not(any(target_os = "linux", target_arch = "wasm32")))]
 fn desktop_scheme() -> Option<ColorScheme> {
     None
 }

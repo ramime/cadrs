@@ -1498,7 +1498,7 @@ pub(crate) fn show_filter(world: &mut World, filter: Filter) {
 /// Opens the folder documents are kept in, in the file manager.
 pub(crate) fn open_documents_folder(world: &mut World) {
     let dir = world.resource::<DocumentStore>().0.root().to_path_buf();
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = cadrs_fs::create_dir_all(&dir);
     let opener = if cfg!(windows) {
         "explorer"
     } else {

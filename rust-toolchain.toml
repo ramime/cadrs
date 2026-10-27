@@ -1,6 +1,7 @@
 # Nightly for the faster builds in .cargo/config.toml (-Zshare-generics). The Windows target is
-# for the MinGW release build. The Linux release builds on it too (tools/release).
+# for the MinGW release build. The Linux release builds on it too (tools/release). wasm32 is
+# the browser build (tools/web).
 [toolchain]
 channel = "nightly-2026-10-21"
 components = ["clippy", "rustfmt"]
-targets = ["x86_64-pc-windows-gnu"]
+targets = ["x86_64-pc-windows-gnu", "wasm32-unknown-unknown"]

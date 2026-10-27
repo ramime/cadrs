@@ -805,7 +805,7 @@ fn on_model_picked(
         }
         let path = m.path.clone();
         commands.queue(move |w: &mut World| {
-            let bytes = match std::fs::read(&path) {
+            let bytes = match cadrs_fs::read(&path) {
                 Ok(b) => b,
                 Err(e) => {
                     ui::toast(w, &format!("Couldn't read {}: {e}", path.display()));

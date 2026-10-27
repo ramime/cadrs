@@ -2804,7 +2804,7 @@ mod tests {
 
     /// Runs the background solve until it is done, or waits for the document to come back.
     fn settle(app: &mut App) {
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         loop {
             assert!(start.elapsed().as_secs() < 120, "the solve never settled");
             finish_studio_solve(app.world_mut());

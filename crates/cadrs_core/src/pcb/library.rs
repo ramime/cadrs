@@ -255,7 +255,7 @@ impl PcbWorkspace {
 
     /// Reads the workspace settings; a missing or unreadable file gives the defaults.
     pub fn load(root: &Path) -> PcbWorkspace {
-        std::fs::read_to_string(Self::path(root))
+        cadrs_fs::read_to_string(Self::path(root))
             .ok()
             .and_then(|t| ron::from_str(&t).ok())
             .unwrap_or_default()
@@ -270,11 +270,11 @@ fn write_ron<T: Serialize>(path: &Path, v: &T) -> Result<(), StoreError> {
     let text = ron::ser::to_string_pretty(v, ron::ser::PrettyConfig::default())
         .map_err(|e| StoreError::Parse(e.to_string()))?;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        cadrs_fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("ron.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(tmp, path)?;
+    cadrs_fs::write(&tmp, text)?;
+    cadrs_fs::rename(tmp, path)?;
     Ok(())
 }
 
@@ -334,10 +334,10 @@ pub fn load_library(
         Some(l) => Ok(library_of(&store.load(l.document)?.document)),
         None => {
             let p = library_file(store);
-            if !p.is_file() {
+            if !cadrs_fs::is_file(&p) {
                 return Ok(ComponentLibrary::default());
             }
-            let t = std::fs::read_to_string(p)?;
+            let t = cadrs_fs::read_to_string(p)?;
             ron::from_str(&t).map_err(|e| StoreError::Parse(e.to_string()))
         }
     }

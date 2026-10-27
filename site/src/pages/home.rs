@@ -358,6 +358,29 @@ impl<L: DataLoader> WebRenderSync<L> for PlatformButtons {
     }
 }
 
+/// Whether the export has the browser build at `app/` (`export.sh` sets `CADRS_WEB_APP`).
+fn web_app() -> bool {
+    std::env::var_os("CADRS_WEB_APP").is_some_and(|v| !v.is_empty())
+}
+
+/// The hero's link to the browser build, when the export has one.
+struct TryInBrowser;
+
+impl<L: DataLoader> WebRenderSync<L> for TryInBrowser {
+    fn render(self, cx: &mut WebContext<L>) -> Result<(), WriteError> {
+        if !web_app() {
+            return Ok(());
+        }
+        let app = cx.request().url("/app/");
+        html_sync! {
+            <a href={app} class={link_button(ButtonSize::Lg, ButtonVariant::Outline)}>
+                "Try it in your browser"
+            </a>
+        }
+        .render(cx)
+    }
+}
+
 struct Downloads;
 
 impl<L: DataLoader> WebRenderSync<L> for Downloads {
@@ -898,6 +921,7 @@ impl<L: DataLoader> WebRenderSync<L> for HomePage {
                                 >
                                     "Download"
                                 </a>
+                                {TryInBrowser}
                                 <a
                                     href="https://youtu.be/qT1FKZqUAxA"
                                     class={link_button(ButtonSize::Lg, ButtonVariant::Outline)}
@@ -1433,7 +1457,16 @@ impl<L: DataLoader, B: WriteBuf> MdRenderSync<L, B> for Downloads {
             Every release, with SHA\-256 checksums, is on [GitHub Releases](https://github.com/rvdende/cadrs/releases)\. The macOS app is universal, one download for Apple silicon and Intel Macs\. It isn't signed yet, so open cadrs the first time with right\-click › Open\. Or build from source\.
             "###
         }
-        .render_md(cx)
+        .render_md(cx)?;
+        if web_app() {
+            let app = cx.request().url("/app/");
+            md_sync! { r###"
+                Or [try it in your browser]({app}) \(it needs WebGPU; your documents stay in the browser\)\.
+                "###
+            }
+            .render_md(cx)?;
+        }
+        Ok(())
     }
 }
 

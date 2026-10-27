@@ -128,7 +128,7 @@ fn activate(ev: On<Activate>, names: Query<&Name>, mut commands: Commands) {
         "native-export-cancel" => commands.queue(close),
         "native-export-browse" => commands.queue(|world: &mut World| {
             let dir = PathBuf::from(field(world, "native-export-folder-field").trim());
-            let dir = if dir.is_dir() {
+            let dir = if cadrs_fs::is_dir(&dir) {
                 dir
             } else {
                 std::env::current_dir().unwrap_or_default()

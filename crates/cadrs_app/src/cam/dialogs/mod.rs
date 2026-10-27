@@ -78,7 +78,7 @@ pub struct CamDialog {
     /// The fields the dialog shows (rebuilt when they change).
     shown: Option<Vec<Field>>,
     /// When the draft last changed (the live preview waits a moment).
-    changed: Option<std::time::Instant>,
+    changed: Option<web_time::Instant>,
 }
 
 impl CamDialog {
@@ -282,7 +282,7 @@ pub fn open(world: &mut World, draft: Draft) {
         picking,
         tab: 0,
         shown: None,
-        changed: Some(std::time::Instant::now()),
+        changed: Some(web_time::Instant::now()),
     });
 }
 
@@ -352,15 +352,13 @@ fn fill_parts(world: &mut World, d: &mut InsertDraft) {
         return;
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    let spawned = std::thread::Builder::new()
-        .name("cam-insert-parts".into())
-        .spawn(move || {
-            let parts = std::panic::catch_unwind(|| {
-                cadrs_core::derived::source_parts(&d2.0).unwrap_or_default()
-            })
-            .unwrap_or_default();
-            let _ = tx.send(parts);
-        });
+    let spawned = cadrs_core::background::spawn("cam-insert-parts", move || {
+        let parts = std::panic::catch_unwind(|| {
+            cadrs_core::derived::source_parts(&d2.0).unwrap_or_default()
+        })
+        .unwrap_or_default();
+        let _ = tx.send(parts);
+    });
     if spawned.is_ok() {
         world.insert_resource(InsertParts {
             studio: d.studio,
@@ -911,7 +909,7 @@ fn apply_changes(world: &mut World, changes: Vec<FieldChange>, files: Vec<std::p
                 d.draft.set(world, &c.key, &c.value, &cam);
             }
         }
-        d.changed = Some(std::time::Instant::now());
+        d.changed = Some(web_time::Instant::now());
         // (Built again: a typed value that couldn't be read shows the old one.)
         d.shown = None;
         world.insert_resource(d);
@@ -956,7 +954,7 @@ fn apply_picks(world: &mut World, picks: Vec<Pick>) {
                 if key == "p-face" || key == "axis-face" {
                     d.picking = None;
                 }
-                d.changed = Some(std::time::Instant::now());
+                d.changed = Some(web_time::Instant::now());
                 d.shown = None;
                 w.insert_resource(d);
             }

@@ -13,7 +13,7 @@
 //! pausing on collisions. Its readout shows the time, the operation, the feed and the tool's
 //! position; at the end, what Verify found.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::prelude::*;
 use bevy::text::FontWeight;
@@ -380,37 +380,35 @@ pub fn open_for_selection(world: &mut World) {
         let (stock, segments, spans) = (stock.clone(), segments.clone(), spans.clone());
         let fixtures = program::workholding_triangles(job, &parts, &run.frame);
         let frame = run.frame;
-        let spawned = std::thread::Builder::new()
-            .name("cam-verify".into())
-            .spawn(move || {
-                let a = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let start = carry.and_then(|(key, cam, job, setup, upto, parts, paths)| {
-                        super::compute::carried_stock(key, &frame, cell, || {
-                            program::stock_before(
-                                &cam,
-                                cam.job(job)?,
-                                setup,
-                                upto,
-                                &parts,
-                                &paths,
-                                &frame,
-                                cell,
-                            )
-                        })
-                    });
-                    analyse(
-                        &stock, &model, &fixtures, start, &segments, &spans, beam, cell,
-                    )
-                }))
-                .unwrap_or_else(|_| Analysis {
-                    summary: "The check failed unexpectedly".into(),
-                    collisions: Vec::new(),
-                    part: None,
-                    start: None,
-                    sheet: None,
+        let spawned = cadrs_core::background::spawn("cam-verify", move || {
+            let a = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let start = carry.and_then(|(key, cam, job, setup, upto, parts, paths)| {
+                    super::compute::carried_stock(key, &frame, cell, || {
+                        program::stock_before(
+                            &cam,
+                            cam.job(job)?,
+                            setup,
+                            upto,
+                            &parts,
+                            &paths,
+                            &frame,
+                            cell,
+                        )
+                    })
                 });
-                let _ = tx.send(a);
+                analyse(
+                    &stock, &model, &fixtures, start, &segments, &spans, beam, cell,
+                )
+            }))
+            .unwrap_or_else(|_| Analysis {
+                summary: "The check failed unexpectedly".into(),
+                collisions: Vec::new(),
+                part: None,
+                start: None,
+                sheet: None,
             });
+            let _ = tx.send(a);
+        });
         spawned.ok().map(|_| std::sync::Mutex::new(rx))
     };
     let timeline = Timeline::new(segments);

@@ -35,6 +35,10 @@ static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
 /// `CADRS_GPU=0` is set.
 pub fn get() -> Option<&'static Gpu> {
     GPU.get_or_init(|| {
+        // WebGPU has no f64 shaders, and a page can't wait for an adapter.
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
         if std::env::var("CADRS_GPU").is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off")) {
             return None;
         }

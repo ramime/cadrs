@@ -33,7 +33,7 @@ pub use toolbar::*;
 pub use tree::*;
 
 use std::collections::HashSet;
-use std::time::Instant;
+use web_time::Instant;
 
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, observe};

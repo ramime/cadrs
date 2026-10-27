@@ -843,7 +843,7 @@ mod tests {
                 } else {
                     ExchangeFormat::Step
                 };
-            let t0 = std::time::Instant::now();
+            let t0 = web_time::Instant::now();
             let m = match fmt {
                 ExchangeFormat::Step => super::super::step::read(&bytes),
                 ExchangeFormat::Iges => super::super::iges::read(&bytes),

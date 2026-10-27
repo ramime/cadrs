@@ -32,7 +32,7 @@ const FOLDER: cadrs_core::FolderId =
 
 fn fixture_path(name: &str, ext: &str) -> std::path::PathBuf {
     let local = std::path::PathBuf::from("fixtures");
-    let dir = if local.is_dir() {
+    let dir = if cadrs_fs::is_dir(&local) {
         local
     } else {
         std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures"))
@@ -84,7 +84,7 @@ fn store_fixture(world: &mut World, name: &str, folder: bool) -> Option<cadrs_co
         let _ = store.write_thumbnail(id, &img);
     }
     let history = fixture_path(name, "history.ron");
-    if history.is_file() {
+    if cadrs_fs::is_file(&history) {
         match cadrs_core::history_log::HistoryLog::load_path(&history) {
             Ok(log) if log.document == id => {
                 if let Err(e) = log.save(&store) {

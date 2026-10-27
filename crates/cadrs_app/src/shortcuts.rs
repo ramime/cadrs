@@ -499,14 +499,14 @@ mod tests {
         // Spelled in two parts so this test does not find itself.
         const NEEDLE: &str = concat!(".key", "_code");
         fn scan(dir: &std::path::Path, hits: &mut Vec<String>) {
-            for entry in std::fs::read_dir(dir).unwrap() {
+            for entry in cadrs_fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
                     scan(&path, hits);
                 } else if path.extension().is_some_and(|e| e == "rs")
                     && !path.ends_with("shortcut_key.rs")
                 {
-                    let text = std::fs::read_to_string(&path).unwrap();
+                    let text = cadrs_fs::read_to_string(&path).unwrap();
                     for (i, line) in text.lines().enumerate() {
                         if line.contains(NEEDLE) {
                             hits.push(format!("{}:{}", path.display(), i + 1));

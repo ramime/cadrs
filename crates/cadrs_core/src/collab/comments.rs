@@ -116,17 +116,17 @@ pub struct Comments(pub Vec<Comment>);
 
 impl Comments {
     pub fn load(dir: &Path) -> Self {
-        std::fs::read_to_string(dir.join(COMMENTS_FILE))
+        cadrs_fs::read_to_string(dir.join(COMMENTS_FILE))
             .ok()
             .and_then(|t| ron::from_str(&t).ok())
             .unwrap_or_default()
     }
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
+        cadrs_fs::create_dir_all(dir)?;
         let path = dir.join(COMMENTS_FILE);
         if self.0.is_empty() {
-            return match std::fs::remove_file(&path) {
+            return match cadrs_fs::remove_file(&path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
                 _ => Ok(()),
             };
@@ -134,8 +134,8 @@ impl Comments {
         let text =
             ron::ser::to_string_pretty(self, Default::default()).map_err(std::io::Error::other)?;
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path)
+        cadrs_fs::write(&tmp, text)?;
+        cadrs_fs::rename(&tmp, path)
     }
 
     pub fn get(&self, id: uuid::Uuid) -> Option<&Comment> {
@@ -286,6 +286,6 @@ mod tests {
         assert_eq!(Comments::load(&dir), cs);
         Comments::default().save(&dir).unwrap();
         assert!(!dir.join(COMMENTS_FILE).exists());
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = cadrs_fs::remove_dir_all(dir);
     }
 }

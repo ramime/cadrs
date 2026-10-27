@@ -1775,7 +1775,7 @@ pub fn import_file(world: &mut World, path: &Path) {
         .and_then(|n| n.to_str())
         .unwrap_or("Imported")
         .to_string();
-    let bytes = match std::fs::read(path) {
+    let bytes = match cadrs_fs::read(path) {
         Ok(b) => b,
         Err(e) => {
             warn!("cannot import {}: {e}", path.display());
@@ -1825,7 +1825,7 @@ pub fn import_file(world: &mut World, path: &Path) {
     // minute (issue #11). `poll_import_thumbnails` saves it.
     let (tx, rx) = std::sync::mpsc::channel();
     let snapshot = doc.clone();
-    std::thread::spawn(move || {
+    let _ = cadrs_core::background::spawn("import-thumbnail", move || {
         let _ = tx.send(crate::script::studio_thumbnail(&snapshot));
     });
     world.spawn((

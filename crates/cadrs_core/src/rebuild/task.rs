@@ -114,6 +114,6 @@ pub fn run<T: Task>(task: T) -> PendingJob<T::Output> {
         input,
         done,
     };
-    let _ = super::worker().lock().map(|tx| tx.send(job));
+    super::submit(job);
     PendingJob { rx: Mutex::new(rx) }
 }

@@ -54,7 +54,7 @@ fn which(name: &str) -> Option<PathBuf> {
     for d in dirs {
         for n in [name.to_string(), format!("{name}.exe")] {
             let f = d.join(&n);
-            if f.is_file() {
+            if cadrs_fs::is_file(&f) {
                 return Some(f);
             }
         }
@@ -95,7 +95,7 @@ fn run(mut c: Command) -> Result<(), String> {
 
 fn temp_dir() -> Result<PathBuf, String> {
     let d = std::env::temp_dir().join(format!("cadrs-dwg-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    cadrs_fs::create_dir_all(&d).map_err(|e| e.to_string())?;
     Ok(d)
 }
 
@@ -113,7 +113,7 @@ pub fn dxf_to_dwg(
         .unwrap_or("drawing")
         .to_string();
     let src = tmp.join(format!("{stem}.dxf"));
-    std::fs::write(&src, dxf).map_err(|e| e.to_string())?;
+    cadrs_fs::write(&src, dxf).map_err(|e| e.to_string())?;
     let result = match conv {
         Converter::LibreDwg {
             dxf2dwg: Some(p), ..
@@ -127,7 +127,7 @@ pub fn dxf_to_dwg(
         }
         Converter::Oda(p) => {
             let odir = tmp.join("out");
-            let _ = std::fs::create_dir_all(&odir);
+            let _ = cadrs_fs::create_dir_all(&odir);
             let mut c = Command::new(p);
             let v = match version {
                 crate::dxf::DxfVersion::R2013 => "ACAD2013",
@@ -145,14 +145,14 @@ pub fn dxf_to_dwg(
                 .arg("1")
                 .arg("*.DXF");
             run(c).and_then(|_| {
-                std::fs::copy(odir.join(format!("{stem}.dwg")), out)
+                cadrs_fs::copy(odir.join(format!("{stem}.dwg")), out)
                     .map(|_| ())
                     .map_err(|e| format!("the converter wrote no DWG: {e}"))
             })
         }
     };
-    let _ = std::fs::remove_dir_all(&tmp);
-    if result.is_ok() && !out.is_file() {
+    let _ = cadrs_fs::remove_dir_all(&tmp);
+    if result.is_ok() && !cadrs_fs::is_file(out) {
         return Err("the converter wrote no DWG".into());
     }
     result
@@ -180,8 +180,8 @@ pub fn dwg_to_dxf(conv: &Converter, dwg: &Path) -> Result<String, String> {
         }
         Converter::Oda(p) => {
             let idir = tmp.join("in");
-            let _ = std::fs::create_dir_all(&idir);
-            std::fs::copy(dwg, idir.join(format!("{stem}.dwg"))).map_err(|e| e.to_string())?;
+            let _ = cadrs_fs::create_dir_all(&idir);
+            cadrs_fs::copy(dwg, idir.join(format!("{stem}.dwg"))).map_err(|e| e.to_string())?;
             let mut c = Command::new(p);
             c.arg(&idir)
                 .arg(&tmp)
@@ -193,8 +193,8 @@ pub fn dwg_to_dxf(conv: &Converter, dwg: &Path) -> Result<String, String> {
             run(c)
         }
     }
-    .and_then(|_| std::fs::read(&out).map_err(|e| format!("the converter wrote no DXF: {e}")))
+    .and_then(|_| cadrs_fs::read(&out).map_err(|e| format!("the converter wrote no DXF: {e}")))
     .map(|b| String::from_utf8_lossy(&b).into_owned());
-    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = cadrs_fs::remove_dir_all(&tmp);
     result
 }

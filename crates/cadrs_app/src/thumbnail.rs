@@ -691,6 +691,6 @@ mod tests {
         let large = store.read_thumbnail_large(doc.id).unwrap();
         assert_eq!(large.dimensions(), (THUMB_LARGE_W, THUMB_LARGE_H));
         assert!(large.get_pixel(50, 30)[0] > 0);
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = cadrs_fs::remove_dir_all(dir);
     }
 }

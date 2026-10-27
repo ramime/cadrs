@@ -12,9 +12,15 @@ cadrs_core.workspace = true
 data-encoding.workspace = true
 postcard.workspace = true
 serde.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+n0-future.workspace = true
 uuid.workspace = true
 
+
+# The browser build (`tools/web`): bevy_iroh's endpoint over the relays, its key in the page's
+# storage.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy_iroh = { workspace = true, features = ["wasm"] }
 
 [features]
 # Voice while editing together: bevy_iroh's media (cpal, libopus and openh264, built from

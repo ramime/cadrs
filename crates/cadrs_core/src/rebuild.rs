@@ -32,7 +32,8 @@ use std::hash::{Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use cadrs_kernel::BodyId;
 use cadrs_sketch::geom::BezierGeom;
@@ -3824,6 +3825,10 @@ fn worker() -> &'static Mutex<mpsc::Sender<Job>> {
     static WORKER: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
     WORKER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<Job>();
+        // A page has one thread: the jobs run on it as they are sent ([`inline`]).
+        #[cfg(target_arch = "wasm32")]
+        inline::start(rx);
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::Builder::new()
             .name("cadrs-rebuild".into())
             // With the kernel in its own process, this thread hands the jobs to it.
@@ -3839,12 +3844,27 @@ fn worker() -> &'static Mutex<mpsc::Sender<Job>> {
     })
 }
 
+/// Queues `job` for the kernel (`false`: the worker is gone).
+fn submit(job: Job) -> bool {
+    let sent = worker()
+        .lock()
+        .map(|tx| tx.send(job).is_ok())
+        .unwrap_or(false);
+    #[cfg(target_arch = "wasm32")]
+    inline::drain();
+    sent
+}
+
+// A page runs the jobs [`inline`]; the kernel process's loop is still built there, unused.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn run(rx: mpsc::Receiver<Job>) {
     REPORTS_PROGRESS.with(|r| r.set(true));
     let mut rebuilder = Rebuilder::new();
     // The snapshot of the last app rebuild, written once the thread has been idle a while.
     #[cfg(feature = "brep")]
     let mut pending_save: Option<session::PendingSave> = None;
+    #[cfg(not(feature = "brep"))]
+    let mut pending_save = ();
     loop {
         #[cfg(feature = "brep")]
         let job = match rx.recv_timeout(session::SAVE_AFTER) {
@@ -3859,105 +3879,158 @@ fn run(rx: mpsc::Receiver<Job>) {
         };
         #[cfg(not(feature = "brep"))]
         let Ok(job) = rx.recv() else { break };
-        match job {
-            Job::Rebuild {
-                features,
-                reply,
-                cancelled,
-                persist,
-            } => {
-                if cancelled.load(Ordering::Relaxed) {
-                    continue;
-                }
-                #[cfg(feature = "brep")]
-                if persist {
-                    let _ =
-                        catch_unwind(AssertUnwindSafe(|| rebuilder.restore_snapshot(&features)));
-                }
-                #[cfg(not(feature = "brep"))]
-                let _ = persist;
-                let result = catch_unwind(AssertUnwindSafe(|| rebuilder.rebuild(&features)));
-                let build = match result {
-                    Ok(b) => b,
-                    Err(_) => {
-                        // The session may be inconsistent after a panic: start a fresh one.
-                        rebuilder = Rebuilder::new();
-                        Build::failed(&features, "Internal error while rebuilding")
-                    }
-                };
-                #[cfg(feature = "brep")]
-                if persist && build.computed > 0 {
-                    pending_save = rebuilder.plan_save(&features);
-                }
-                let _ = reply.send(Arc::new(build));
+        run_job(&mut rebuilder, job, &mut pending_save);
+    }
+}
+
+/// The kernel in a page: no thread to run on, so [`submit`] runs each job on the page's own
+/// thread before it returns. A job that queues another (a task that rebuilds) leaves it for
+/// the drain already running. The UI waits for each, and the session snapshots are not written
+/// (they only spare rebuilds in later runs).
+#[cfg(target_arch = "wasm32")]
+mod inline {
+    use std::cell::{Cell, RefCell};
+    use std::sync::mpsc;
+
+    use super::{Job, Rebuilder};
+
+    thread_local! {
+        static QUEUE: RefCell<Option<mpsc::Receiver<Job>>> = const { RefCell::new(None) };
+        static REBUILDER: RefCell<Option<Rebuilder>> = const { RefCell::new(None) };
+        static DRAINING: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn start(rx: mpsc::Receiver<Job>) {
+        QUEUE.with(|q| *q.borrow_mut() = Some(rx));
+    }
+
+    pub(super) fn drain() {
+        if DRAINING.with(|d| d.replace(true)) {
+            return;
+        }
+        super::REPORTS_PROGRESS.with(|r| r.set(true));
+        let mut rebuilder = REBUILDER
+            .with(|r| r.borrow_mut().take())
+            .unwrap_or_else(Rebuilder::new);
+        #[cfg(feature = "brep")]
+        let mut pending_save = None;
+        #[cfg(not(feature = "brep"))]
+        let mut pending_save = ();
+        while let Some(job) = QUEUE.with(|q| q.borrow().as_ref().and_then(|rx| rx.try_recv().ok()))
+        {
+            super::run_job(&mut rebuilder, job, &mut pending_save);
+        }
+        REBUILDER.with(|r| *r.borrow_mut() = Some(rebuilder));
+        DRAINING.with(|d| d.set(false));
+    }
+}
+
+#[cfg(feature = "brep")]
+type PendingSave = Option<session::PendingSave>;
+#[cfg(not(feature = "brep"))]
+type PendingSave = ();
+
+/// Runs one job on the kernel session, starting a fresh session after a panic.
+fn run_job(rebuilder: &mut Rebuilder, job: Job, pending_save: &mut PendingSave) {
+    #[cfg(not(feature = "brep"))]
+    let _ = pending_save;
+    match job {
+        Job::Rebuild {
+            features,
+            reply,
+            cancelled,
+            persist,
+        } => {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
             }
-            Job::Export {
-                features,
-                request,
-                reply,
-            } => {
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    rebuilder.export_step(&features, &request)
-                }));
-                let files = result.unwrap_or_else(|_| {
-                    rebuilder = Rebuilder::new();
-                    Err("Internal error while exporting".into())
-                });
-                let _ = reply.send(files);
+            #[cfg(feature = "brep")]
+            if persist {
+                let _ = catch_unwind(AssertUnwindSafe(|| rebuilder.restore_snapshot(&features)));
             }
-            Job::Run(f) => {
-                if catch_unwind(AssertUnwindSafe(|| f(&mut rebuilder))).is_err() {
-                    rebuilder = Rebuilder::new();
+            #[cfg(not(feature = "brep"))]
+            let _ = persist;
+            let result = catch_unwind(AssertUnwindSafe(|| rebuilder.rebuild(&features)));
+            let build = match result {
+                Ok(b) => b,
+                Err(_) => {
+                    // The session may be inconsistent after a panic: start a fresh one.
+                    *rebuilder = Rebuilder::new();
+                    Build::failed(&features, "Internal error while rebuilding")
+                }
+            };
+            #[cfg(feature = "brep")]
+            if persist && build.computed > 0 {
+                *pending_save = rebuilder.plan_save(&features);
+            }
+            let _ = reply.send(Arc::new(build));
+        }
+        Job::Export {
+            features,
+            request,
+            reply,
+        } => {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                rebuilder.export_step(&features, &request)
+            }));
+            let files = result.unwrap_or_else(|_| {
+                *rebuilder = Rebuilder::new();
+                Err("Internal error while exporting".into())
+            });
+            let _ = reply.send(files);
+        }
+        Job::Run(f) => {
+            if catch_unwind(AssertUnwindSafe(|| f(rebuilder))).is_err() {
+                *rebuilder = Rebuilder::new();
+            }
+        }
+        Job::Task { name, input, done } => {
+            match catch_unwind(AssertUnwindSafe(|| {
+                task::run_named(name, &input, rebuilder)
+            })) {
+                Ok(out) => done(out.ok()),
+                Err(_) => {
+                    *rebuilder = Rebuilder::new();
+                    done(None);
                 }
             }
-            Job::Task { name, input, done } => {
-                match catch_unwind(AssertUnwindSafe(|| {
-                    task::run_named(name, &input, &mut rebuilder)
-                })) {
-                    Ok(out) => done(out.ok()),
-                    Err(_) => {
-                        rebuilder = Rebuilder::new();
-                        done(None);
-                    }
-                }
+        }
+        Job::Project {
+            features,
+            request,
+            reply,
+            cancelled,
+        } => {
+            // Nobody waits for it any more (the view was deleted or changed again).
+            if cancelled.load(Ordering::Relaxed) {
+                return;
             }
-            Job::Project {
-                features,
-                request,
-                reply,
-                cancelled,
-            } => {
-                // Nobody waits for it any more (the view was deleted or changed again).
-                if cancelled.load(Ordering::Relaxed) {
-                    continue;
-                }
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    rebuilder.project_view(&features, &request)
-                }));
-                let view = result.unwrap_or_else(|_| {
-                    rebuilder = Rebuilder::new();
-                    Err("Internal error while projecting the view".into())
-                });
-                let _ = reply.send(view.map(Arc::new));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                rebuilder.project_view(&features, &request)
+            }));
+            let view = result.unwrap_or_else(|_| {
+                *rebuilder = Rebuilder::new();
+                Err("Internal error while projecting the view".into())
+            });
+            let _ = reply.send(view.map(Arc::new));
+        }
+        Job::ProjectAssembly {
+            state,
+            request,
+            reply,
+            cancelled,
+        } => {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
             }
-            Job::ProjectAssembly {
-                state,
-                request,
-                reply,
-                cancelled,
-            } => {
-                if cancelled.load(Ordering::Relaxed) {
-                    continue;
-                }
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    rebuilder.project_assembly(&state, &request)
-                }));
-                let view = result.unwrap_or_else(|_| {
-                    rebuilder = Rebuilder::new();
-                    Err("Internal error while projecting the assembly".into())
-                });
-                let _ = reply.send(view.map(Arc::new));
-            }
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                rebuilder.project_assembly(&state, &request)
+            }));
+            let view = result.unwrap_or_else(|_| {
+                *rebuilder = Rebuilder::new();
+                Err("Internal error while projecting the assembly".into())
+            });
+            let _ = reply.send(view.map(Arc::new));
         }
     }
 }
@@ -3979,7 +4052,12 @@ impl<T> PendingJob<T> {
 
     /// Waits for the result (`None`: the job failed or the worker stopped).
     pub fn wait(self) -> Option<T> {
-        self.rx.into_inner().ok()?.recv().ok()
+        let rx = self.rx.into_inner().ok()?;
+        // A page ran the job when it was sent ([`inline`]).
+        if cfg!(target_arch = "wasm32") {
+            return rx.try_recv().ok();
+        }
+        rx.recv().ok()
     }
 }
 
@@ -3992,7 +4070,7 @@ pub fn run_on_worker<T: Send + 'static>(
     let job = Job::Run(Box::new(move |r: &mut Rebuilder| {
         let _ = reply.send(f(r));
     }));
-    let _ = worker().lock().map(|tx| tx.send(job));
+    submit(job);
     PendingJob { rx: Mutex::new(rx) }
 }
 
@@ -4002,6 +4080,10 @@ pub fn run_in_background<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> PendingJob<T> {
     let (reply, rx) = mpsc::channel();
+    // A page has no other thread: the work is done by the time this returns.
+    #[cfg(target_arch = "wasm32")]
+    let _ = reply.send(f());
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(move || {
         let _ = reply.send(f());
     });
@@ -4259,6 +4341,9 @@ impl Pending {
         if self.done.is_none() {
             let rx = self.rx.lock().ok()?;
             let got = match timeout {
+                // A page ran the rebuild when it was asked for ([`inline`]): it is there, or it
+                // won't come (and a page can't block, or tell the time the std way).
+                _ if cfg!(target_arch = "wasm32") => rx.try_recv().ok(),
                 None => rx.recv().ok(),
                 Some(d) if d.is_zero() => rx.try_recv().ok(),
                 Some(d) => rx.recv_timeout(d).ok(),
@@ -4297,10 +4382,7 @@ fn request_with(features: Vec<Feature>, persist: bool) -> Pending {
         cancelled: cancelled.clone(),
         persist,
     };
-    let sent = worker()
-        .lock()
-        .map(|tx| tx.send(job).is_ok())
-        .unwrap_or(false);
+    let sent = submit(job);
     let mut pending = Pending {
         rx: Mutex::new(rx),
         cancelled,
@@ -4359,7 +4441,7 @@ pub fn export_step(features: Vec<Feature>, request: StepRequest) -> PendingExpor
         reply,
     };
     // If the worker is gone, the reply sender is dropped and `poll` reports it.
-    let _ = worker().lock().map(|tx| tx.send(job));
+    submit(job);
     PendingExport { rx: Mutex::new(rx) }
 }
 
@@ -4377,7 +4459,7 @@ pub(crate) fn project_view(
         reply,
         cancelled,
     };
-    let _ = worker().lock().map(|tx| tx.send(job));
+    submit(job);
     rx
 }
 
@@ -4394,7 +4476,7 @@ pub(crate) fn project_assembly_view(
         reply,
         cancelled,
     };
-    let _ = worker().lock().map(|tx| tx.send(job));
+    submit(job);
     rx
 }
 

@@ -545,10 +545,10 @@ pub fn post_now(world: &mut World) {
             .map_or("program".into(), |x| x.to_string_lossy());
         PathBuf::from(&folder).join(format!("{stem}-setup-sheet.html"))
     });
-    let r = std::fs::create_dir_all(&folder)
-        .and_then(|_| std::fs::write(&path, nc.as_bytes()))
+    let r = cadrs_fs::create_dir_all(&folder)
+        .and_then(|_| cadrs_fs::write(&path, nc.as_bytes()))
         .and_then(|_| match &sheet_path {
-            Some(p) => std::fs::write(p, sheet.as_bytes()),
+            Some(p) => cadrs_fs::write(p, sheet.as_bytes()),
             None => Ok(()),
         });
     match r {

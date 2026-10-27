@@ -1279,10 +1279,10 @@ pub fn set_document_loader(loader: Option<std::sync::Arc<DocumentLoader>>) {
 /// A loader reading documents from `store`, each parsed once per version of its file.
 pub fn store_loader(store: crate::Store) -> std::sync::Arc<DocumentLoader> {
     type Cache =
-        std::collections::HashMap<DocumentId, (Option<std::time::SystemTime>, Option<Document>)>;
+        std::collections::HashMap<DocumentId, (Option<cadrs_fs::SystemTime>, Option<Document>)>;
     let cache: std::sync::Mutex<Cache> = std::sync::Mutex::new(Cache::new());
     std::sync::Arc::new(move |id| {
-        let stamp = std::fs::metadata(store.document_path(id))
+        let stamp = cadrs_fs::metadata(store.document_path(id))
             .and_then(|m| m.modified())
             .ok();
         if let Ok(c) = cache.lock()

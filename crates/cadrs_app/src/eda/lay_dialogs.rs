@@ -882,14 +882,14 @@ pub fn plot_to(w: &mut World, dir: &std::path::Path) -> Result<Vec<String>, Stri
         return Err("No board".into());
     };
     let name = board_name(w);
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out = vec![];
     for (file, text) in cadrs_eda::fab::gerbers(&d.board, &name) {
-        std::fs::write(dir.join(&file), text).map_err(|e| format!("{file}: {e}"))?;
+        cadrs_fs::write(dir.join(&file), text).map_err(|e| format!("{file}: {e}"))?;
         out.push(format!("Plotted {file}"));
     }
     let job = format!("{name}-job.gbrjob");
-    std::fs::write(dir.join(&job), cadrs_eda::fab::job_file(&d.board, &name))
+    cadrs_fs::write(dir.join(&job), cadrs_eda::fab::job_file(&d.board, &name))
         .map_err(|e| e.to_string())?;
     out.push(format!("Created Gerber job file {job}"));
     Ok(out)
@@ -901,11 +901,11 @@ pub fn drill_to(w: &mut World, dir: &std::path::Path) -> Result<Vec<String>, Str
         return Err("No board".into());
     };
     let name = board_name(w);
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out = vec![];
     for (plated, suffix) in [(true, "PTH"), (false, "NPTH")] {
         let file = format!("{name}-{suffix}.drl");
-        std::fs::write(dir.join(&file), cadrs_eda::fab::excellon(&d.board, plated))
+        cadrs_fs::write(dir.join(&file), cadrs_eda::fab::excellon(&d.board, plated))
             .map_err(|e| format!("{file}: {e}"))?;
         out.push(format!("Created {file}"));
     }
@@ -946,7 +946,7 @@ pub fn assembly_to(w: &mut World, dir: &std::path::Path) -> Result<Vec<String>, 
         return Err("No board".into());
     };
     let name = board_name(w);
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out = vec![];
     for (file, text) in [
         (
@@ -958,7 +958,7 @@ pub fn assembly_to(w: &mut World, dir: &std::path::Path) -> Result<Vec<String>, 
             cadrs_eda::fab::jlcpcb_cpl(&d.board),
         ),
     ] {
-        std::fs::write(dir.join(&file), text).map_err(|e| format!("{file}: {e}"))?;
+        cadrs_fs::write(dir.join(&file), text).map_err(|e| format!("{file}: {e}"))?;
         out.push(format!("Created {file}"));
     }
     Ok(out)
@@ -987,10 +987,10 @@ pub fn step_to(w: &mut World, dir: &std::path::Path) -> Result<Vec<String>, Stri
         .map(|x| x.board.clone())
         .ok_or("No board")?;
     let name = board_name(w);
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cadrs_fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let (bytes, warnings) = cadrs_pcb::step::native_board_step(&pcb, &d)?;
     let file = format!("{name}.step");
-    std::fs::write(dir.join(&file), bytes).map_err(|e| format!("{file}: {e}"))?;
+    cadrs_fs::write(dir.join(&file), bytes).map_err(|e| format!("{file}: {e}"))?;
     let mut out = vec![format!("Created {file}")];
     out.extend(warnings.into_iter().map(|w| format!("Warning: {w}")));
     Ok(out)

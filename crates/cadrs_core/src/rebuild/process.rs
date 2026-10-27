@@ -25,6 +25,11 @@
 //!   with "The geometry kernel crashed" instead of being computed, and the rest of the list
 //!   rebuilds (up to [`MAX_CRASHES`] times per request). Changing the feature, or anything above
 //!   it, gives it a new key, so it is computed again. Other jobs that crash fail (no result).
+//! - **A page** (the browser build) starts no processes: its jobs run inline
+//!   (`super::inline`), and only the messages' encoding here is used.
+
+// The app's side of the connection is unused in a page.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -34,7 +39,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -964,7 +970,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::Store::new(dir.path());
         let mut lists = 0;
-        for entry in std::fs::read_dir(&fixtures).unwrap() {
+        for entry in cadrs_fs::read_dir(&fixtures).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|e| e != "cadrs") {
                 continue;

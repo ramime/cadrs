@@ -241,6 +241,33 @@ jobs:
       - name: Test
         run: cargo test --workspace --exclude cadrs --lib
 
+  # The browser build (tools/web) compiles: code that also runs in a page reads files through
+  # cadrs_fs, tells the time with web_time and starts no threads (CLAUDE.md), which a native build
+  # can't check.
+  web:
+    name: Check (browser)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # clang and mold link the build scripts (.cargo/config.toml's host settings).
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang mold
+
+      - name: Rust toolchain
+        run: rustup toolchain install && rustc -V
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+
+      - name: Check
+        run: cargo check --locked --target wasm32-unknown-unknown -p cadrs
+
   macos:
     name: Build and test (macOS)
     if: github.event_name != 'schedule'
