@@ -1,8 +1,8 @@
 //! The feature list while a rebuild runs for longer than a moment: each feature it rebuilds
 //! shows where it stands, done (as it always looks), busy (a spinner at its end and a pulsing
 //! accent at its left edge) or queued (veiled), from [`PartCache::rebuild_steps`]; the parts in
-//! the view show how far it has got ([`PartCache`] takes them as it goes). The list follows the
-//! busy row while the one before it was in view (not once it is scrolled away from it).
+//! the view show how far it has got ([`PartCache`] takes them as it goes). The list scrolls to
+//! keep the busy row high in it, the queued rows below in view, until it is scrolled by hand.
 //!
 //! The rows are spawned again whenever their key changes ([`crate::document::FeatureRowsSet`]),
 //! so each one's step is an overlay of its own, added, updated and faded out in place.
@@ -16,7 +16,7 @@ use cadrs_ui::spinner::Spinner;
 use cadrs_ui::spring::MotionSettings;
 
 use crate::AppState;
-use crate::document::{FeatureRow, RevealFeature};
+use crate::document::FeatureRow;
 use crate::parts::{PartCache, RebuildStep};
 use crate::rebuild_indicator::SHOW_AFTER_SECS;
 
@@ -27,6 +27,10 @@ const FADE: f32 = 0.15;
 /// The busy row's accent: its width (px), and how often it pulses (per second).
 const ACCENT_WIDTH: f32 = 3.0;
 const PULSE_HZ: f32 = 1.2;
+/// Where the list keeps the busy row: this far down its height (its top edge).
+const FOLLOW_AT: f32 = 0.25;
+/// How fast the list eases to it (per second; the larger, the sooner).
+const FOLLOW_RATE: f32 = 10.0;
 
 pub struct RebuildRowsPlugin;
 
@@ -37,6 +41,7 @@ impl Plugin for RebuildRowsPlugin {
             (
                 sync_steps.after(crate::document::FeatureRowsSet),
                 animate_steps.after(sync_steps),
+                follow_busy.after(sync_steps),
             )
                 .run_if(in_state(AppState::Document)),
         );
@@ -69,12 +74,8 @@ fn sync_steps(
     time: Res<Time<Real>>,
     theme: Res<Theme>,
     mut since: Local<Option<f32>>,
-    mut busy_was: Local<Option<FeatureId>>,
-    revealing: Option<Res<RevealFeature>>,
     rows: Query<(Entity, &FeatureRow, &Name)>,
     mut overlays: Query<(&ChildOf, &mut StepOverlay)>,
-    laid_out: Query<(&FeatureRow, &ComputedNode, &bevy::ui::UiGlobalTransform)>,
-    lists: Query<(&Name, &ComputedNode, &bevy::ui::UiGlobalTransform)>,
 ) {
     let now = time.elapsed_secs();
     let steps: HashMap<FeatureId, RebuildStep> = match cache.rebuild_steps() {
@@ -85,35 +86,6 @@ fn sync_steps(
             HashMap::new()
         }
     };
-    // The list follows the busy row, while the row busy before it was in view (or still being
-    // scrolled to: the rows can be busy for less than the scroll takes).
-    let busy = steps
-        .iter()
-        .find(|(_, s)| **s == RebuildStep::Busy)
-        .map(|(id, _)| *id);
-    if busy != *busy_was {
-        let in_view = |id: FeatureId| {
-            let span = |n: &ComputedNode, at: &bevy::ui::UiGlobalTransform| {
-                let half = n.size().y / 2.0;
-                (at.translation.y - half, at.translation.y + half)
-            };
-            let row = laid_out.iter().find(|(r, ..)| r.0 == id);
-            let list = lists.iter().find(|(n, ..)| n.as_str() == "feature-scroll");
-            match (row, list) {
-                (Some((_, rn, ra)), Some((_, ln, la))) => {
-                    let ((top, bottom), (view_top, view_bottom)) = (span(rn, ra), span(ln, la));
-                    top >= view_top - 1.0 && bottom <= view_bottom + 1.0
-                }
-                _ => false,
-            }
-        };
-        if let Some(id) = busy
-            && (revealing.is_some() || busy_was.is_none_or(in_view))
-        {
-            commands.insert_resource(RevealFeature::new(id));
-        }
-        *busy_was = busy;
-    }
     let mut shown: HashMap<Entity, Mut<StepOverlay>> = overlays
         .iter_mut()
         .map(|(parent, o)| (parent.parent(), o))
@@ -251,4 +223,73 @@ fn animate_steps(
             }
         }
     }
+}
+
+/// Where the list is following the busy row: the scroll it last set, until the list is scrolled
+/// any other way (by hand), when it stops for the rest of the rebuild.
+#[derive(Default)]
+struct Follow {
+    stopped: bool,
+    set: Option<f32>,
+}
+
+/// Scrolls the feature list to keep the busy row [`FOLLOW_AT`] down it, eased (at once with
+/// motion off), so the queued rows after it show below.
+fn follow_busy(
+    time: Res<Time<Real>>,
+    motion: Res<MotionSettings>,
+    mut follow: Local<Follow>,
+    overlays: Query<(&ChildOf, &StepOverlay)>,
+    rows: Query<(&ComputedNode, &bevy::ui::UiGlobalTransform)>,
+    mut lists: Query<(
+        &Name,
+        &ComputedNode,
+        &bevy::ui::UiGlobalTransform,
+        &mut ScrollPosition,
+    )>,
+) {
+    let busy = overlays
+        .iter()
+        .find(|(_, o)| o.step == Some(RebuildStep::Busy))
+        .map(|(row, _)| row.parent());
+    let Some(busy) = busy else {
+        // The rebuild is over (or not showing yet): the next one follows again.
+        *follow = Follow::default();
+        return;
+    };
+    let Some((_, list, list_at, mut pos)) = lists
+        .iter_mut()
+        .find(|(n, ..)| n.as_str() == "feature-scroll")
+    else {
+        return;
+    };
+    if follow.set.is_some_and(|set| (pos.y - set).abs() > 1.5) {
+        follow.stopped = true;
+    }
+    if follow.stopped {
+        return;
+    }
+    let Ok((row, row_at)) = rows.get(busy) else {
+        return;
+    };
+    if row.size().y <= 0.0 {
+        return;
+    }
+    // In the list's logical pixels: the row's top within the scrolled content.
+    let s = list.inverse_scale_factor();
+    let view_top = (list_at.translation.y - list.size().y / 2.0) * s;
+    let row_top = (row_at.translation.y - row.size().y / 2.0) * s;
+    let max = ((list.content_size().y - list.size().y) * s).max(0.0);
+    let target = (row_top - view_top + pos.y - FOLLOW_AT * list.size().y * s).clamp(0.0, max);
+    let y = if motion.enabled {
+        let k = 1.0 - (-FOLLOW_RATE * time.delta_secs()).exp();
+        let y = pos.y + (target - pos.y) * k;
+        if (target - y).abs() < 0.5 { target } else { y }
+    } else {
+        target
+    };
+    if y != pos.y {
+        pos.y = y;
+    }
+    follow.set = Some(y);
 }

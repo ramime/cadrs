@@ -4326,16 +4326,9 @@ fn on_feature_double_click(
 /// A feature to bring into view in the feature list, once its row is laid out
 /// ([`reveal_feature`]).
 #[derive(Resource, Debug, Clone, Copy)]
-pub struct RevealFeature {
+struct RevealFeature {
     id: FeatureId,
     frames: u32,
-}
-
-impl RevealFeature {
-    /// Scrolls the list to feature `id`'s row as it is (a row in a closed folder isn't shown).
-    pub fn new(id: FeatureId) -> Self {
-        Self { id, frames: 0 }
-    }
 }
 
 /// Shows feature `id` in the feature list: opens its folder if closed, and scrolls the list to
