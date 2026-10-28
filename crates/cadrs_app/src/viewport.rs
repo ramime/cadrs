@@ -1281,6 +1281,15 @@ fn viewport_pointer(
                             {
                                 commands.queue(move |world: &mut World| edit_picked(world, p));
                             }
+                            // Alt+click in a shared document: "look here" for everyone
+                            // (`collab::pointers::ping`), not a pick; elsewhere a pick as ever.
+                            _ if keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) => {
+                                commands.queue(move |world: &mut World| {
+                                    if !crate::collab::pointers::ping(world) {
+                                        world.write_message(PickRequest(picked));
+                                    }
+                                });
+                            }
                             _ => {
                                 picks.write(PickRequest(picked));
                                 if !again {

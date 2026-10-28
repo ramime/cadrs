@@ -9,6 +9,8 @@ repository.workspace = true
 bevy.workspace = true
 bevy_iroh.workspace = true
 cadrs_core.workspace = true
+# The persistent face, edge and vertex names a selection travels by (`session::Picked`).
+cadrs_sketch.workspace = true
 data-encoding.workspace = true
 postcard.workspace = true
 serde.workspace = true

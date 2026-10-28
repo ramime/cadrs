@@ -55,6 +55,17 @@ impl Avatar {
         Color::Srgba(Srgba::hex(COLORS[hash as usize % COLORS.len()]).unwrap())
     }
 
+    /// The initials' ink on `bg`: white, or near black on a light colour.
+    pub fn ink_on(bg: Color) -> Color {
+        let c = bg.to_linear();
+        let luminance = 0.2126 * c.red + 0.7152 * c.green + 0.0722 * c.blue;
+        if luminance > 0.36 {
+            Color::srgb_u8(0x1a, 0x1a, 0x1a)
+        } else {
+            Color::WHITE
+        }
+    }
+
     pub fn build(self, theme: &Theme) -> impl Bundle {
         let bg = self.color.unwrap_or_else(|| Self::color_for(&self.user));
         (
@@ -74,7 +85,7 @@ impl Avatar {
                     Self::initials(&self.user),
                     (self.size * 0.42).round(),
                     FontWeight::SEMIBOLD,
-                    Color::WHITE
+                    Self::ink_on(bg)
                 ),
                 Pickable::IGNORE,
             )],
