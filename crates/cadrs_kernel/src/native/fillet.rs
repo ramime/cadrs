@@ -4990,6 +4990,7 @@ fn pieces_of(
             faces: base.faces,
             ..clone_fillet(&base)
         };
+        let mut grazes = 0;
         loop {
             let te = ed.t[j];
             let Some((k, into, ball, t)) = first_roll(b, &cur, &cur.mid, cur.tm, te)? else {
@@ -5010,6 +5011,17 @@ fn pieces_of(
                         back.1
                     )
                 });
+                // Each graze moves the ball on past where it rolled from, and only a few are
+                // met. (A contact sitting on the smooth edge, leaving its face and the one
+                // beyond at the same point, grazes there again and again without moving on,
+                // #155.)
+                grazes += 1;
+                if grazes > 16 || cur.spine_len(cur.tm, back.1) <= HAIR * (1.0 + cur.r()) {
+                    return Err(failed(
+                        "rolling ball",
+                        "the fillet's ball keeps rolling onto a face and straight back",
+                    ));
+                }
                 (cur.mid, cur.tm) = back;
                 continue;
             }
