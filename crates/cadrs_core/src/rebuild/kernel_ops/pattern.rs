@@ -831,7 +831,7 @@ impl Rebuilder {
         let own: Vec<PartId>;
         let narrowed;
         let merge = if merge.op == BooleanOp::Add && !merge.merge_all && merge.scope.is_empty() {
-            let touches = self.contacts(joined.0, state, false).touches;
+            let touches = self.contacts(joined.0, state, false, true).touches;
             own = seeds
                 .iter()
                 .copied()

@@ -4561,8 +4561,8 @@ fn first_roll(
             let Some(into) = beyond(b, c.edge, fi) else {
                 continue;
             };
-            // Two planes meeting at an angle: no crossing there can be smooth (the test below),
-            // so none is searched for.
+            // Two planes meeting at an angle, or faces meeting sharply all along their edge: no
+            // crossing there can be smooth (the test below), so none is searched for.
             if let (Surface::Plane { .. }, Surface::Plane { .. }) =
                 (&b.faces[fi].surf, &b.faces[into].surf)
             {
@@ -4570,6 +4570,8 @@ fn first_roll(
                 if normal(into).dot(&normal(fi)) <= 1.0 - tol::ANGULAR_POINT {
                     continue;
                 }
+            } else if sharp_all_along(b, fi, into, c) {
+                continue;
             }
             let bd = Boundary {
                 curve: &x.curve,
@@ -4647,6 +4649,26 @@ fn first_roll(
     Ok(best.map(|x| x.1))
 }
 
+/// Whether faces `fi` and `into` meet at their edge (coedge `c` of `fi`) at more than 10°
+/// all along it (at 17 points, each face's normal from its p-curve there): no ball rolls over
+/// it smoothly. (Smooth somewhere between those points, the faces' angle would turn by 10°
+/// within a sixteenth of the edge.)
+fn sharp_all_along(b: &Body, fi: usize, into: usize, c: &Coedge) -> bool {
+    let x = &b.edges[c.edge];
+    let Some(d) = coedge_of(b, into, c.edge) else {
+        return false;
+    };
+    let (f, g) = (&b.faces[fi], &b.faces[into]);
+    (0..=16).all(|i| {
+        let t = x.t[0] + (x.t[1] - x.t[0]) * i as f64 / 16.0;
+        let normal = |s: &Face, pc: &Curve| {
+            let uv = pc.point(t);
+            geom::contact(s, P2::new(uv.x, uv.y)).n
+        };
+        normal(f, &c.pc).dot(&normal(g, &d.pc)) < 10f64.to_radians().cos()
+    })
+}
+
 /// [`first_roll`] by following the strip: its ball run on from `from` (at t0) towards t1 in
 /// steps, where a contact first leaves its face over a smooth edge (bisected to the edge). For a
 /// chamfer, whose crossings the offsets' search may miss (a section plane turning fast round a
@@ -4661,7 +4683,8 @@ fn traced_roll(
     let n = ((ef.spine_len(t0, t1) / (TRACE_STEP * ef.r())).ceil() as usize)
         .clamp(TRACE_STEPS.0, TRACE_STEPS.1);
     let step = (t1 - t0) / n as f64;
-    let on = |ball: &Ball, k: usize| point_in_face(b, ef.faces[k], &ball.q[k].p);
+    let tests = ef.faces.map(|fi| FaceTest::of(b, fi));
+    let on = |ball: &Ball, k: usize| tests[k].holds(b, &ball.q[k].p);
     let (mut ta, mut ba) = (t0, *from);
     for i in 1..=n {
         let tb = t0 + (t1 - t0) * i as f64 / n as f64;
@@ -8941,7 +8964,10 @@ fn loops_of(nb: &Body, es: &[usize]) -> Vec<Vec<usize>> {
 /// Where an open strip's rail k runs off its face and back between spine parameters t0 and t1
 /// (its ends): pairs of crossings of its face's edges, in order along the strip. `off`: the
 /// ends at tangent junctions where the rail is off its face ([`Crossing::w`]), which pair with
-/// a crossing like any other (the stretch off the face runs on into the next strip).
+/// a crossing like any other (the stretch off the face runs on into the next strip). `near`: a
+/// box holding the rail; only the face's edges reaching into it are searched (a face bounded
+/// by a spline's spans has a hundred edges, the rail of a strip one span long crossing few).
+#[allow(clippy::too_many_arguments)]
 fn open_cliffs(
     b: &Body,
     ef: &EdgeFillet,
@@ -8949,6 +8975,7 @@ fn open_cliffs(
     (t0, t1): (f64, f64),
     ends: [P3; 2],
     off: [Option<Crossing>; 2],
+    near: &super::math::Bbox,
 ) -> Result<Vec<(Crossing, Crossing)>> {
     let f = [&b.faces[ef.faces[0]], &b.faces[ef.faces[1]]];
     let fi = ef.faces[k];
@@ -8967,7 +8994,11 @@ fn open_cliffs(
     let mut cs: Vec<Crossing> = Vec::new();
     for c in b.faces[fi].loops.iter().flatten() {
         let x = &b.edges[c.edge];
-        if c.edge == ef.e || x.degenerate || is_seam(b, fi, c.edge) {
+        if c.edge == ef.e
+            || x.degenerate
+            || is_seam(b, fi, c.edge)
+            || !near.overlaps(&super::boolean::curve_bbox(&x.curve, x.t[0], x.t[1]))
+        {
             continue;
         }
         let bd = Boundary {
@@ -9245,25 +9276,48 @@ fn fit_cut(xs: &[P3], g: Option<&Face>, centres: [Option<P3>; 2]) -> (Curve, f64
 /// surface's projection (a Bézier span's, one of a spline's faces) puts a point past its end
 /// on the face's edge there.
 fn point_in_face(b: &Body, fi: usize, p: &P3) -> bool {
-    let f = &b.faces[fi];
-    let near = near_chart(b, f, p);
-    let (u, v) = f.surf.project(p, near.map(|q| (q.x, q.y)));
-    let slack = f
-        .loops
-        .iter()
-        .flatten()
-        .map(|c| b.edges[c.edge].tol)
-        .fold(1e3 * tol::POINT, f64::max);
-    if (f.surf.eval(u, v) - p).norm() > slack {
-        return false;
+    FaceTest::of(b, fi).holds(b, p)
+}
+
+/// What [`point_in_face`] asks of a face, made once to test many points (a strip traced along
+/// a face bounded by a spline's hundred spans).
+struct FaceTest {
+    fi: usize,
+    polys: Vec<Vec<P2>>,
+    slack: f64,
+}
+
+impl FaceTest {
+    fn of(b: &Body, fi: usize) -> Self {
+        let f = &b.faces[fi];
+        let slack = f
+            .loops
+            .iter()
+            .flatten()
+            .map(|c| b.edges[c.edge].tol)
+            .fold(1e3 * tol::POINT, f64::max);
+        Self {
+            fi,
+            polys: super::classify::face_polygons(b, f),
+            slack,
+        }
     }
-    let polys = super::classify::face_polygons(b, f);
-    super::classify::periodic_candidates(&f.surf, u, v, &polys)
-        .into_iter()
-        .any(|uv| {
-            super::classify::in_face(&polys, &f.surf, uv, tol::ROUNDOFF)
-                != super::classify::InFace::Outside
-        })
+
+    /// [`point_in_face`].
+    fn holds(&self, b: &Body, p: &P3) -> bool {
+        let f = &b.faces[self.fi];
+        let near = near_chart(b, f, p);
+        let (u, v) = f.surf.project(p, near.map(|q| (q.x, q.y)));
+        if (f.surf.eval(u, v) - p).norm() > self.slack {
+            return false;
+        }
+        super::classify::periodic_candidates(&f.surf, u, v, &self.polys)
+            .into_iter()
+            .any(|uv| {
+                super::classify::in_face(&self.polys, &f.surf, uv, tol::ROUNDOFF)
+                    != super::classify::InFace::Outside
+            })
+    }
 }
 
 /// Where the closed strip's rail k crosses its face's seam, found from the rail's (u, v): the
@@ -12059,7 +12113,12 @@ fn trim(
                     off[0].map_or_else(|| ef.spine.param_of(&p0, near[0]), |c| c.t),
                     off[1].map_or_else(|| ef.spine.param_of(&p1, near[1]), |c| c.t),
                 );
-                *o = open_cliffs(b, ef, k, (t0, t1), [p0, p1], off)?;
+                // The rail's box, with room for its fit (the true rail, which the crossings
+                // follow, strays from it by up to the fit's tolerance).
+                let (r0, r1) = (rt[0][k].min(rt[1][k]), rt[0][k].max(rt[1][k]));
+                let near = super::boolean::curve_bbox(&st.rails[k], r0, r1)
+                    .grow(10.0 * fit_tol + 0.01 * ef.r());
+                *o = open_cliffs(b, ef, k, (t0, t1), [p0, p1], off, &near)?;
             }
         }
         // A B-spline strip through the crossings' sections too, so its rails meet the faces'
