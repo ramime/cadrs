@@ -465,6 +465,9 @@ struct PendingRebuild {
     /// The features it rebuilds, in order, each with whether it is a part feature (those its
     /// progress counts).
     order: Vec<(FeatureId, bool)>,
+    /// Its part features' cache keys ([`cadrs_core::rebuild::chain_keys`]): those it shares
+    /// with the rebuild before it are cached, done as soon as it starts.
+    keys: Vec<u64>,
 }
 
 /// Where a feature of the rebuild running stands ([`PartCache::rebuild_steps`]).
@@ -1041,17 +1044,29 @@ impl PartCache {
 
     /// Where each feature of the rebuild running stands: the part features before the one being
     /// computed done (taken from the cache or computed), that one busy and the rest queued, a
-    /// sketch as far as the part features before it are (all queued until it starts, behind
-    /// another rebuild). `None` while nothing rebuilds.
+    /// sketch as far as the part features before it are. Before it starts (the rebuild before
+    /// it still stopping), the part features it shares with that one done and the rest queued.
+    /// `None` while nothing rebuilds.
     pub fn rebuild_steps(&self) -> Option<Vec<(FeatureId, RebuildStep)>> {
         let p = self.pending.as_ref().filter(|_| self.rebuilding)?;
         let done = p.rebuild.progress().map(|(done, _)| done);
+        // Not started: as far as its keys are those of the rebuild before it (cached).
+        let shared = self.superseded.as_ref().map_or(0, |old| {
+            p.keys
+                .iter()
+                .zip(&old.keys)
+                .take_while(|(a, b)| a == b)
+                .count()
+        });
         let mut parts = 0;
         Some(
             p.order
                 .iter()
                 .map(|&(id, part)| {
                     let step = match done {
+                        None if parts < shared || (!part && parts == shared && shared > 0) => {
+                            RebuildStep::Done
+                        }
                         None => RebuildStep::Queued,
                         Some(d) if parts < d => RebuildStep::Done,
                         Some(d) if part && parts == d => RebuildStep::Busy,
@@ -1462,10 +1477,11 @@ fn update_part_cache(
             && let Some(p) = &mut cache.superseded
             && let Some(build) = p.rebuild.poll()
         {
-            // An older rebuild finished first: show it while the newer one runs.
+            // An older rebuild finished first: show it while the newer one runs (not one
+            // stopped early for it: that has only the parts as far as it got).
             let same_element = p.element == el.id;
             cache.superseded = None;
-            if same_element {
+            if same_element && !build.stopped {
                 log.0.push((features.len(), build.computed, build.elapsed));
                 cache.apply(
                     &build,
@@ -1495,12 +1511,14 @@ fn update_part_cache(
     // Rebuild on the kernel thread; wait a little so quick rebuilds show in this frame.
     // Restored from the session snapshot of these features when the session doesn't have them
     // (a document opened again), and snapshotted afterwards.
-    // The rebuild running now keeps running (one at most; a queued one is cancelled), so its
-    // result can show before this one's.
+    // The rebuild running now stops before the next feature it would compute (one at most; a
+    // queued one is cancelled): the features it got through stay cached for this one, and its
+    // result shows before this one's only if it was already on its last feature.
     if let Some(old) = cache.pending.take()
         && old.element == el.id
         && cache.superseded.is_none()
     {
+        old.rebuild.stop();
         cache.superseded = Some(old);
     }
     let mut rebuild = cadrs_core::rebuild::request_persisted(effective.clone());
@@ -1543,6 +1561,7 @@ fn update_part_cache(
                     .iter()
                     .map(|f| (f.id, f.is_part_feature()))
                     .collect(),
+                keys: cadrs_core::rebuild::chain_keys(&effective),
             });
         }
     }

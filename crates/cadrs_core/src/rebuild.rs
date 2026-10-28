@@ -118,6 +118,9 @@ pub struct Build {
     /// contexts", SM1.3), in list order; a failed model keeps its context (the flat view shows
     /// why, SM1.5).
     pub sheet_metal: Vec<crate::sheetmetal::SheetMetalContext>,
+    /// It was stopped before it finished ([`Pending::stop`], a newer request for the same list):
+    /// its parts are those of the features before where it stopped. Never the list's result.
+    pub stopped: bool,
 }
 
 /// P3D.1: how a feature came out of the last rebuild.
@@ -383,6 +386,9 @@ const MAX_ENTRIES: usize = 1024;
 pub struct Rebuilder {
     #[cfg(feature = "brep")]
     kernel: cadrs_kernel::DefaultKernel,
+    /// Set while a rebuild may be stopped early: it stops before the next feature it would
+    /// compute once this is set ([`Pending::stop`]).
+    stop: Option<Arc<AtomicBool>>,
     entries: HashMap<u64, Entry>,
     generation: u64,
     /// The feature whose [`Stage`] is worth meshing (the last part feature).
@@ -593,6 +599,7 @@ impl Rebuilder {
         Self {
             #[cfg(feature = "brep")]
             kernel: cadrs_kernel::DefaultKernel::new(),
+            stop: None,
             entries: HashMap::new(),
             generation: 0,
             stage_for: None,
@@ -735,6 +742,18 @@ impl Rebuilder {
                 self.release_unheld(e.output.owned);
             }
             let computed = !self.entries.contains_key(&key);
+            // Asked to stop (a newer request waits): before the next feature it would compute,
+            // the parts as far as it got (those computed stay cached for the next one).
+            if computed
+                && self.depth == 0
+                && self
+                    .stop
+                    .as_ref()
+                    .is_some_and(|s| s.load(Ordering::Relaxed))
+            {
+                out.stopped = true;
+                break;
+            }
             if computed {
                 out.computed += 1;
                 // Only the last feature's stage is kept (the one a dialog edits).
@@ -4015,6 +4034,10 @@ fn run_job(rebuilder: &mut Rebuilder, job: Job, pending_save: &mut PendingSave) 
             persist,
         } => {
             if cancelled.load(Ordering::Relaxed) {
+                let _ = reply.send(Arc::new(Build {
+                    stopped: true,
+                    ..Build::default()
+                }));
                 return;
             }
             start_progress(ticket);
@@ -4024,7 +4047,9 @@ fn run_job(rebuilder: &mut Rebuilder, job: Job, pending_save: &mut PendingSave) 
             }
             #[cfg(not(feature = "brep"))]
             let _ = persist;
+            rebuilder.stop = Some(cancelled.clone());
             let result = catch_unwind(AssertUnwindSafe(|| rebuilder.rebuild(&features)));
+            rebuilder.stop = None;
             let build = match result {
                 Ok(b) => b,
                 Err(_) => {
@@ -4034,7 +4059,7 @@ fn run_job(rebuilder: &mut Rebuilder, job: Job, pending_save: &mut PendingSave) 
                 }
             };
             #[cfg(feature = "brep")]
-            if persist && build.computed > 0 {
+            if persist && build.computed > 0 && !build.stopped {
                 *pending_save = rebuilder.plan_save(&features);
             }
             clear_partial();
@@ -4410,6 +4435,12 @@ impl Pending {
     /// Which request it is: [`progress`] and the parts shown as it goes are of one at a time.
     pub fn ticket(&self) -> u64 {
         self.ticket
+    }
+
+    /// Stops it early, a newer request waiting: before the next feature it would compute (not
+    /// at all if it hasn't started). Its result is then [`Build::stopped`].
+    pub fn stop(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
     }
 
     /// How far it is (part features done, part features in all) while it runs: `None` before
