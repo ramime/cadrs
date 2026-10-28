@@ -6,7 +6,8 @@
 //! drawing sheet (`crate::drawing`) read it for their drags.
 //!
 //! **Interface › UI scale** (issue #12): 75–200 % of the display's own scale, for large or
-//! high-resolution screens; applied to the whole window as soon as OK is pressed.
+//! high-resolution screens; applied to the whole window as soon as OK is pressed. Ctrl+= and
+//! Ctrl+- step through its sizes anywhere, as a browser's zoom does ([`step_ui_scale`]).
 //!
 //! **Color scheme**: the top bar's light / dark / system toggle ([`cadrs_ui::scheme_toggle`])
 //! is saved here too, as soon as it's clicked. `CADRS_COLOR_SCHEME=light|dark|system` overrides
@@ -20,6 +21,7 @@
 //! [`crate::network`]). It takes effect at the next start; the top bar's network button goes
 //! online or offline now.
 
+use bevy::input::keyboard::KeyboardInput;
 use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
 use bevy::text::{EditableText, FontWeight};
@@ -30,7 +32,7 @@ use cadrs_core::preferences::{
 use cadrs_ui::prelude::*;
 use cadrs_ui::{
     Button, DialogClose, NumberField, NumberFieldCommit, NumberFieldEdit, NumberFieldState, Select,
-    SelectChange, SelectState, SelectableText, SwitchState, form_row,
+    SelectChange, SelectState, SelectableText, ShortcutKey, SwitchState, form_row,
 };
 // The MCP server's and P2P networking's switches (not in a page).
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,7 +46,7 @@ impl Plugin for PreferencesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LocalPreferences>()
             .add_systems(Startup, load_preferences)
-            .add_systems(Update, (apply_ui_scale, save_color_scheme))
+            .add_systems(Update, (ui_scale_keys, apply_ui_scale, save_color_scheme))
             .add_observer(on_preset_change)
             .add_observer(on_rotation_snap_commit);
     }
@@ -143,6 +145,59 @@ fn apply_ui_scale(
 pub fn set_ui_scale(world: &mut World, percent: u16) {
     world.resource_mut::<LocalPreferences>().0.ui_scale = percent;
     save(world);
+}
+
+/// Ctrl+= (Ctrl++, the numpad's +) and Ctrl+- (the numpad's -): the next UI scale up or down
+/// ([`step_ui_scale`]).
+fn ui_scale_keys(
+    mut keys_in: MessageReader<KeyboardInput>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+) {
+    let m = modifiers(&keys);
+    for k in keys_in.read() {
+        if !m.ctrl || m.alt || k.state != bevy::input::ButtonState::Pressed {
+            continue;
+        }
+        let by = match k.shortcut_code() {
+            KeyCode::Equal | KeyCode::NumpadAdd => 1,
+            KeyCode::Minus | KeyCode::NumpadSubtract => -1,
+            _ => continue,
+        };
+        commands.queue(move |world: &mut World| step_ui_scale(world, by));
+    }
+}
+
+/// Sets and saves the next UI scale up (`by` > 0) or down from the one now ([`next_ui_scale`]),
+/// and shows it in a toast that fades.
+pub fn step_ui_scale(world: &mut World, by: i32) {
+    let now = world.resource::<LocalPreferences>().0.ui_scale;
+    let next = next_ui_scale(now, by);
+    if next != now {
+        set_ui_scale(world, next);
+    }
+    let theme = world.resource::<Theme>().clone();
+    let mut commands = world.commands();
+    cadrs_ui::show_toast_for(&mut commands, &theme, format!("UI scale {next}%"), 1.5);
+    world.flush();
+}
+
+/// The UI scale preset after `percent`, up (`by` > 0) or down; the largest or the smallest stays.
+pub fn next_ui_scale(percent: u16, by: i32) -> u16 {
+    if by > 0 {
+        UI_SCALES
+            .iter()
+            .copied()
+            .find(|&p| p > percent)
+            .unwrap_or(UI_SCALES[UI_SCALES.len() - 1])
+    } else {
+        UI_SCALES
+            .iter()
+            .rev()
+            .copied()
+            .find(|&p| p < percent)
+            .unwrap_or(UI_SCALES[0])
+    }
 }
 
 /// The modifier keys held.
@@ -503,6 +558,32 @@ fn on_rotation_snap_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ctrl+= and Ctrl+- step through the UI scale's sizes, staying at the ends; from a size
+    /// between them, to the next one that way.
+    #[test]
+    fn ui_scale_steps_through_its_sizes() {
+        assert_eq!(next_ui_scale(100, 1), 110);
+        assert_eq!(next_ui_scale(100, -1), 90);
+        assert_eq!(next_ui_scale(200, 1), 200);
+        assert_eq!(next_ui_scale(75, -1), 75);
+        assert_eq!(next_ui_scale(120, 1), 125);
+        assert_eq!(next_ui_scale(120, -1), 110);
+        let mut world = World::new();
+        world.init_resource::<LocalPreferences>();
+        world.init_resource::<Theme>();
+        step_ui_scale(&mut world, 1);
+        step_ui_scale(&mut world, 1);
+        assert_eq!(world.resource::<LocalPreferences>().0.ui_scale, 125);
+        // The last one only (each replaces the one before).
+        let mut texts = world.query::<(&Name, &Text)>();
+        let shown: Vec<String> = texts
+            .iter(&world)
+            .filter(|(n, _)| n.as_str() == "toast-message")
+            .map(|(_, t)| t.0.clone())
+            .collect();
+        assert_eq!(shown, ["UI scale 125%"]);
+    }
 
     #[test]
     fn preferences_dialog_exposes_the_rotation_increment_and_shift_hint() {

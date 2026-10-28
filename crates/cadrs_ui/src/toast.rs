@@ -4,8 +4,8 @@
 //! center of the [`ToastHost`] (the 3D viewport in a document) or of the window.
 //!
 //! - [`Notification::info`] builds one; [`show_notification`] shows it, replacing any other.
-//! - Auto-hiding toasts ([`show_toast`]) disappear after a few seconds or at the next click
-//!   anywhere outside them. A prompt such as "Select a sketch plane" sets
+//! - Auto-hiding toasts ([`show_toast`]) disappear after a few seconds, fading out over the
+//!   last [`FADE_OUT`] seconds, or at the next click anywhere outside them. A prompt such as "Select a sketch plane" sets
 //!   [`Notification::autohide`] to false and stays until its ✕ is clicked or the app closes it
 //!   with [`close_toasts`].
 //! - Clicking the ✕ (named `toast-close`) closes the toast.
@@ -30,7 +30,14 @@ pub struct ToastPlugin;
 
 impl Plugin for ToastPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (expire_toasts, dismiss_on_click));
+        app.add_systems(
+            Update,
+            (
+                expire_toasts,
+                fade_toasts.after(expire_toasts),
+                dismiss_on_click,
+            ),
+        );
     }
 }
 
@@ -40,6 +47,19 @@ impl Plugin for ToastPlugin {
 pub struct Toast {
     pub remaining: f32,
     pub autohide: bool,
+}
+
+/// Seconds an auto-hiding toast fades out over, at the end of its time.
+pub const FADE_OUT: f32 = 0.3;
+
+/// The colours a node of a fading toast had before it began to fade ([`fade_toasts`]).
+#[derive(Component, Debug, Clone)]
+struct Unfaded {
+    background: Option<Color>,
+    border: Option<BorderColor>,
+    shadow: Vec<Color>,
+    text: Option<Color>,
+    image: Option<Color>,
 }
 
 /// Toasts are shown at the top center of this node (the viewport area of a document).
@@ -455,6 +475,75 @@ fn expire_toasts(time: Res<Time>, mut commands: Commands, mut q: Query<(Entity, 
     }
 }
 
+/// Auto-hiding toasts fade out over their last [`FADE_OUT`] seconds: every colour in them (the
+/// background, border and shadow, the icon, the text) dimmed together from the one it had.
+#[allow(clippy::type_complexity)]
+fn fade_toasts(
+    toasts: Query<(Entity, &Toast)>,
+    children: Query<&Children>,
+    mut q: Query<(
+        Option<&mut BackgroundColor>,
+        Option<&mut BorderColor>,
+        Option<&mut BoxShadow>,
+        Option<&mut TextColor>,
+        Option<&mut ImageNode>,
+        Option<&Unfaded>,
+    )>,
+    mut commands: Commands,
+) {
+    for (toast, t) in &toasts {
+        if !t.autohide || t.remaining >= FADE_OUT {
+            continue;
+        }
+        let k = (t.remaining / FADE_OUT).clamp(0.0, 1.0);
+        let dim = |c: Color| c.with_alpha(c.alpha() * k);
+        for e in std::iter::once(toast).chain(children.iter_descendants(toast)) {
+            let Ok((bg, border, shadow, text, image, unfaded)) = q.get_mut(e) else {
+                continue;
+            };
+            let base = match unfaded {
+                Some(u) => u.clone(),
+                None => {
+                    let u = Unfaded {
+                        background: bg.as_ref().map(|c| c.0),
+                        border: border.as_deref().copied(),
+                        shadow: shadow
+                            .as_ref()
+                            .map(|s| s.0.iter().map(|x| x.color).collect())
+                            .unwrap_or_default(),
+                        text: text.as_ref().map(|c| c.0),
+                        image: image.as_ref().map(|i| i.color),
+                    };
+                    commands.entity(e).insert(u.clone());
+                    u
+                }
+            };
+            if let (Some(mut bg), Some(c)) = (bg, base.background) {
+                bg.0 = dim(c);
+            }
+            if let (Some(mut border), Some(c)) = (border, base.border) {
+                *border = BorderColor {
+                    top: dim(c.top),
+                    right: dim(c.right),
+                    bottom: dim(c.bottom),
+                    left: dim(c.left),
+                };
+            }
+            if let Some(mut shadow) = shadow {
+                for (x, c) in shadow.0.iter_mut().zip(&base.shadow) {
+                    x.color = dim(*c);
+                }
+            }
+            if let (Some(mut text), Some(c)) = (text, base.text) {
+                text.0 = dim(c);
+            }
+            if let (Some(mut image), Some(c)) = (image, base.image) {
+                image.color = dim(c);
+            }
+        }
+    }
+}
+
 /// Auto-hiding toasts also go away at the next click outside them.
 fn dismiss_on_click(
     mut inputs: MessageReader<PointerInput>,
@@ -470,6 +559,55 @@ fn dismiss_on_click(
     for (e, t, hovered) in &q {
         if t.autohide && !hovered.get() {
             commands.entity(e).try_despawn();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// An auto-hiding toast fades out over its last [`FADE_OUT`] seconds, every colour in it
+    /// from the one it had (not from the last frame's); one that stays doesn't.
+    #[test]
+    fn toasts_fade_out_at_the_end() {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let red = Color::srgba(1.0, 0.0, 0.0, 0.8);
+        let toast = |world: &mut World, autohide: bool| {
+            world
+                .spawn((
+                    Toast {
+                        remaining: 1.0,
+                        autohide,
+                    },
+                    BackgroundColor(red),
+                    BorderColor::all(red),
+                ))
+                .with_child(TextColor(Color::WHITE))
+                .id()
+        };
+        let (fading, staying) = (toast(world, true), toast(world, false));
+        let alphas = |world: &mut World, e: Entity| {
+            let bg = world.get::<BackgroundColor>(e).unwrap().0.alpha();
+            let border = world.get::<BorderColor>(e).unwrap().left.alpha();
+            let child = world.get::<Children>(e).unwrap()[0];
+            let text = world.get::<TextColor>(child).unwrap().0.alpha();
+            (bg, border, text)
+        };
+        world.run_system_once(fade_toasts).unwrap();
+        assert_eq!(alphas(world, fading), (0.8, 0.8, 1.0), "not fading yet");
+        for (remaining, k) in [(FADE_OUT / 2.0, 0.5), (FADE_OUT / 4.0, 0.25)] {
+            for e in [fading, staying] {
+                world.get_mut::<Toast>(e).unwrap().remaining = remaining;
+            }
+            world.run_system_once(fade_toasts).unwrap();
+            let (bg, border, text) = alphas(world, fading);
+            assert!((bg - 0.8 * k).abs() < 1e-6, "{bg}");
+            assert!((border - 0.8 * k).abs() < 1e-6, "{border}");
+            assert!((text - k).abs() < 1e-6, "{text}");
+            assert_eq!(alphas(world, staying), (0.8, 0.8, 1.0));
         }
     }
 }
