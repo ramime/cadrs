@@ -3,14 +3,17 @@
 //! compared. See `tests/reference_parts/README.md`.
 //!
 //! The cases are SolidCraft's (`tests/reference_parts/solidcraft/<case>/`: `recipe.json` and
-//! `expected.json`, MIT). [`Recipe`] turns a recipe into cadrs features through the document's
+//! `expected.json`, MIT), and parts from cadrs' issues (`tests/reference_parts/issues/<case>/`:
+//! the user's `document.ron`, and `target.step`, the part as another CAD system builds it).
+//! [`Recipe`] turns a recipe into cadrs features through the document's
 //! commands (the same ones the app and its MCP tools run); what the recipe format means
 //! follows SolidCraft's reader (`apps/solidcraft-cli/src/recipe.rs`), and the comparison its
 //! `oracle.rs`. A case using something not translated yet is reported as such, not failed.
 //! (With a command registry, #102, this becomes a recipe → registry mapping, as SolidCraft's is.)
 //!
-//! Each case is a test of its own (`case_49_helical_sweep` for `49-helical-sweep`), which fails
-//! if `passing.txt` lists the case and it doesn't pass. `CADRS_BLESS=1` records the cases passing
+//! Each case is a test of its own (`case_49_helical_sweep` for `49-helical-sweep`,
+//! `issue_156_face_chamfer_fillet` for `issues/156-face-chamfer-fillet`), which fails if the
+//! case doesn't pass and must: an issue's case always, SolidCraft's once `passing.txt` lists it. `CADRS_BLESS=1` records the cases passing
 //! now and writes `docs/reference-parts.md`.
 #![cfg(feature = "brep")]
 #![allow(clippy::field_reassign_with_default)]
@@ -52,7 +55,7 @@ use cadrs_core::sheetmetal::{
 use cadrs_core::sheetmetal_features::{FlangeFeature, HemFeature, SheetMetalFeature};
 use cadrs_core::sheetmetal_flat::FlatExtrudeFeature;
 use cadrs_core::surfacing::{FillEdge, FillFeature, ThickenFeature};
-use cadrs_core::{ElementId, Feature, FeatureId, History, Part, PartId};
+use cadrs_core::{ElementId, Feature, FeatureId, History, Part, PartId, Store};
 use cadrs_sheetmetal::model::HemAlignment;
 use cadrs_sheetmetal::sharp_edit::{FlangeAlignment, HemKind};
 use cadrs_sketch::region::regions;
@@ -2522,7 +2525,10 @@ fn run_case(dir: &Path) -> Outcome {
     let read = |f: &str| -> Value {
         serde_json::from_str(&std::fs::read_to_string(dir.join(f)).unwrap()).unwrap()
     };
-    let (recipe, want) = (read("recipe.json"), read("expected.json"));
+    let mut want = read("expected.json");
+    if dir.join("target.step").is_file() {
+        target(dir, &mut want);
+    }
     let source = want["source"].as_str().unwrap_or("").to_string();
     let mut outcome = Outcome {
         case,
@@ -2532,41 +2538,56 @@ fn run_case(dir: &Path) -> Outcome {
         note: String::new(),
         measured: String::new(),
     };
-    let mut r = Recipe::new();
-    for p in recipe["parameters"].as_array().into_iter().flatten() {
-        if let (Some(n), Some(v)) = (
-            p["name"].as_str(),
-            p.get("value")
-                .or(p.get("expression"))
-                .and_then(|v| r.num(Some(v)).ok()),
-        ) {
-            r.params.insert(n.to_string(), v);
+    // An issue's case is the user's own document; SolidCraft's, its recipe translated here.
+    let (features, notes) = if dir.join("document.ron").is_file() {
+        let d = Store::load_path(&dir.join("document.ron"))
+            .expect("the case's document loads")
+            .document;
+        let studio = d
+            .elements
+            .iter()
+            .find(|e| !e.features().is_empty())
+            .expect("a Part Studio with features");
+        (studio.features().to_vec(), Vec::new())
+    } else {
+        let recipe = read("recipe.json");
+        let mut r = Recipe::new();
+        for p in recipe["parameters"].as_array().into_iter().flatten() {
+            if let (Some(n), Some(v)) = (
+                p["name"].as_str(),
+                p.get("value")
+                    .or(p.get("expression"))
+                    .and_then(|v| r.num(Some(v)).ok()),
+            ) {
+                r.params.insert(n.to_string(), v);
+            }
         }
-    }
-    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> R<()> {
-        for f in recipe["features"].as_array().into_iter().flatten() {
-            r.feature(f)?;
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> R<()> {
+            for f in recipe["features"].as_array().into_iter().flatten() {
+                r.feature(f)?;
+            }
+            Ok(())
+        }));
+        match built {
+            Ok(Ok(())) => {}
+            Ok(Err(Stop::Unsupported(why))) => {
+                outcome.note = format!("not translated yet: {why}");
+                return outcome;
+            }
+            Ok(Err(Stop::Failed(why))) => {
+                outcome.pass = Some(false);
+                outcome.note = format!("failed: {why}");
+                return outcome;
+            }
+            Err(_) => {
+                outcome.pass = Some(false);
+                outcome.note = "failed: panicked".into();
+                return outcome;
+            }
         }
-        Ok(())
-    }));
-    match built {
-        Ok(Ok(())) => {}
-        Ok(Err(Stop::Unsupported(why))) => {
-            outcome.note = format!("not translated yet: {why}");
-            return outcome;
-        }
-        Ok(Err(Stop::Failed(why))) => {
-            outcome.pass = Some(false);
-            outcome.note = format!("failed: {why}");
-            return outcome;
-        }
-        Err(_) => {
-            outcome.pass = Some(false);
-            outcome.note = "failed: panicked".into();
-            return outcome;
-        }
-    }
-    let features = Arc::new(r.features_now());
+        (r.features_now(), r.notes)
+    };
+    let features = Arc::new(features);
     let mut rb = Rebuilder::new();
     let build = rb.rebuild(&features);
     if let Some((_, e)) = build.errors.first() {
@@ -2657,8 +2678,20 @@ fn run_case(dir: &Path) -> Outcome {
     outcome.pass = Some(checks.iter().all(|c| c.ok));
     if outcome.pass == Some(false) {
         outcome.measured = format!(
-            "bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {}",
-            got.bodies, got.volume, got.area, got.com, got.bbox, got.faces
+            "got  bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {}\n  \
+             want bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {}",
+            got.bodies,
+            got.volume,
+            got.area,
+            got.com,
+            got.bbox,
+            got.faces,
+            want["body_count"],
+            want["volume_mm3"].as_f64().unwrap_or(f64::NAN),
+            want["area_mm2"].as_f64().unwrap_or(f64::NAN),
+            v3(&want["center_of_mass"]).unwrap_or([f64::NAN; 3]),
+            want_bbox.unwrap_or(([f64::NAN; 3], [f64::NAN; 3])),
+            want["faces"],
         );
     }
     let bad: Vec<String> = checks
@@ -2666,11 +2699,47 @@ fn run_case(dir: &Path) -> Outcome {
         .filter(|c| !c.ok)
         .map(|c| format!("{} off by {:.3e}", c.what, c.error))
         .collect();
-    let mut notes = r.notes.clone();
+    let mut notes = notes;
     notes.extend(bad);
     outcome.note = notes.join("; ");
     outcome.checks = checks;
     outcome
+}
+
+/// An issue case's expected values from its `target.step` (the part as another CAD system
+/// builds it), measured as cadrs reads it: the ones `expected.json` doesn't give itself.
+fn target(dir: &Path, want: &mut Value) {
+    let text = std::fs::read_to_string(dir.join("target.step")).unwrap();
+    let plan = Rebuilder::new()
+        .plan_import(ImportFormat::Step, text.as_bytes())
+        .expect("the target reads");
+    let doc = imported_document(
+        &plan,
+        "target.step",
+        text,
+        ImportAs::PartStudio,
+        ImportIds::fresh(),
+    );
+    let build = Rebuilder::new().rebuild(doc.elements[0].features());
+    assert!(
+        build.errors.is_empty(),
+        "the target builds: {:?}",
+        build.errors
+    );
+    let m = measure(&build.parts);
+    let measured = serde_json::json!({
+        "body_count": m.bodies,
+        "volume_mm3": m.volume,
+        "area_mm2": m.area,
+        "center_of_mass": m.com,
+        "bbox": { "min": m.bbox.0, "max": m.bbox.1 },
+        "faces": m.faces,
+    });
+    for (k, v) in measured.as_object().unwrap() {
+        if want.get(k).is_none() {
+            want[k] = v.clone();
+        }
+    }
 }
 
 /// The part exported as STEP and imported again: the worst relative change of volume or area.
@@ -2732,8 +2801,9 @@ fn table(outcomes: &[Outcome]) -> String {
          #101). Each case is a part described by a recipe, with expected values worked out \
          independently of cadrs: closed-form geometry (**analytic**) or an independent kernel \
          (**freecad**). The cases are [SolidCraft's](https://github.com/tangency-labs/solidcraft) \
-         reference parts (MIT; see `crates/cadrs_core/tests/reference_parts/README.md`), \
-         rebuilt through cadrs' feature list and compared as SolidCraft compares them: body \
+         reference parts (MIT; see `crates/cadrs_core/tests/reference_parts/README.md`) and parts \
+         from cadrs' issues (**onshape**: the user's document, against the part as Onshape \
+         builds it), rebuilt through cadrs' feature list and compared as SolidCraft compares them: body \
          count, volume and area within a relative 1e-3, centre of mass and bounding box within \
          1e-3 of the part's diagonal, face count where the geometry fixes it, and a STEP export \
          read back with the same volume and area. The error columns give how close cadrs comes.\n\n",
@@ -2768,20 +2838,31 @@ fn table(outcomes: &[Outcome]) -> String {
     s
 }
 
-/// The cases' folders (`solidcraft/<case>/`), in order.
+/// The cases' folders: SolidCraft's (`solidcraft/<case>/`), then those from issues
+/// (`issues/<case>/`), each in order.
 fn case_dirs() -> Vec<PathBuf> {
-    let mut cases: Vec<PathBuf> = std::fs::read_dir(root().join("solidcraft"))
-        .unwrap()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.join("recipe.json").is_file())
-        .collect();
-    cases.sort();
-    cases
+    ["solidcraft", "issues"]
+        .iter()
+        .flat_map(|set| {
+            let mut cases: Vec<PathBuf> = std::fs::read_dir(root().join(set))
+                .unwrap()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.join("expected.json").is_file())
+                .collect();
+            cases.sort();
+            cases
+        })
+        .collect()
 }
 
-/// The case a test is for: `case_49_helical_sweep` is `49-helical-sweep`.
-fn case_of(test: &str) -> String {
-    test.trim_start_matches("case_").replace('_', "-")
+/// A test's case: `case_49_helical_sweep` is `solidcraft/49-helical-sweep/`, and
+/// `issue_156_face_chamfer_fillet` is `issues/156-face-chamfer-fillet/`.
+fn case_of(test: &str) -> PathBuf {
+    let (set, name) = match test.strip_prefix("issue_") {
+        Some(name) => ("issues", name),
+        None => ("solidcraft", test.trim_start_matches("case_")),
+    };
+    root().join(set).join(name.replace('_', "-"))
 }
 
 /// The cases that must pass (`passing.txt`).
@@ -2795,19 +2876,21 @@ fn must_pass() -> Vec<String> {
         .collect()
 }
 
-/// One case's test: it fails if the case is in `passing.txt` and doesn't pass now. (While
-/// blessing, `bless` runs them all instead.)
+/// One case's test: it fails if the case doesn't pass and must. A case from an issue always
+/// must (it's a bug to fix); SolidCraft's once `passing.txt` lists them. (While blessing,
+/// `bless` runs them all instead.)
 fn check(test: &str) {
     if std::env::var("CADRS_BLESS").is_ok() {
         return;
     }
-    let case = case_of(test);
-    let o = run_case(&root().join("solidcraft").join(&case));
+    let dir = case_of(test);
+    let o = run_case(&dir);
+    let case = &o.case;
+    let must = dir.parent().is_some_and(|p| p.ends_with("issues")) || must_pass().contains(case);
     match o.pass {
-        Some(false) if must_pass().contains(&case) => {
-            panic!("{case} no longer passes: {}\n  {}", o.note, o.measured)
-        }
+        Some(false) if must => panic!("{case} fails: {}\n  {}", o.note, o.measured),
         Some(false) => println!("FAIL {case} {} (not in passing.txt)", o.note),
+        None if must => panic!("{case} {}", o.note),
         None => println!("SKIP {case} {}", o.note),
         Some(true) => println!("PASS {case} {}", o.note),
     }
@@ -2910,18 +2993,16 @@ cases! {
     case_81_fillet_spline_radius
     case_82_thin_extrude_frame
     case_83_boundary_loop_thicken
+    issue_156_face_chamfer_fillet
 }
 
 /// A case copied in needs its line in `cases!`, and a test its folder.
 #[test]
 fn every_case_has_a_test() {
-    let folders: Vec<String> = case_dirs()
-        .iter()
-        .map(|d| d.file_name().unwrap().to_string_lossy().to_string())
-        .collect();
-    let tested: Vec<String> = CASES.iter().map(|t| case_of(t)).collect();
+    let tested: Vec<PathBuf> = CASES.iter().map(|t| case_of(t)).collect();
     assert_eq!(
-        folders, tested,
+        case_dirs(),
+        tested,
         "the case folders and the tests in `cases!` differ"
     );
 }
