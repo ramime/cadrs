@@ -1230,6 +1230,7 @@ fn viewport_pointer(
         Res<Time>,
     ),
     prefs: Res<crate::preferences_ui::LocalPreferences>,
+    space_mouse_wheel: Res<crate::spacemouse::LegacyWheelGuard>,
     mut commands: Commands,
 ) {
     if kind.is_flat() || eda2d.flat() {
@@ -1441,7 +1442,7 @@ fn viewport_pointer(
                 }
             }
             PointerAction::Scroll { unit, y, .. } => {
-                if over {
+                if over && !space_mouse_wheel.suppress_legacy_wheel() {
                     let lines = match unit {
                         MouseScrollUnit::Line => y,
                         MouseScrollUnit::Pixel => y / 40.0,

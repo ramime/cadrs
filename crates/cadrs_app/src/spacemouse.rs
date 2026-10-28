@@ -4,9 +4,10 @@
 //! cannot block the Bevy event loop. Backends publish normalized axis samples; this module owns
 //! the camera mapping shared by Windows and Linux.
 
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
@@ -19,6 +20,8 @@ use crate::{AppState, eda::Eda2d};
 const PAN_PIXELS_PER_SECOND: f32 = 700.0;
 const ROTATION_DEGREES_PER_SECOND: f32 = 150.0;
 const ZOOM_PER_SECOND: f32 = 2.0;
+const MAX_INPUT_WINDOW: f32 = 0.05;
+const MAX_QUEUED_SAMPLES: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct MotionSample {
@@ -34,6 +37,28 @@ struct MotionReceiver(Mutex<Receiver<MotionSample>>);
 #[derive(Resource, Clone)]
 struct MotionSender(Sender<MotionSample>);
 
+/// The Windows 3Dconnexion driver can also emit forward/backward SpaceMouse translation as
+/// ordinary wheel input. Suppress that legacy event briefly after raw HID translation so zoom is
+/// applied only by the smooth 6-DoF input path.
+#[derive(Resource, Clone, Default)]
+pub(crate) struct LegacyWheelGuard(std::sync::Arc<Mutex<Option<Instant>>>);
+
+impl LegacyWheelGuard {
+    pub(crate) fn mark_space_mouse_translation(&self) {
+        if let Ok(mut last_motion) = self.0.lock() {
+            *last_motion = Some(Instant::now());
+        }
+    }
+
+    pub(crate) fn suppress_legacy_wheel(&self) -> bool {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|last_motion| *last_motion)
+            .is_some_and(|last_motion| last_motion.elapsed() < Duration::from_millis(300))
+    }
+}
+
 pub struct SpaceMousePlugin;
 
 impl Plugin for SpaceMousePlugin {
@@ -41,16 +66,19 @@ impl Plugin for SpaceMousePlugin {
         let (sender, receiver) = mpsc::channel();
         app.insert_resource(MotionSender(sender))
             .insert_resource(MotionReceiver(Mutex::new(receiver)))
+            .init_resource::<LegacyWheelGuard>()
             .add_systems(Startup, start_backend)
             .add_systems(Update, apply_motion.run_if(in_state(AppState::Document)));
     }
 }
 
-fn start_backend(sender: Res<MotionSender>) {
+fn start_backend(sender: Res<MotionSender>, wheel_guard: Res<LegacyWheelGuard>) {
     #[cfg(target_os = "windows")]
-    windows_backend::start(sender.0.clone());
+    windows_backend::start(sender.0.clone(), wheel_guard.clone());
     #[cfg(target_os = "linux")]
     linux_backend::start(sender.0.clone());
+    #[cfg(target_os = "linux")]
+    let _ = wheel_guard;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -64,14 +92,14 @@ fn apply_motion(
     focus: Res<bevy::input_focus::InputFocus>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    let samples = input
+    let sample = input
         .0
         .lock()
-        .map(|receiver| receiver.try_iter().collect::<Vec<_>>())
-        .unwrap_or_default();
-    if samples.is_empty() {
+        .ok()
+        .and_then(|receiver| coalesce_recent_samples(receiver.try_iter()));
+    let Some(sample) = sample else {
         return;
-    }
+    };
 
     let viewport_active = matches!(*kind, ActiveKind::PartStudio | ActiveKind::Assembly)
         && !eda2d.flat()
@@ -82,9 +110,49 @@ fn apply_motion(
         return;
     }
 
+    apply_sample(&mut view, sample);
+}
+
+/// Coalesce a short recent input window instead of replaying every queued HID report after a
+/// render stall. That keeps device motion responsive without turning a temporary frame drop into
+/// a visible camera jump.
+fn coalesce_recent_samples(
+    samples: impl IntoIterator<Item = MotionSample>,
+) -> Option<MotionSample> {
+    let mut recent = VecDeque::with_capacity(MAX_QUEUED_SAMPLES);
     for sample in samples {
-        apply_sample(&mut view, sample);
+        if recent.len() == MAX_QUEUED_SAMPLES {
+            recent.pop_front();
+        }
+        recent.push_back(sample);
     }
+
+    let mut weighted_axes = [0.0; 6];
+    let mut total_dt = 0.0;
+    let mut remaining = MAX_INPUT_WINDOW;
+    for sample in recent.iter().rev() {
+        if remaining <= 0.0 {
+            break;
+        }
+        let dt = sample.dt.clamp(0.0, MAX_INPUT_WINDOW);
+        let used_dt = dt.min(remaining);
+        if used_dt == 0.0 {
+            continue;
+        }
+        for (weighted, axis) in weighted_axes.iter_mut().zip(sample.axes) {
+            *weighted += axis * used_dt;
+        }
+        total_dt += used_dt;
+        remaining -= used_dt;
+    }
+    if total_dt == 0.0 {
+        return None;
+    }
+
+    Some(MotionSample {
+        axes: weighted_axes.map(|axis| axis / total_dt),
+        dt: total_dt,
+    })
 }
 
 fn apply_sample(view: &mut ViewportView, sample: MotionSample) {
@@ -98,12 +166,12 @@ fn apply_sample(view: &mut ViewportView, sample: MotionSample) {
     let [tx, ty, tz, rx, ry, rz] = sample.axes;
     view.animation = None;
 
-    // Translation follows the camera's screen axes; the vertical stick axis is inverted because
-    // pushing the cap up should move the model up on screen. The third axis zooms about the view
-    // centre, keeping the pivot from the current view intact.
+    // Horizontal translation follows screen right. The device's forward/backward translation
+    // axis is inverted to match object-mode movement on screen. The third axis zooms about the
+    // view centre, keeping the pivot from the current view intact.
     view.view.pan(Vec2::new(
         tx * PAN_PIXELS_PER_SECOND * dt,
-        -ty * PAN_PIXELS_PER_SECOND * dt,
+        ty * PAN_PIXELS_PER_SECOND * dt,
     ));
     if tz.abs() > 0.0001 {
         let factor = (tz * ZOOM_PER_SECOND * dt).exp();
@@ -111,11 +179,17 @@ fn apply_sample(view: &mut ViewportView, sample: MotionSample) {
     }
 
     let rotation = ROTATION_DEGREES_PER_SECOND.to_radians() * dt;
+    // Map the rotation controls to the displayed frame so their effect does not change when the
+    // model's world axes point in a different direction on screen. Read the frame once per sample
+    // so simultaneous axis input does not drift as each rotation is applied.
+    let screen_right = view.view.right();
+    let screen_up = view.view.up();
+    let screen_depth = view.view.back();
     let pivot = view.pivot;
     let turn = |state: &mut ViewState| {
-        state.rotate_model_about(Vec3::X, rx * rotation);
-        state.rotate_model_about(Vec3::Y, ry * rotation);
-        state.rotate_model_about(Vec3::Z, rz * rotation);
+        state.rotate_model_about(screen_right, rx * rotation);
+        state.rotate_model_about(screen_depth, ry * rotation);
+        state.rotate_model_about(screen_up, -rz * rotation);
     };
     if let Some(pivot) = pivot {
         view.view.orbit_about(pivot, turn);
@@ -134,13 +208,13 @@ mod windows_backend {
     const VENDOR_ID: u16 = 0x046d;
     const SPACE_NAVIGATOR_PRODUCT_ID: u16 = 0xc626;
 
-    pub(super) fn start(sender: Sender<MotionSample>) {
+    pub(super) fn start(sender: Sender<MotionSample>, wheel_guard: LegacyWheelGuard) {
         let _ = thread::Builder::new()
             .name("cadrs-spacemouse-hid".into())
-            .spawn(move || run(sender));
+            .spawn(move || run(sender, wheel_guard));
     }
 
-    fn run(sender: Sender<MotionSample>) {
+    fn run(sender: Sender<MotionSample>, wheel_guard: LegacyWheelGuard) {
         loop {
             let Ok(api) = HidApi::new() else {
                 thread::sleep(Duration::from_secs(2));
@@ -158,7 +232,7 @@ mod windows_backend {
                 continue;
             };
             bevy::log::info!("SpaceNavigator HID input connected");
-            if !read_device(&device, &sender) {
+            if !read_device(&device, &sender, &wheel_guard) {
                 let _ = sender.send(MotionSample::default());
                 bevy::log::debug!("SpaceNavigator HID input disconnected");
             }
@@ -166,7 +240,11 @@ mod windows_backend {
         }
     }
 
-    fn read_device(device: &HidDevice, sender: &Sender<MotionSample>) -> bool {
+    fn read_device(
+        device: &HidDevice,
+        sender: &Sender<MotionSample>,
+        wheel_guard: &LegacyWheelGuard,
+    ) -> bool {
         let mut sample = MotionSample::default();
         let mut last_report = Instant::now();
         let mut report = [0_u8; 32];
@@ -186,7 +264,12 @@ mod windows_backend {
             last_report = now;
             if let Some((report_id, values)) = parse_report(&report[..count]) {
                 match report_id {
-                    0x01 => sample.axes[..3].copy_from_slice(&values),
+                    0x01 => {
+                        sample.axes[..3].copy_from_slice(&values);
+                        if values[1].abs() > 0.0001 || values[2].abs() > 0.0001 {
+                            wheel_guard.mark_space_mouse_translation();
+                        }
+                    }
                     0x02 => sample.axes[3..].copy_from_slice(&values),
                     _ => continue,
                 }
@@ -344,11 +427,11 @@ mod tests {
     }
 
     #[test]
-    fn vertical_translation_is_inverted_and_positive_depth_zooms_in() {
+    fn forward_translation_matches_object_mode_and_positive_depth_zooms_in() {
         let mut view = ViewportView::default();
         let dt = 0.02;
         let mut expected = view.view;
-        expected.pan(Vec2::new(0.0, -PAN_PIXELS_PER_SECOND * dt));
+        expected.pan(Vec2::new(0.0, PAN_PIXELS_PER_SECOND * dt));
         let initial_scale = view.view.scale;
 
         apply_sample(
@@ -381,17 +464,18 @@ mod tests {
     }
 
     #[test]
-    fn rotation_axes_are_fixed_to_the_model_world_frame() {
-        for (axes, axis) in [
-            ([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], Vec3::X),
-            ([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], Vec3::Y),
-            ([0.0, 0.0, 0.0, 0.0, 0.0, 1.0], Vec3::Z),
+    fn rotation_axes_follow_the_displayed_view_frame() {
+        for (axes, axis_index, camera_direction) in [
+            ([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], 0, -1.0),
+            ([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], 1, -1.0),
+            ([0.0, 0.0, 0.0, 0.0, 0.0, 1.0], 2, 1.0),
         ] {
             let mut view = ViewportView::default();
             view.view.azimuth = 53.0;
             view.view.elevation = 41.0;
             view.view.roll = 17.0;
             let before = view.view.rotation();
+            let screen_axes = [view.view.right(), view.view.back(), view.view.up()];
             let radians = ROTATION_DEGREES_PER_SECOND.to_radians() / 30.0;
 
             apply_sample(
@@ -402,8 +486,31 @@ mod tests {
                 },
             );
 
-            let expected = Quat::from_axis_angle(axis, -radians) * before;
+            let expected =
+                Quat::from_axis_angle(screen_axes[axis_index], camera_direction * radians) * before;
             assert!(view.view.rotation().angle_between(expected) < 1e-4);
         }
+    }
+
+    #[test]
+    fn legacy_wheel_is_suppressed_after_space_mouse_translation() {
+        let guard = LegacyWheelGuard::default();
+        assert!(!guard.suppress_legacy_wheel());
+        guard.mark_space_mouse_translation();
+        assert!(guard.suppress_legacy_wheel());
+    }
+
+    #[test]
+    fn coalesces_only_the_recent_input_window() {
+        let sample = |axis, dt| MotionSample {
+            axes: [axis, 0.0, 0.0, 0.0, 0.0, 0.0],
+            dt,
+        };
+        let coalesced =
+            coalesce_recent_samples([sample(1.0, 0.05), sample(-1.0, 0.025), sample(0.0, 0.025)])
+                .unwrap();
+
+        assert!((coalesced.dt - MAX_INPUT_WINDOW).abs() < 1e-6);
+        assert!((coalesced.axes[0] + 0.5).abs() < 1e-6);
     }
 }
