@@ -494,21 +494,24 @@ impl ViewState {
         }
     }
 
-    /// Interpolates toward `to` (t in 0..=1) along the shortest azimuth path.
+    /// Interpolates toward `to` (t in 0..=1), its orientation turned the shortest way.
     pub fn lerp(&self, to: &Self, t: f32) -> Self {
+        self.lerp_turn(to, Turn::between(self.rotation(), to.rotation()), t)
+    }
+
+    /// Interpolates toward `to` (t in 0..=1), its orientation turned by `turn` (from this
+    /// view's to `to`'s) times t: one turn about one axis, never the azimuth, elevation and
+    /// roll each on its own (which swing round near the poles, #91).
+    pub fn lerp_turn(&self, to: &Self, turn: Turn, t: f32) -> Self {
         let t = t.clamp(0.0, 1.0);
-        let daz = wrap_degrees(to.azimuth - self.azimuth);
         // Zoom interpolates geometrically so it feels uniform.
         let scale = self.scale * (to.scale / self.scale).powf(t);
-        let droll = wrap_degrees(to.roll - self.roll);
         Self {
-            azimuth: wrap_degrees(self.azimuth + daz * t),
-            elevation: self.elevation + (to.elevation - self.elevation) * t,
-            roll: wrap_degrees(self.roll + droll * t),
             focus: self.focus.lerp(to.focus, t),
             scale,
             perspective: to.perspective,
             render: to.render,
+            ..self.with_rotation(turn.part(t) * self.rotation())
         }
     }
 
@@ -573,6 +576,60 @@ pub fn wrap_degrees(a: f32) -> f32 {
 pub fn ease_in_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Ease for a view animation taking over from one in progress: it starts moving, as the
+/// view already is, and slows to its end.
+pub fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * (2.0 - t)
+}
+
+/// A turn of the view: about a world axis by an angle (radians, of any size: presses of an
+/// arrow add up past half a revolution, which a rotation alone can't tell from the short way
+/// back).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Turn {
+    pub axis: Vec3,
+    pub angle: f32,
+}
+
+impl Turn {
+    pub const NONE: Turn = Turn {
+        axis: Vec3::Z,
+        angle: 0.0,
+    };
+
+    /// The shortest turn taking rotation `a` to `b`.
+    pub fn between(a: Quat, b: Quat) -> Turn {
+        let q = (b * a.inverse()).normalize();
+        let q = if q.w < 0.0 { -q } else { q };
+        let (axis, angle) = q.to_axis_angle();
+        Turn { axis, angle }
+    }
+
+    /// The rotation of this turn's part `t` (0..=1).
+    pub fn part(self, t: f32) -> Quat {
+        Quat::from_axis_angle(self.axis, self.angle * t)
+    }
+
+    /// This turn, then `next`: about the same axis, their angles added; else the two composed.
+    pub fn then(self, next: Turn) -> Turn {
+        if self.angle.abs() < 1e-6 {
+            return next;
+        }
+        if self.axis.cross(next.axis).length() < 1e-4 {
+            let angle = self.angle + next.angle * self.axis.dot(next.axis).signum();
+            return Turn {
+                axis: self.axis,
+                angle,
+            };
+        }
+        let (axis, angle) = (next.part(1.0) * self.part(1.0))
+            .normalize()
+            .to_axis_angle();
+        Turn { axis, angle }
+    }
 }
 
 /// Intersects a ray with a square of half-size `half` centered at `center`, spanned by the unit

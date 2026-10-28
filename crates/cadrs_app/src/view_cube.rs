@@ -1186,9 +1186,7 @@ fn on_arrow(
         let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
         let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
         let k = crate::viewport::arrow_step(shift, ctrl) / 15.0;
-        let mut to = view.target();
-        to.rotate_by(a.0 * k, a.1 * k);
-        view.animate_to(to);
+        view.turn_by(a.0 * k, a.1 * k);
     }
 }
 

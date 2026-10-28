@@ -33,7 +33,7 @@ use cadrs_core::{ElementId, FeatureId, PartId};
 use cadrs_sketch::PlaneRef;
 use cadrs_ui::{FinishAnimations, RenderSurface, Selected, Theme};
 
-use crate::camera::{self, StandardView, ViewState, ease_in_out, ray_square};
+use crate::camera::{self, StandardView, Turn, ViewState, ease_in_out, ease_out, ray_square};
 use crate::{ActiveDocument, AppState};
 
 pub struct ViewportPlugin;
@@ -215,8 +215,25 @@ impl ViewportRect {
 pub struct ViewAnimation {
     pub from: ViewState,
     pub to: ViewState,
+    /// The turn from `from`'s orientation to `to`'s, the way the view goes.
+    pub turn: Turn,
     pub elapsed: f32,
     pub duration: f32,
+    /// It took over from one in progress: it starts at speed ([`ease_out`]) instead of from
+    /// rest.
+    pub moving: bool,
+}
+
+impl ViewAnimation {
+    /// How far along it is (0..=1), eased.
+    fn progress(&self) -> f32 {
+        let t = self.elapsed / self.duration;
+        if self.moving {
+            ease_out(t)
+        } else {
+            ease_in_out(t)
+        }
+    }
 }
 
 /// Seconds a view change (N, Shift+7, view cube) takes.
@@ -240,29 +257,77 @@ pub struct ViewportView {
 }
 
 impl ViewportView {
-    /// Animates to `to`.
+    /// Animates to `to`, its orientation turned the shortest way.
     pub fn animate_to(&mut self, to: ViewState) {
-        // The render mode and the projection are the tab's (P3E.3a): a change of view keeps
-        // them (`crate::view_options` sets them).
-        let to = ViewState {
-            render: self.view.render,
-            perspective: self.view.perspective,
-            ..to
-        };
+        let to = self.keeping_mode(to);
         if self.view.approx_eq(&to) {
             return;
         }
+        let turn = Turn::between(self.view.rotation(), to.rotation());
+        self.start(to, turn);
+    }
+
+    /// Turns the view by `yaw` and `pitch` degrees about the screen axes (as
+    /// [`ViewState::rotate_by`]: the arrow keys, the view cube's arrows), on from the turn in
+    /// progress: presses quicker than their turns add up (four of 90° turn it all the way
+    /// round), and the view goes on turning without stopping in between (#91).
+    pub fn turn_by(&mut self, yaw: f32, pitch: f32) {
+        let from = self.target();
+        let mut to = from;
+        to.rotate_by(yaw, pitch);
+        let step = Turn::between(from.rotation(), to.rotation());
+        let turn = self.turn_left().then(step);
+        self.start(self.keeping_mode(to), turn);
+    }
+
+    /// What's left of the turn in progress ([`Turn::NONE`] when the view isn't moving).
+    pub fn turn_left(&self) -> Turn {
+        self.animation.map_or(Turn::NONE, |a| Turn {
+            angle: a.turn.angle * (1.0 - a.progress()),
+            ..a.turn
+        })
+    }
+
+    /// `to` with the tab's render mode and projection (P3E.3a): a change of view keeps them
+    /// (`crate::view_options` sets them).
+    fn keeping_mode(&self, to: ViewState) -> ViewState {
+        ViewState {
+            render: self.view.render,
+            perspective: self.view.perspective,
+            ..to
+        }
+    }
+
+    /// Animates from the view now to `to`, its orientation turned by `turn`.
+    fn start(&mut self, to: ViewState, turn: Turn) {
         self.animation = Some(ViewAnimation {
             from: self.view,
             to,
+            turn,
             elapsed: 0.0,
             duration: VIEW_ANIMATION_TIME,
+            moving: self.animation.is_some(),
         });
     }
 
     /// The view the current animation ends at (or the current view).
     pub fn target(&self) -> ViewState {
         self.animation.map(|a| a.to).unwrap_or(self.view)
+    }
+
+    /// Moves the animation on by `dt` seconds (to its end with `finish`).
+    pub fn advance(&mut self, dt: f32, finish: bool) {
+        let Some(mut a) = self.animation else {
+            return;
+        };
+        a.elapsed += dt;
+        if finish || a.elapsed >= a.duration {
+            self.view = a.to;
+            self.animation = None;
+        } else {
+            self.view = a.from.lerp_turn(&a.to, a.turn, a.progress());
+            self.animation = Some(a);
+        }
     }
 }
 
@@ -1624,15 +1689,15 @@ fn view_shortcuts(
             _ => None,
         };
         if let Some(dir) = arrow {
-            let mut to = view.target();
             if ctrl && shift {
                 // The scene moves with the arrow, a tenth of the viewport per press.
+                let mut to = view.target();
                 to.pan(dir * rect.0.size().min_element() * 0.1);
+                view.animate_to(to);
             } else {
                 let step = arrow_step(shift, ctrl);
-                to.rotate_by(dir.x * step, dir.y * step);
+                arrow_turn(&mut view, dir.x * step, dir.y * step, k.repeat);
             }
-            view.animate_to(to);
             continue;
         }
         if ctrl {
@@ -1850,6 +1915,18 @@ pub fn plane_normal(p: PlaneRef) -> Vec3 {
     Vec3::new(n[0] as f32, n[1] as f32, n[2] as f32)
 }
 
+/// An arrow key's turn of the view (`repeat`: the key held down): by `yaw` and `pitch`
+/// degrees about the screen axes ([`ViewportView::turn_by`]). A held key's repeats wait for the
+/// turn in progress to come within a step of its end, so the view keeps up with the key and
+/// stops soon after it's let go (#91: they came quicker than the turns, the view fell further
+/// and further behind, and turned back once half a revolution behind).
+pub fn arrow_turn(view: &mut ViewportView, yaw: f32, pitch: f32, repeat: bool) {
+    if repeat && view.turn_left().angle.abs() > (yaw.abs() + pitch.abs()).to_radians() {
+        return;
+    }
+    view.turn_by(yaw, pitch);
+}
+
 /// Degrees an arrow key rotates the view: 15°, Shift 90°, Ctrl 5° (as the view cube arrows).
 pub fn arrow_step(shift: bool, ctrl: bool) -> f32 {
     if shift {
@@ -1981,16 +2058,8 @@ fn animate_view(
     mut view: ResMut<ViewportView>,
 ) {
     let finish_all = finish.read().count() > 0;
-    let Some(mut a) = view.animation else {
-        return;
-    };
-    a.elapsed += time.delta_secs();
-    if finish_all || a.elapsed >= a.duration {
-        view.view = a.to;
-        view.animation = None;
-    } else {
-        view.view = a.from.lerp(&a.to, ease_in_out(a.elapsed / a.duration));
-        view.animation = Some(a);
+    if view.animation.is_some() {
+        view.advance(time.delta_secs(), finish_all);
     }
 }
 
@@ -2772,6 +2841,155 @@ fn flag_pending_work(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turn (world axis, radians) taking rotation `a` to `b`, the short way.
+    fn turn_between(a: Quat, b: Quat) -> (Vec3, f32) {
+        let q = b * a.inverse();
+        let q = if q.w < 0.0 { -q } else { q };
+        q.normalize().to_axis_angle()
+    }
+
+    /// Runs the view's animation to its end, a frame at a time, checking each frame's turn from
+    /// the last with `check` (axis, radians).
+    fn run(v: &mut ViewportView, mut check: impl FnMut(Vec3, f32)) {
+        let mut prev = v.view.rotation();
+        for _ in 0..600 {
+            if v.animation.is_none() {
+                return;
+            }
+            v.advance(1.0 / 60.0, false);
+            let q = v.view.rotation();
+            let (axis, angle) = turn_between(prev, q);
+            check(axis, angle);
+            prev = q;
+        }
+        panic!("the view never stopped");
+    }
+
+    /// #91: an arrow's turn is animated about the screen axis it turns about, whatever the
+    /// orientation (over the top too, where the azimuth and roll swing round).
+    #[test]
+    fn an_arrow_turn_is_animated_about_the_screen_axis() {
+        for (azimuth, elevation, roll) in [
+            (30.0, 30.0, 0.0),
+            (10.0, 85.0, 0.0),
+            (-120.0, -80.0, 40.0),
+            (150.0, 60.0, -30.0),
+        ] {
+            for (yaw, pitch) in [
+                (15.0f32, 0.0f32),
+                (-15.0, 0.0),
+                (0.0, 15.0),
+                (0.0, -15.0),
+                (90.0, 0.0),
+                (0.0, 90.0),
+            ] {
+                let from = ViewState {
+                    azimuth,
+                    elevation,
+                    roll,
+                    ..ViewState::default()
+                };
+                // Positive yaw turns the model right: the view about screen up, the other way.
+                let axis = if yaw != 0.0 {
+                    -from.up() * yaw.signum()
+                } else {
+                    -from.right() * pitch.signum()
+                };
+                let mut v = ViewportView {
+                    view: from,
+                    ..default()
+                };
+                arrow_turn(&mut v, yaw, pitch, false);
+                let mut total = 0.0;
+                run(&mut v, |a, angle| {
+                    if angle > 1e-4 {
+                        assert!(
+                            a.dot(axis) > 0.999,
+                            "from ({azimuth}, {elevation}, {roll}) by ({yaw}, {pitch}): \
+                             turned about {a} by {angle}, not {axis}"
+                        );
+                    }
+                    total += angle;
+                });
+                let want = (yaw + pitch).abs().to_radians();
+                assert!(
+                    (total - want).abs() < 1e-3,
+                    "from ({azimuth}, {elevation}, {roll}) by ({yaw}, {pitch}): {total}"
+                );
+            }
+        }
+    }
+
+    /// #91: an arrow key held down (its repeats, 30 a second) turns the view one way, about the
+    /// screen's up axis, and stops soon after it's let go.
+    #[test]
+    fn a_held_arrow_turns_the_view_one_way() {
+        let from = ViewState::default();
+        let axis = from.up();
+        let mut v = ViewportView {
+            view: from,
+            ..default()
+        };
+        let mut prev = from.rotation();
+        let mut total = 0.0;
+        for frame in 0..180 {
+            if frame % 2 == 0 {
+                arrow_turn(&mut v, -15.0, 0.0, frame > 0);
+            }
+            v.advance(1.0 / 60.0, false);
+            let q = v.view.rotation();
+            let (a, angle) = turn_between(prev, q);
+            if angle > 1e-4 {
+                assert!(a.dot(axis) > 0.999, "frame {frame}: about {a} by {angle}");
+            }
+            total += angle;
+            prev = q;
+        }
+        // Three seconds held: a few turns' worth at most, and at least a quarter.
+        assert!(total > 90f32.to_radians(), "{total}");
+        // Let go: it stops within two steps.
+        let mut after = 0.0;
+        run(&mut v, |a, angle| {
+            if angle > 1e-4 {
+                assert!(a.dot(axis) > 0.999, "after: about {a} by {angle}");
+            }
+            after += angle;
+        });
+        assert!(after <= 30f32.to_radians() + 1e-3, "{after}");
+    }
+
+    /// #91: presses quicker than their turns add up: four of Shift+→ (90° each) turn the view a
+    /// whole revolution, the same way all along, back where it started.
+    #[test]
+    fn quick_presses_add_up_to_a_whole_turn() {
+        let from = ViewState::default();
+        let axis = -from.up();
+        let mut v = ViewportView {
+            view: from,
+            ..default()
+        };
+        let mut total = 0.0;
+        let mut prev = from.rotation();
+        for frame in 0..4 {
+            arrow_turn(&mut v, 90.0, 0.0, false);
+            v.advance(1.0 / 60.0, false);
+            let q = v.view.rotation();
+            let (a, angle) = turn_between(prev, q);
+            assert!(
+                angle < 1e-4 || a.dot(axis) > 0.999,
+                "frame {frame}: about {a}"
+            );
+            total += angle;
+            prev = q;
+        }
+        run(&mut v, |a, angle| {
+            assert!(angle < 1e-4 || a.dot(axis) > 0.999, "about {a} by {angle}");
+            total += angle;
+        });
+        assert!((total - std::f32::consts::TAU).abs() < 1e-3, "{total}");
+        assert!(v.view.approx_eq(&from), "{:?}", v.view);
+    }
 
     /// P3E.3a (TD6.5): the render mode and the projection are per tab: they stay with a tab's
     /// view when another tab is shown and come back with it; a tab opened for the first time
