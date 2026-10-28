@@ -279,6 +279,24 @@ impl Library {
         e.meta.folder.is_some_and(|f| self.folder_hidden(f))
     }
 
+    /// What the Trash lists: the trashed documents not in a trashed folder, and the folders
+    /// moved there themselves (what they hold goes with them).
+    pub fn trash(&self) -> (Vec<DocumentId>, Vec<FolderId>) {
+        let docs = self
+            .entries
+            .iter()
+            .filter(|e| e.meta.trashed.is_some() && !self.in_trashed_folder(e))
+            .map(|e| e.id)
+            .collect();
+        let folders = self
+            .folders
+            .iter()
+            .filter(|f| f.trashed.is_some() && f.parent.is_none_or(|p| !self.folder_hidden(p)))
+            .map(|f| f.id)
+            .collect();
+        (docs, folders)
+    }
+
     /// The folders in `folder`, however deep, `folder` first.
     pub fn folder_tree(&self, folder: FolderId) -> Vec<FolderId> {
         let mut out = vec![folder];
@@ -791,6 +809,57 @@ impl LibraryCommand for PurgeFolder {
         let tree = lib.folder_tree(self.id);
         lib.entries
             .retain(|e| e.meta.folder.is_none_or(|f| !tree.contains(&f)));
+        lib.folders.retain(|f| !tree.contains(&f.id));
+        Ok(())
+    }
+}
+
+/// Deletes documents and folders in the trash permanently in one step (a selection of several
+/// in the Trash, or Empty trash): a folder with every folder and document in it. The store
+/// keeps the documents' files aside until the app exits, so undo can bring them back.
+#[derive(Debug, Clone)]
+pub struct PurgeItems {
+    pub docs: Vec<DocumentId>,
+    pub folders: Vec<FolderId>,
+}
+
+impl LibraryCommand for PurgeItems {
+    fn label(&self) -> String {
+        format!(
+            "Delete {} items permanently",
+            self.docs.len() + self.folders.len()
+        )
+    }
+    fn apply(&self, lib: &mut Library) -> Result<(), CommandError> {
+        for d in &self.docs {
+            let e = lib
+                .get(*d)
+                .ok_or_else(|| CommandError::Invalid(format!("document {d} not found")))?;
+            if e.meta.trashed.is_none() && !lib.in_trashed_folder(e) {
+                return Err(CommandError::Invalid(
+                    "only documents in the trash can be deleted permanently".into(),
+                ));
+            }
+        }
+        for f in &self.folders {
+            if lib.folder(*f).is_none() {
+                return Err(CommandError::Invalid("folder not found".into()));
+            }
+            if !lib.folder_hidden(*f) {
+                return Err(CommandError::Invalid(
+                    "only a folder in the trash can be deleted".into(),
+                ));
+            }
+        }
+        // All at once: a folder may be inside another one deleted, a document in one.
+        let tree: Vec<FolderId> = self
+            .folders
+            .iter()
+            .flat_map(|f| lib.folder_tree(*f))
+            .collect();
+        lib.entries.retain(|e| {
+            !self.docs.contains(&e.id) && e.meta.folder.is_none_or(|f| !tree.contains(&f))
+        });
         lib.folders.retain(|f| !tree.contains(&f.id));
         Ok(())
     }
@@ -1639,6 +1708,57 @@ mod tests {
         assert!(l.folder(FolderId::from_u128(12)).is_some());
         h.undo(&mut l);
         assert!(l.get(DocumentId::from_u128(1)).is_some());
+    }
+
+    #[test]
+    fn purging_items_and_emptying_the_trash() {
+        let mut l = nested();
+        let mut h = LibraryHistory::default();
+        let (a, b, c) = (
+            FolderId::from_u128(10),
+            FolderId::from_u128(11),
+            FolderId::from_u128(12),
+        );
+        let doc = DocumentId::from_u128;
+        assert!(
+            h.execute(
+                &mut l,
+                &PurgeItems {
+                    docs: vec![doc(2)],
+                    folders: vec![],
+                },
+            )
+            .is_err(),
+            "not trashed"
+        );
+        // bracket and B trashed, then A with them inside, then Axle 10.
+        h.execute(&mut l, &TrashEntry { id: doc(1), now: 9 })
+            .unwrap();
+        for id in [b, a] {
+            h.execute(&mut l, &TrashFolder { id, now: Some(9) })
+                .unwrap();
+        }
+        h.execute(&mut l, &TrashEntry { id: doc(2), now: 9 })
+            .unwrap();
+        assert_eq!(l.trash(), (vec![doc(2)], vec![a]), "what the Trash lists");
+        let before = l.clone();
+        let (docs, folders) = l.trash();
+        h.execute(&mut l, &PurgeItems { docs, folders }).unwrap();
+        assert_eq!(l.trash(), (vec![], vec![]));
+        assert_eq!(names(&l.entries), ["Axle 2", "cover"]);
+        assert_eq!(l.folders.iter().map(|f| f.id).collect::<Vec<_>>(), [c]);
+        h.undo(&mut l);
+        assert_eq!(l, before);
+        // Named too: B inside A and bracket inside B.
+        h.execute(
+            &mut l,
+            &PurgeItems {
+                docs: vec![doc(1), doc(2)],
+                folders: vec![a, b],
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&l.entries), ["Axle 2", "cover"]);
     }
 
     #[test]

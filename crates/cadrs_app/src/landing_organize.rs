@@ -12,12 +12,17 @@
 //!   and documents), Move to ▸ (folders nest), Properties…, Move to trash (what it holds goes with
 //!   it); in the Trash, Restore and Delete permanently… (`purge-folder-dialog`).
 //! - **A selection's menu** (right-click one of several selected, `multi-context-menu`): Copy,
-//!   Move to ▸, Move to trash, or in the Trash, Restore.
+//!   Move to ▸, Move to trash, or in the Trash, Restore and Delete permanently…
+//!   (`purge-items-dialog`).
+//! - **Delete** moves the selection to the trash; in the Trash it deletes it permanently, asking
+//!   first. **Empty trash…** (the Trash's button and the app menu, `empty-trash-dialog`) deletes
+//!   everything there permanently. Both are one undo step ([`PurgeItems`]).
 
 use bevy::prelude::*;
 use bevy::text::FontWeight;
 use cadrs_core::library::{
-    AddCopies, Library, MoveItems, PurgeFolder, RenameFolder, RestoreEntry, TrashFolder, TrashItems,
+    AddCopies, Library, MoveItems, PurgeFolder, PurgeItems, RenameFolder, RestoreEntry,
+    TrashFolder, TrashItems,
 };
 use cadrs_core::{DocumentEntry, DocumentId, Filter, FolderEntry, FolderId};
 use cadrs_ui::menu::ContextMenuAnchor;
@@ -65,6 +70,10 @@ struct ContextItems(Vec<Pick>);
 /// Which folder a folder's menu is for.
 #[derive(Component, Clone, Copy)]
 struct ContextFolder(FolderId);
+
+/// The items a Delete permanently… of several deletes (on its dialog).
+#[derive(Component, Clone)]
+struct PurgePicks(Vec<Pick>);
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<LandingDrag>()
@@ -231,7 +240,7 @@ pub fn move_items(world: &mut World, items: &[Pick], to: Option<FolderId>) {
 }
 
 /// Moves `items` to the trash in one undo step (a folder with what it holds).
-fn trash_items(world: &mut World, items: &[Pick]) {
+pub fn trash_items(world: &mut World, items: &[Pick]) {
     let lib = world.resource::<DocLibrary>().lib.clone();
     let (docs, folders) = split(items);
     if docs.is_empty() && folders.is_empty() {
@@ -243,6 +252,21 @@ fn trash_items(world: &mut World, items: &[Pick]) {
     world
         .resource_mut::<DocLibrary>()
         .execute(&store, &TrashItems { docs, folders, now });
+    undo_toast(world, text);
+}
+
+/// Deletes `items` (in the trash) permanently in one undo step.
+fn purge_items(world: &mut World, items: &[Pick]) {
+    let lib = world.resource::<DocLibrary>().lib.clone();
+    let (docs, folders) = split(items);
+    if docs.is_empty() && folders.is_empty() {
+        return;
+    }
+    let text = format!("Deleted {} permanently", items_name(&lib, items));
+    let store = world.resource::<DocumentStore>().0.clone();
+    world
+        .resource_mut::<DocLibrary>()
+        .execute(&store, &PurgeItems { docs, folders });
     undo_toast(world, text);
 }
 
@@ -346,7 +370,9 @@ fn copy_items(
 pub fn multi_menu(lib: &Library, items: &[Pick], trash: bool) -> Menu {
     let menu = Menu::new("multi-context-menu").min_width(190.0);
     if trash {
-        return menu.item(MenuItem::new("multi-restore", "Restore").icon("restore"));
+        return menu
+            .item(MenuItem::new("multi-restore", "Restore").icon("restore"))
+            .item(MenuItem::new("multi-delete-forever", "Delete permanently…").icon("delete"));
     }
     let (_, folders) = split(items);
     menu.item(MenuItem::new("multi-copy", "Copy").icon("copy"))
@@ -379,6 +405,7 @@ fn on_multi_action(
     ev: On<MenuAction>,
     q: Query<&ContextItems, With<ContextMenuAnchor>>,
     lib: Res<DocLibrary>,
+    theme: Res<Theme>,
     mut commands: Commands,
 ) {
     let Ok(items) = q.get(ev.entity) else { return };
@@ -390,6 +417,7 @@ fn on_multi_action(
         }
         "multi-trash" => commands.queue(move |world: &mut World| trash_items(world, &items)),
         "multi-restore" => commands.queue(move |world: &mut World| restore_items(world, &items)),
+        "multi-delete-forever" => open_purge_items_dialog(&mut commands, &theme, &lib.lib, items),
         m => {
             if let Some(to) = move_target(&lib.lib, m) {
                 commands.queue(move |world: &mut World| move_items(world, &items, to));
@@ -571,7 +599,93 @@ fn open_purge_folder_dialog(commands: &mut Commands, theme: &Theme, folder: &Fol
     ));
 }
 
-/// OK in a folder dialog.
+/// Delete permanently… for `items` in the Trash: a document's or a folder's own dialog for one,
+/// else one for them all.
+pub fn open_purge_items_dialog(
+    commands: &mut Commands,
+    theme: &Theme,
+    lib: &Library,
+    items: Vec<Pick>,
+) {
+    match items.as_slice() {
+        [] => {}
+        [Pick::Doc(d)] => {
+            if let Some(e) = lib.get(*d) {
+                super::open_purge_dialog(commands, theme, e);
+            }
+        }
+        [Pick::Folder(f)] => {
+            if let Some(f) = lib.folder(*f) {
+                open_purge_folder_dialog(commands, theme, f);
+            }
+        }
+        _ => {
+            let (t, tb, tf) = (theme.clone(), theme.clone(), theme.clone());
+            let n = items.len();
+            commands.spawn((
+                Dialog::new("purge-items-dialog")
+                    .title("Delete permanently")
+                    .width(420.0)
+                    .body(move |b| {
+                        b.spawn((
+                            Text::new(format!("Permanently delete {n} items?")),
+                            tb.font(tb.font_base, FontWeight::NORMAL),
+                            TextColor(tb.foreground),
+                        ));
+                        b.spawn(tb.text(
+                            "You cannot restore them from Trash.",
+                            tb.font_base,
+                            FontWeight::NORMAL,
+                            tb.muted_foreground,
+                        ));
+                    })
+                    .footer(move |f| {
+                        dialog_buttons(f, &tf, "purge-items-dialog", "Delete permanently")
+                    })
+                    .build(&t),
+                LandingDialog::PurgeItems,
+                PurgePicks(items),
+                DespawnOnExit(AppState::Landing),
+            ));
+        }
+    }
+}
+
+/// Empty trash…: asks before deleting everything in the trash permanently (nothing when it is
+/// empty).
+pub fn open_empty_trash_dialog(commands: &mut Commands, theme: &Theme, lib: &Library) {
+    let (docs, folders) = lib.trash();
+    let what = match docs.len() + folders.len() {
+        0 => return,
+        1 => "the item".to_string(),
+        n => format!("all {n} items"),
+    };
+    let (t, tb, tf) = (theme.clone(), theme.clone(), theme.clone());
+    commands.spawn((
+        Dialog::new("empty-trash-dialog")
+            .title("Empty trash")
+            .width(420.0)
+            .body(move |b| {
+                b.spawn((
+                    Text::new(format!("Permanently delete {what} in the trash?")),
+                    tb.font(tb.font_base, FontWeight::NORMAL),
+                    TextColor(tb.foreground),
+                ));
+                b.spawn(tb.text(
+                    "You cannot restore them.",
+                    tb.font_base,
+                    FontWeight::NORMAL,
+                    tb.muted_foreground,
+                ));
+            })
+            .footer(move |f| dialog_buttons(f, &tf, "empty-trash-dialog", "Empty trash"))
+            .build(&t),
+        LandingDialog::EmptyTrash,
+        DespawnOnExit(AppState::Landing),
+    ));
+}
+
+/// OK in a folder dialog, or one deleting several items permanently.
 pub fn confirm(world: &mut World, dialog: LandingDialog) {
     let store = world.resource::<DocumentStore>().0.clone();
     match dialog {
@@ -603,6 +717,25 @@ pub fn confirm(world: &mut World, dialog: LandingDialog) {
                 .resource_mut::<DocLibrary>()
                 .execute(&store, &PurgeFolder { id });
             undo_toast(world, format!("Deleted \u{201c}{name}\u{201d} permanently"));
+        }
+        LandingDialog::PurgeItems => {
+            let mut q = world.query::<&PurgePicks>();
+            let Some(items) = q.iter(world).next().map(|p| p.0.clone()) else {
+                return;
+            };
+            close_dialogs(world);
+            purge_items(world, &items);
+        }
+        LandingDialog::EmptyTrash => {
+            close_dialogs(world);
+            let (docs, folders) = world.resource::<DocLibrary>().lib.trash();
+            if docs.is_empty() && folders.is_empty() {
+                return;
+            }
+            world
+                .resource_mut::<DocLibrary>()
+                .execute(&store, &PurgeItems { docs, folders });
+            undo_toast(world, "Emptied the trash".into());
         }
         _ => {}
     }
