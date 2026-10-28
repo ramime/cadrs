@@ -65,6 +65,13 @@ struct BusyMark;
 #[derive(Component)]
 struct Accent;
 
+/// A busy mark's node, its colour (the accent's) and whether it is the accent.
+type BusyMarks = (
+    &'static mut Node,
+    Option<&'static mut BackgroundColor>,
+    Has<Accent>,
+);
+
 /// Puts each row's step on it: an overlay for a row of the rebuild running (once it has run
 /// as long as the "Rebuilding…" indicator waits), its step updated, and none left showing a
 /// step once the rebuild is over.
@@ -171,10 +178,7 @@ fn animate_steps(
     theme: Res<Theme>,
     motion: Res<MotionSettings>,
     mut overlays: Query<(Entity, &mut StepOverlay, &mut BackgroundColor, &Children)>,
-    mut marks: Query<
-        (&mut Node, Option<&mut BackgroundColor>, Has<Accent>),
-        (With<BusyMark>, Without<StepOverlay>),
-    >,
+    mut marks: Query<BusyMarks, (With<BusyMark>, Without<StepOverlay>)>,
 ) {
     let dt = time.delta_secs();
     let pulse = if motion.enabled {
