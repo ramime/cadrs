@@ -3590,8 +3590,9 @@ pub fn sweep_groups(
 }
 
 /// The regions a whole sketch extrudes (PS1.1): its outer boundaries less the loops inside them.
-/// A region is kept when an even number of the other regions' outer boundaries enclose it
-/// (even-odd nesting: a disc inside a plate is its hole, a boss inside that hole is kept again).
+/// A region is kept when no other region's outer boundary encloses it, as Onshape's
+/// `qSketchRegion(sketch, true)`: a disc inside a plate is its hole, and so is a boss inside
+/// that hole (pick it to extrude it too).
 pub fn whole_sketch_regions(g: &Sketch) -> Vec<Region> {
     // The sketch's own curves: a face's imprinted edges (S21) don't split a whole sketch (P3.4:
     // the Reducer Coupling's second flange, drawn on the revolve's end face, is one region with
@@ -3626,7 +3627,7 @@ pub fn whole_sketch_regions(g: &Sketch) -> Vec<Region> {
                 .enumerate()
                 .filter(|(j, other)| j != i && inside(&other.outer, seeds[*i]))
                 .count();
-            depth % 2 == 0
+            depth == 0
         })
         .map(|(_, r)| r.clone())
         .collect()

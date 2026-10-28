@@ -21,6 +21,18 @@ The translation into cadrs features follows SolidCraft's own reader
 says otherwise, centre of mass and bounding box within 1e-3 of the bounding box's diagonal,
 face counts where given, and a STEP export read back with the same volume and area.
 
+## Running
+
+Each case is a test of its own, named after its folder (`case_49_helical_sweep` for
+`49-helical-sweep/`), so one case or a few run by name:
+
+```sh
+cargo test -r -p cadrs_core --test reference_parts -- helical
+```
+
+A case copied in needs its line in the test file's `cases!` list; `every_case_has_a_test`
+fails until it has one.
+
 ## Updating the passing list
 
 `passing.txt` lists the cases cadrs passes; the test fails if one of them stops passing. After

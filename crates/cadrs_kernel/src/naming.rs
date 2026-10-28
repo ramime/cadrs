@@ -636,7 +636,8 @@ pub fn name_body(
     let faces = k.faces(body)?;
     let edges = k.edges(body)?;
     let vertices = k.vertices(body)?;
-    let (face_names, aliases) = name_faces_aliased(op, history, inputs, &faces);
+    let (mut face_names, mut aliases) = name_faces_aliased(op, history, inputs, &faces);
+    split_apart_sides(op, &mut face_names, &mut aliases, &faces, &edges);
     let tol = joint_tolerance(&edges);
     Ok(BodyNames {
         edges: name_edges(&face_names, &edges, tol),
@@ -644,6 +645,79 @@ pub fn name_body(
         faces: face_names,
         aliases,
     })
+}
+
+/// The faces one profile curve swept (one side name of `op`'s) that don't touch, as a line
+/// the rest of the profile cuts into stretches: each edge-connected group of them is a face of
+/// its own, numbered by position as a split face's pieces are (Onshape's are separate faces).
+/// A curve's pieces that meet (a spline's spans) stay one face.
+fn split_apart_sides(
+    op: OpId,
+    names: &mut [FaceName],
+    aliases: &mut [(FaceName, FaceName)],
+    faces: &[FaceInfo],
+    edges: &[EdgeInfo],
+) {
+    let mut by_name: HashMap<FaceName, Vec<usize>> = HashMap::new();
+    for (i, n) in names.iter().enumerate() {
+        if n.op == op && n.split == 0 && matches!(n.origin, FaceOrigin::Side { .. }) {
+            by_name.entry(*n).or_default().push(i);
+        }
+    }
+    for (name, members) in by_name {
+        if members.len() < 2 {
+            continue;
+        }
+        // Union-find over the edges between two of them.
+        let mut root: HashMap<usize, usize> = members.iter().map(|&m| (m, m)).collect();
+        fn find(root: &mut HashMap<usize, usize>, mut x: usize) -> usize {
+            while root[&x] != x {
+                x = root[&x];
+            }
+            x
+        }
+        for e in edges {
+            let [Some(a), Some(b)] = e.faces.map(|f| f.map(|f| f.0 as usize)) else {
+                continue;
+            };
+            if a != b && root.contains_key(&a) && root.contains_key(&b) {
+                let (ra, rb) = (find(&mut root, a), find(&mut root, b));
+                root.insert(ra.max(rb), ra.min(rb));
+            }
+        }
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut at: HashMap<usize, usize> = HashMap::new();
+        for &m in &members {
+            let r = find(&mut root, m);
+            let g = *at.entry(r).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[g].push(m);
+        }
+        if groups.len() < 2 {
+            continue;
+        }
+        let key = |g: &Vec<usize>| {
+            g.iter()
+                .filter_map(|&f| faces.get(f).map(|i| position_key(&i.center)))
+                .min()
+                .unwrap_or([i64::MAX; 3])
+        };
+        groups.sort_by_key(key);
+        for (k, g) in groups.iter().enumerate() {
+            for &f in g {
+                names[f] = FaceName {
+                    split: k as u32 + 1,
+                    ..name
+                };
+            }
+        }
+        // Merged faces' names that pointed at it now point at its first stretch.
+        for (_, p) in aliases.iter_mut().filter(|(_, p)| *p == name) {
+            *p = FaceName { split: 1, ..name };
+        }
+    }
 }
 
 /// How close edge ends must be to count as joined: 1e-7 of the body's size (at least 1e-9 mm).

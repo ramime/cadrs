@@ -656,13 +656,22 @@ impl<'a> PartStudio<'a> {
         FeatureId::from_u128(stable_u128(&[self.doc_id, &self.raw.id, onshape]))
     }
 
-    /// The parts as the features so far build them.
+    /// How many features the Part Studio has so far.
+    fn feature_count(&self) -> usize {
+        self.s
+            .doc
+            .element(self.el)
+            .map_or(0, |e| e.features().len())
+    }
+
+    /// The parts as the features so far build them (those above the rollback bar, once the
+    /// import has put it where Onshape's is).
     pub(crate) fn parts(&mut self) -> Vec<Part> {
         let feats = self
             .s
             .doc
             .element(self.el)
-            .map(|e| e.features().to_vec())
+            .map(|e| e.features()[..e.rollback_index()].to_vec())
             .unwrap_or_default();
         let fresh = matches!(&self.built, Some((f, _)) if *f == feats);
         if !fresh {
@@ -1069,8 +1078,13 @@ impl<'a> PartStudio<'a> {
                 curves.iter().map(name).collect::<Vec<_>>()
             );
             if let Some(r) = &r {
+                // Its whole boundary: the outer curves, then the holes'.
+                let holes: Vec<String> = r
+                    .resolve(g)
+                    .map(|x| x.hole_curves.iter().flatten().map(name).collect())
+                    .unwrap_or_default();
                 eprintln!(
-                    "       got  {:?}",
+                    "       got  {:?} holes {holes:?}",
                     r.curves.iter().map(name).collect::<Vec<_>>()
                 );
             }
@@ -1103,7 +1117,18 @@ impl<'a> PartStudio<'a> {
         };
         let sketches_json = self.raw.sketches().unwrap_or(Value::Null);
         let trace = std::env::var_os("CADRS_ONSHAPE_TRACE").is_some();
-        for f in json["features"].as_array().into_iter().flatten() {
+        // Onshape's rollback bar: how many of its features are above it, and of cadrs's.
+        let rollback = json["rollbackIndex"].as_u64().map(|i| i as usize);
+        let mut bar = None;
+        for (i, f) in json["features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if rollback == Some(i) {
+                bar = Some(self.feature_count());
+            }
             let started = std::time::Instant::now();
             let name = f["name"].as_str().unwrap_or_default().to_string();
             let kind = f["featureType"].as_str().unwrap_or_default().to_string();
@@ -1138,6 +1163,7 @@ impl<'a> PartStudio<'a> {
                 "chamfer" => self.chamfer(f, &fid, &mut fr),
                 "revolve" => self.revolve(f, &fid, &mut fr),
                 "mirror" => self.mirror(f, &fid, &mut fr),
+                "splitPart" => self.split(f, &fid, &mut fr),
                 "linearPattern" | "circularPattern" => self.pattern(f, &fid, &mut fr),
                 "mateConnector" => self.mate_connector(f, &fid, &mut fr),
                 "cPlane" => self.plane(f, &fid, &mut fr),
@@ -1199,9 +1225,10 @@ impl<'a> PartStudio<'a> {
                     for p in self.parts() {
                         let b = bbox_of(p.solid.positions.iter().copied()).unwrap_or_default();
                         eprintln!(
-                            "             {:<12} vol {:>10.1}  box [{:.9} {:.9} {:.9}] .. [{:.9} {:.9} {:.9}]",
+                            "             {:<12} vol {:>10.1}  {:>4} faces  box [{:.9} {:.9} {:.9}] .. [{:.9} {:.9} {:.9}]",
                             p.name,
                             p.mass.as_ref().map_or(0.0, |m| m.volume),
+                            p.solid.faces.len(),
                             b[0],
                             b[1],
                             b[2],
@@ -1213,6 +1240,17 @@ impl<'a> PartStudio<'a> {
                 }
             }
             self.report.features.push(fr);
+        }
+        if let Some(index) = bar {
+            self.report
+                .notes
+                .push("the rollback bar is above the end of the list, as in Onshape".into());
+            if let Err(e) = self.s.run(&cadrs_core::commands::SetRollback {
+                element: self.el,
+                index: Some(index),
+            }) {
+                self.report.notes.push(format!("rollback bar not set: {e}"));
+            }
         }
         self.name_parts();
         let parts = self.parts();
@@ -2272,6 +2310,8 @@ impl<'a> PartStudio<'a> {
             volume: f64,
             band: (f64, f64),
             bbox: Option<[f64; 6]>,
+            /// Its face count, from the body details.
+            faces: Option<usize>,
             info: Option<Value>,
             /// A sheet (surface) body: matched by its box alone.
             sheet: bool,
@@ -2362,6 +2402,7 @@ impl<'a> PartStudio<'a> {
                 onshape_volume: vol,
                 cadrs_volume: (!mine.is_empty()).then_some(sum),
                 bbox_note: None,
+                faces: None,
             });
         }
         for (pid, b) in mp["bodies"].as_object().into_iter().flatten() {
@@ -2407,6 +2448,7 @@ impl<'a> PartStudio<'a> {
                 volume: v(0),
                 band: (v(1), v(2)),
                 bbox,
+                faces: body.and_then(|b| b["faces"].as_array()).map(Vec::len),
                 info,
                 sheet: false,
             });
@@ -2442,6 +2484,7 @@ impl<'a> PartStudio<'a> {
                 volume: 0.0,
                 band: (0.0, 0.0),
                 bbox: box_of(pid),
+                faces: None,
                 info: Some(info.clone()),
                 sheet: true,
             });
@@ -2576,7 +2619,14 @@ impl<'a> PartStudio<'a> {
                 onshape_volume: o.volume,
                 cadrs_volume: m.map(|c| c.1),
                 bbox_note: None,
+                faces: o.faces.zip(m.map(|c| parts[c.0].solid.faces.len())),
             };
+            if std::env::var_os("CADRS_ONSHAPE_DEBUG_FACES").is_some()
+                && let (Some(c), Some((a, b))) = (m, check.faces)
+                && a != b
+            {
+                face_diff(&o.name, &parts[c.0], &details, &o.pid);
+            }
             // Within Onshape's own tolerance band counts as equal.
             if let Some(c) = m
                 && c.1 >= o.band.0.min(o.volume)
@@ -2723,6 +2773,90 @@ fn model_edges<'q>(
 pub(crate) enum FaceOrRegion {
     Face(cadrs_core::document::FaceRef),
     Region(cadrs_core::document::RegionRef),
+}
+
+/// Debugging a face count that differs from Onshape's: the faces only one side has, by plane
+/// (its normal and offset, mm) or as curved, and area (mm²).
+fn face_diff(name: &str, part: &Part, details: &Value, pid: &str) {
+    // Planes by their normal pointing one fixed way (Onshape's isn't always the outward one).
+    let key = |plane: Option<([f64; 3], f64)>, area: f64| match plane {
+        Some((n, d)) => {
+            let flip = n.iter().find(|c| c.abs() > 1e-6).is_some_and(|c| *c < 0.0);
+            let (n, d) = if flip { (n.map(|c| -c), -d) } else { (n, d) };
+            format!(
+                "plane ({:.2}, {:.2}, {:.2}) {:.1}, {:.0} mm²",
+                n[0] + 0.0,
+                n[1] + 0.0,
+                n[2] + 0.0,
+                d,
+                area
+            )
+        }
+        None => format!("curved, {area:.0} mm²"),
+    };
+    let s = &part.solid;
+    let mut ours: Vec<String> = s
+        .faces
+        .iter()
+        .map(|f| {
+            let area: f64 = (0..f.triangle_count)
+                .map(|t| {
+                    let i = 3 * (f.first_triangle + t);
+                    let [a, b, c] = [0, 1, 2].map(|k| s.positions[s.indices[i + k] as usize]);
+                    let x = cross(
+                        [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                        [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+                    );
+                    dot(x, x).sqrt() / 2.0
+                })
+                .sum();
+            let plane = f.plane.map(|p| {
+                let n = cross(p.u, p.v);
+                (n, dot(n, p.origin))
+            });
+            key(plane, area)
+        })
+        .collect();
+    let mut theirs: Vec<String> = details["bodies"]
+        .as_array()
+        .and_then(|a| a.iter().find(|b| b["id"].as_str() == Some(pid)))
+        .and_then(|b| b["faces"].as_array())
+        .into_iter()
+        .flatten()
+        .map(|f| {
+            let s = &f["surface"];
+            let area = f["area"].as_f64().unwrap_or(0.0) * 1e6;
+            let plane = (s["type"].as_str() == Some("PLANE"))
+                .then(|| {
+                    let n = point_mm(&s["normal"])?.map(|c| c / 1000.0);
+                    let o = point_mm(&s["origin"])?;
+                    Some((n, dot(n, o)))
+                })
+                .flatten();
+            key(plane, area)
+        })
+        .collect();
+    ours.sort();
+    theirs.sort();
+    let only = |a: &[String], b: &[String]| {
+        let mut b = b.to_vec();
+        a.iter()
+            .filter(|x| match b.iter().position(|y| y == *x) {
+                Some(i) => {
+                    b.remove(i);
+                    false
+                }
+                None => true,
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for f in only(&ours, &theirs) {
+        eprintln!("FACES {name}: only here: {f}");
+    }
+    for f in only(&theirs, &ours) {
+        eprintln!("FACES {name}: only in Onshape: {f}");
+    }
 }
 
 /// A polygon's signed area.

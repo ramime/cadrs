@@ -486,7 +486,9 @@ impl Rebuilder {
         };
         if x.tangent_propagation {
             for g in &mut groups {
-                let mut all: Vec<EdgeId> = Vec::new();
+                // The picks first: the kernel keeps the sides of the distances along each chain
+                // as its first edge has them.
+                let mut all: Vec<EdgeId> = g.edges.clone();
                 for &e in &g.edges {
                     for c in self
                         .kernel

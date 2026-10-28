@@ -3853,6 +3853,9 @@ struct Link {
     after: usize,
     /// On the edge's extension past the vertex (the faces meet beyond the edge there).
     past: bool,
+    /// The vertex that extension runs on from: the edge's vertex at the end's own, or one a
+    /// step along a fillet face's boundary from it ([`step_along`]).
+    at: usize,
 }
 
 /// The faces round the end j's vertex between those the rails leave into, and where the strip
@@ -4030,6 +4033,7 @@ fn end_chain(b: &Body, ef: &EdgeFillet, j: usize, exits: &[Exit; 2]) -> Result<V
             mark,
             after,
             past: false,
+            at: v,
         });
         if after == exits[1].into {
             return Ok(links);
@@ -4046,70 +4050,162 @@ fn end_chain(b: &Body, ef: &EdgeFillet, j: usize, exits: &[Exit; 2]) -> Result<V
 /// each face round the vertex in turn (from those the rails leave into) until it reaches the
 /// next one's surface, past the vertex on the edge's extension between them (the fillet adds
 /// to those faces, or uncovers a face under the corner it takes away); on the last face, or
-/// on any it runs to the other rail's exit on, to there.
+/// on any it runs to the other rail's exit on, to there. Where the next face round the vertex
+/// is the fillet's own (a rail leaving into a face that doesn't reach the vertex: a chamfer's
+/// face at the vertex, the wall's top beside it), the faces meet a step along that face's
+/// boundary instead, and the cut goes on round the vertex there.
 fn end_chain_traced(b: &Body, ef: &EdgeFillet, j: usize, exits: &[Exit; 2]) -> Result<Vec<Link>> {
-    let v = b.edges[ef.e].v[j];
-    let edges = vertex_edges(b, v);
+    let mut v = b.edges[ef.e].v[j];
+    let steps = vertex_edges(b, v).len() + 4;
     let (mut prev, mut cur) = (ef.faces[0], exits[0].into);
     let mut links: Vec<Link> = Vec::new();
     let mut from = Mark::rail(exits[0].t, exits[0].ball, 0);
     let to = Mark::rail(exits[1].t, exits[1].ball, 1);
     let tol = tol::REL_POINT * (1.0 + ef.r());
-    for _ in 0..edges.len() {
+    let round = || unsupported("a fillet end whose faces don't go round its vertex");
+    // The edge at vertex u between faces f and g.
+    let between = |u: usize, f: usize, g: usize| {
+        vertex_edges(b, u)
+            .into_iter()
+            .find(|&x| {
+                sides(b, x).is_ok_and(|[(p, _), (q, _)]| (p, q) == (f, g) || (p, q) == (g, f))
+            })
+            .ok_or_else(round)
+    };
+    // The cut on face `cur` from `from` traced until it reaches face `after`'s surface, on
+    // their edge d (at vertex u) or its extension past u; `None` where it runs to the other
+    // rail's exit instead.
+    let meet =
+        |cur: usize, after: usize, d: usize, u: usize, from: &Mark| -> Result<Option<Link>> {
+            let (_, at) =
+                trace_until(b, ef, &b.faces[cur], from, &to, Some(&b.faces[after]), None)?;
+            let Some(mark) = at else {
+                debug(|| {
+                    format!(
+                        "edge {} end {j}: the cut on face {cur} runs to the other rail's exit",
+                        ef.e
+                    )
+                });
+                return Ok(None);
+            };
+            let de = &b.edges[d];
+            let tx = de.curve.closest(&mark.p, de.t[0] - 1e6, de.t[1] + 1e6);
+            let past = !(de.t[0] - tol::ROUNDOFF..=de.t[1] + tol::ROUNDOFF).contains(&tx);
+            // Past its end at u, not its other one.
+            let beyond_u = if de.v[0] == u {
+                tx < de.t[0]
+            } else {
+                tx > de.t[1]
+            };
+            if past && ((de.curve.point(tx) - mark.p).norm() > tol || !beyond_u) {
+                return Err(unsupported(
+                    "a fillet end whose faces meet past a vertex away from their edge's curve",
+                ));
+            }
+            debug(|| {
+                format!(
+                    "edge {} end {j}: the cut meets face {after} at {:?}{}",
+                    ef.e,
+                    mark.p,
+                    if past { " past the vertex" } else { "" }
+                )
+            });
+            Ok(Some(Link {
+                mark,
+                after,
+                past,
+                at: u,
+            }))
+        };
+    // Rail 0 leaving into a face that doesn't reach the vertex: it meets the face round the
+    // vertex beside rail 0's a step back along that face's boundary, where the cut crosses
+    // onto it first.
+    let on = |d: usize, f: usize| sides(b, d).is_ok_and(|[(p, _), (q, _)]| p == f || q == f);
+    if !vertex_edges(b, v).iter().any(|&d| on(d, cur)) {
+        let (d0, h) = vertex_edges(b, v)
+            .into_iter()
+            .filter(|&d| d != ef.e && on(d, ef.faces[0]))
+            .find_map(|d| {
+                let h = beyond(b, d, ef.faces[0])?;
+                (h != ef.faces[1]).then_some((d, h))
+            })
+            .ok_or_else(round)?;
+        let (u, _) = step_along(b, ef.faces[0], d0, v, h)
+            .filter(|&(_, g)| g == cur)
+            .ok_or_else(round)?;
+        let d = between(u, cur, h)?;
+        debug(|| {
+            format!(
+                "edge {} end {j}: faces {cur} and {h} meet along face {}'s boundary at vertex {u} (edge {d})",
+                ef.e, ef.faces[0]
+            )
+        });
+        let Some(l) = meet(cur, h, d, u, &from)? else {
+            return Ok(links);
+        };
+        from = l.mark;
+        links.push(l);
+        cur = h;
+    }
+    for _ in 0..steps {
         if cur == exits[1].into {
             return Ok(links);
         }
         let mut next = None;
-        for &d in &edges {
+        for d in vertex_edges(b, v) {
             let [(a, _), (o, _)] = sides(b, d)?;
             if d != ef.e && ((a == cur && o != prev) || (o == cur && a != prev)) {
                 next = Some((d, if a == cur { o } else { a }));
             }
         }
-        let (d, after) = next
-            .filter(|x| !ef.faces.contains(&x.1))
-            .ok_or_else(|| unsupported("a fillet end whose faces don't go round its vertex"))?;
-        let (_, at) = trace_until(
-            b,
-            ef,
-            &b.faces[cur],
-            &from,
-            &to,
-            Some(&b.faces[after]),
-            None,
-        )?;
-        let Some(mark) = at else {
+        let (mut d, mut after) = next.ok_or_else(round)?;
+        // Into a fillet face: the faces meet a step along its boundary.
+        if ef.faces.contains(&after) {
+            let (u, g) = step_along(b, after, d, v, cur)
+                .filter(|&(_, g)| !ef.faces.contains(&g))
+                .ok_or_else(round)?;
+            d = between(u, cur, g)?;
             debug(|| {
                 format!(
-                    "edge {} end {j}: the cut on face {cur} runs to the other rail's exit",
+                    "edge {} end {j}: faces {cur} and {g} meet along face {after}'s boundary at vertex {u} (edge {d})",
                     ef.e
                 )
             });
+            (v, after) = (u, g);
+        }
+        let Some(l) = meet(cur, after, d, v, &from)? else {
             return Ok(links);
         };
-        // On the edge itself, or on its extension past the vertex.
-        let de = &b.edges[d];
-        let tx = de.curve.closest(&mark.p, de.t[0] - 1e6, de.t[1] + 1e6);
-        let past = !(de.t[0] - tol::ROUNDOFF..=de.t[1] + tol::ROUNDOFF).contains(&tx);
-        if past && (de.curve.point(tx) - mark.p).norm() > tol {
-            return Err(unsupported(
-                "a fillet end whose faces meet past a vertex away from their edge's curve",
-            ));
-        }
-        debug(|| {
-            format!(
-                "edge {} end {j}: the cut meets face {after} at {:?}{}",
-                ef.e,
-                mark.p,
-                if past { " past the vertex" } else { "" }
-            )
-        });
-        links.push(Link { mark, after, past });
-        (prev, cur, from) = (cur, after, mark);
+        from = l.mark;
+        links.push(l);
+        (prev, cur) = (cur, after);
     }
-    Err(unsupported(
-        "a fillet end whose faces don't go round its vertex",
-    ))
+    Err(round())
+}
+
+/// From vertex `v` along face `own`'s boundary by its edge `d` (between it and face `cur`), on
+/// past the edges still between it and `cur`: the vertex where the face across changes, and
+/// that face.
+fn step_along(b: &Body, own: usize, d: usize, v: usize, cur: usize) -> Option<(usize, usize)> {
+    let l = b.faces[own]
+        .loops
+        .iter()
+        .find(|l| l.iter().any(|c| c.edge == d))?;
+    let n = l.len();
+    let mut k = l.iter().position(|c| c.edge == d)?;
+    // Away from v round the loop.
+    let fwd = b.co_start(&l[k]) == v;
+    let far = |c: &Coedge| if fwd { b.co_end(c) } else { b.co_start(c) };
+    let mut u = far(&l[k]);
+    for _ in 1..n {
+        k = if fwd { (k + 1) % n } else { (k + n - 1) % n };
+        let g = beyond(b, l[k].edge, own)?;
+        if g != cur {
+            return Some((u, g));
+        }
+        u = far(&l[k]);
+    }
+    None
 }
 
 /// The geometry of all strips' ends.
@@ -7289,6 +7385,13 @@ struct Pieces {
     /// Each weld's shared rail edge and the vertex where its strips part ([`Weld`]).
     weld_edges: HashMap<usize, usize>,
     weld_verts: HashMap<usize, usize>,
+    /// (site, face) → at a tangent junction where the rail on that face is off it: the
+    /// fraction across the section from the rail where it leaves the faces beyond, and the face
+    /// it leaves onto ([`junction_point`]); `None` where the rail is on its face.
+    junctions: HashMap<(usize, usize), Option<(f64, usize)>>,
+    /// Cuts by the faces beyond running through tangent junctions, each strip's piece added as
+    /// it comes ([`join_cut`]): applied once they reach crossings at both ends.
+    open_cuts: Vec<OpenCut>,
 }
 
 /// Traces the strip's curve on face `g`'s surface from `a` to `z` (both on it) in the strip's
@@ -7547,7 +7650,9 @@ fn grown_face(f: &Face) -> Option<Face> {
 /// The strip's cut by the faces beyond its face where rail k runs off it, from crossing `a`
 /// (vertex) to crossing `z`: one face, or two meeting at an edge (round a corner of the face).
 /// Inside those faces the cut splits them; outside (a fillet adding material) they grow, the
-/// two then joined along their edge's extension.
+/// two then joined along their edge's extension. A crossing at a junction's point
+/// ([`Crossing::w`]) makes this strip's piece of a cut running on into the next strip: applied
+/// once joined to the rest ([`join_cut`]).
 #[allow(clippy::too_many_arguments)]
 fn cliff(
     b: &Body,
@@ -7559,7 +7664,10 @@ fn cliff(
     out: &mut Pieces,
 ) -> Result<()> {
     let tol = tol::REL_POINT * (1.0 + ef.r());
-    let (ma, mz) = (Mark::rail(a.t, a.ball, k), Mark::rail(z.t, z.ball, kz));
+    let (ma, mz) = (a.mark(k), z.mark(kz));
+    // The ball's centre where an end is a rail's (the cut's exact tangent there).
+    let centre = |c: &Crossing| c.w.is_none().then_some(c.ball.c);
+    let open = [a.w.map(|_| va), z.w.map(|_| vz)];
     let fit = |nb: &mut Body,
                pts: Vec<P3>,
                v0: usize,
@@ -7583,7 +7691,29 @@ fn cliff(
         let grown = grown_face(&b.faces[g]);
         let face = grown.as_ref().unwrap_or(&b.faces[g]);
         let pts = trace(b, ef, face, &ma, &mz)?;
-        let ce = fit(nb, pts, va, vz, face, Some(a.ball.c), Some(z.ball.c));
+        let ce = fit(nb, pts, va, vz, face, centre(a), centre(z));
+        if open.iter().any(Option::is_some) {
+            let inside = inside_face(b, g, &nb.edges[ce]);
+            if !inside && let Some(x) = grown {
+                nb.faces[g].surf = x.surf;
+            }
+            fe.push(ce);
+            let run = CutRun {
+                face: g,
+                from: va,
+                to: vz,
+                edges: vec![(ce, true)],
+                inside,
+            };
+            return join_cut(
+                OpenCut {
+                    runs: vec![run],
+                    joints: Vec::new(),
+                    open,
+                },
+                out,
+            );
+        }
         if inside_face(b, g, &nb.edges[ce]) {
             // Across the face's seam: in two, at a vertex on the seam.
             let seam = b.faces[g]
@@ -7656,10 +7786,6 @@ fn cliff(
     let mut marks = vec![(ma, va)];
     let mut pieces: Vec<Vec<P3>> = Vec::new();
     // Each corner: its vertex on the edge between the faces (or past its end) and how it joins.
-    enum Joint {
-        OnEdge,
-        Past { corner: usize, ext: usize },
-    }
     let mut joints: Vec<Joint> = Vec::new();
     // The way the cut so far arrives at its end, for the next face's to go on from (only where
     // that face is tangent to the last: round a corner the cut turns).
@@ -7749,29 +7875,154 @@ fn cliff(
     pieces.push(trace_until(b, ef, &b.faces[last], &from, &mz, None, heading(&pieces))?.0);
     marks.push((mz, vz));
     // The cut on each face, then how each face takes it.
-    let mut cuts: Vec<usize> = Vec::new();
+    let mut runs: Vec<CutRun> = Vec::new();
     for (i, pts) in pieces.into_iter().enumerate() {
         let (v0, v1) = (marks[i].1, marks[i + 1].1);
-        let c0 = (i == 0).then_some(a.ball.c);
-        let c1 = (i + 1 == chain.len()).then_some(z.ball.c);
-        cuts.push(fit(nb, pts, v0, v1, &b.faces[chain[i]], c0, c1));
+        let c0 = if i == 0 { centre(a) } else { None };
+        let c1 = if i + 1 == chain.len() {
+            centre(z)
+        } else {
+            None
+        };
+        let g = chain[i];
+        let c = fit(nb, pts, v0, v1, &b.faces[g], c0, c1);
+        fe.push(c);
+        runs.push(CutRun {
+            face: g,
+            from: v0,
+            to: v1,
+            edges: vec![(c, true)],
+            inside: inside_face(b, g, &nb.edges[c]),
+        });
     }
-    let inside: Vec<bool> = chain
-        .iter()
-        .zip(&cuts)
-        .map(|(&g, &c)| inside_face(b, g, &nb.edges[c]))
-        .collect();
-    let all_past = joints.iter().all(|j| matches!(j, Joint::Past { .. }));
-    if inside.iter().all(|&x| x) && joints.iter().all(|j| matches!(j, Joint::OnEdge)) {
-        for (&g, &c) in chain.iter().zip(&cuts) {
-            out.cuts.entry(g).or_default().push(c);
+    let cut = OpenCut { runs, joints, open };
+    if open.iter().any(Option::is_some) {
+        join_cut(cut, out)
+    } else {
+        apply_cut(&cut, out)
+    }
+}
+
+/// How a cut's runs on two faces round a corner of the rail's face join: at a vertex on the
+/// edge between them, or past its end (the edge's extension `ext` from its end vertex `corner`
+/// to the cut).
+#[derive(Debug, Clone, Copy)]
+enum Joint {
+    OnEdge,
+    Past { corner: usize, ext: usize },
+}
+
+/// A cut's stretch on one face beyond the rail's: its edges in turn (forward or not) from vertex
+/// `from` to `to`, and whether they lie inside the face (or outside, where it grows).
+#[derive(Debug, Clone)]
+struct CutRun {
+    face: usize,
+    from: usize,
+    to: usize,
+    edges: Vec<(usize, bool)>,
+    inside: bool,
+}
+
+/// A strip's cut by the faces beyond its face ([`cliff`]), or the pieces of one running
+/// through tangent junctions joined so far: its runs face by face and how they join, and the
+/// junction's vertex at either end where it goes on into the next strip.
+#[derive(Debug, Clone)]
+struct OpenCut {
+    runs: Vec<CutRun>,
+    joints: Vec<Joint>,
+    open: [Option<usize>; 2],
+}
+
+impl OpenCut {
+    fn reversed(mut self) -> OpenCut {
+        self.runs.reverse();
+        for r in &mut self.runs {
+            std::mem::swap(&mut r.from, &mut r.to);
+            r.edges.reverse();
+            for e in &mut r.edges {
+                e.1 = !e.1;
+            }
         }
-    } else if inside.iter().all(|&x| !x) && all_past {
+        self.joints.reverse();
+        self.open.swap(0, 1);
+        self
+    }
+
+    /// This cut and then `next`, which goes on from this one's end (a junction's point on one
+    /// face, both runs there joined into one).
+    fn then(mut self, mut next: OpenCut) -> Result<OpenCut> {
+        let (Some(last), Some(first)) = (self.runs.pop(), next.runs.first_mut()) else {
+            return Err(failed(
+                "trimming",
+                "a fillet's cut through a junction is empty",
+            ));
+        };
+        if last.face != first.face || last.inside != first.inside {
+            return Err(unsupported(
+                "a fillet's cut through a junction onto another face",
+            ));
+        }
+        first.from = last.from;
+        first.edges.splice(0..0, last.edges);
+        self.runs.append(&mut next.runs);
+        self.joints.append(&mut next.joints);
+        self.open = [self.open[0], next.open[1]];
+        Ok(self)
+    }
+}
+
+/// Adds a strip's piece of a cut running through tangent junctions to the pieces so far,
+/// joining it to those it meets at a junction's point; a cut reaching crossings at both ends is
+/// applied.
+fn join_cut(cut: OpenCut, out: &mut Pieces) -> Result<()> {
+    let mut cut = cut;
+    while let Some(i) = out.open_cuts.iter().position(|x| {
+        x.open
+            .iter()
+            .flatten()
+            .any(|v| cut.open.iter().flatten().any(|w| w == v))
+    }) {
+        let x = out.open_cuts.swap_remove(i);
+        let meet = |p: Option<usize>, q: Option<usize>| p.is_some() && p == q;
+        cut = if meet(x.open[1], cut.open[0]) {
+            x.then(cut)?
+        } else if meet(cut.open[1], x.open[0]) {
+            cut.then(x)?
+        } else if meet(x.open[1], cut.open[1]) {
+            x.then(cut.reversed())?
+        } else {
+            x.reversed().then(cut)?
+        };
+    }
+    if cut.open.iter().all(Option::is_none) {
+        apply_cut(&cut, out)
+    } else {
+        out.open_cuts.push(cut);
+        Ok(())
+    }
+}
+
+/// A cut by the faces beyond the rail's face put into them: inside them (a fillet removing
+/// material) it splits them; outside (adding material) they grow to it, joined round corners
+/// along their edges' extensions.
+fn apply_cut(cut: &OpenCut, out: &mut Pieces) -> Result<()> {
+    let runs = &cut.runs;
+    let joints = &cut.joints;
+    if runs.iter().all(|r| r.inside) && joints.iter().all(|j| matches!(j, Joint::OnEdge)) {
+        for r in runs {
+            out.cuts
+                .entry(r.face)
+                .or_default()
+                .extend(r.edges.iter().map(|e| e.0));
+        }
+    } else if runs.iter().all(|r| !r.inside)
+        && joints.iter().all(|j| matches!(j, Joint::Past { .. }))
+    {
         // Each face from where the cut comes onto it to where it leaves, through the corners'
         // extensions.
-        for (i, &g) in chain.iter().enumerate() {
+        for (i, r) in runs.iter().enumerate() {
             let mut path = Vec::new();
-            let mut from = marks[i].1;
+            let mut from = r.from;
             if i > 0 {
                 let Joint::Past { corner, ext } = joints[i - 1] else {
                     unreachable!()
@@ -7779,9 +8030,9 @@ fn cliff(
                 from = corner;
                 path.push((ext, true));
             }
-            path.push((cuts[i], true));
-            let mut to = marks[i + 1].1;
-            if i + 1 < chain.len() {
+            path.extend(r.edges.iter().copied());
+            let mut to = r.to;
+            if i + 1 < runs.len() {
                 let Joint::Past { corner, ext } = joints[i] else {
                     unreachable!()
                 };
@@ -7789,7 +8040,7 @@ fn cliff(
                 to = corner;
             }
             out.patches.push(Patch {
-                face: g,
+                face: r.face,
                 from,
                 to,
                 path,
@@ -7802,7 +8053,6 @@ fn cliff(
             "a fillet's cut round corners partly inside its faces",
         ));
     }
-    fe.extend(cuts);
     Ok(())
 }
 
@@ -8068,6 +8318,13 @@ impl StripRails<'_> {
 
     /// Rail k's crossing `c` of its face's boundary: its vertex there and its rail parameter.
     fn at(&self, nb: &mut Body, k: usize, c: &Crossing, near: f64) -> Result<(usize, f64)> {
+        // A junction's point: the strip's end vertex there for this rail.
+        if let Some(w) = c.w {
+            let p = c.ball.arc_point(w);
+            let d = |j: usize| (nb.verts[self.rv[j][k]].p - p).norm();
+            let j = if d(0) <= d(1) { 0 } else { 1 };
+            return Ok((self.rv[j][k], self.rt[j][k]));
+        }
         let p = c.ball.q[k].p;
         let v = vertex_on_boundary(nb, self.ef.faces[k], &p, self.vtol).ok_or_else(|| {
             failed(
@@ -8249,22 +8506,29 @@ impl StripRails<'_> {
                 continue;
             }
             let mut at = (self.rv[0][k], self.rt[0][k]);
+            // (No rail to or from a junction's point at an end: the rail is off its face there.)
+            let mut tail = true;
             for (a, z) in &offs[k] {
                 let xa = self.at(nb, k, a, at.1)?;
                 let xz = self.at(nb, k, z, at.1)?;
-                self.rail(nb, k, at, xa, &mut fe, given, out);
+                if a.w.is_none() {
+                    self.rail(nb, k, at, xa, &mut fe, given, out);
+                }
                 cliff(b, nb, self.ef, (k, a, xa.0), (k, z, xz.0), &mut fe, out)?;
                 at = xz;
+                tail = z.w.is_none();
             }
-            self.rail(
-                nb,
-                k,
-                at,
-                (self.rv[1][k], self.rt[1][k]),
-                &mut fe,
-                given,
-                out,
-            );
+            if tail {
+                self.rail(
+                    nb,
+                    k,
+                    at,
+                    (self.rv[1][k], self.rt[1][k]),
+                    &mut fe,
+                    given,
+                    out,
+                );
+            }
         }
         Ok(fe)
     }
@@ -8357,14 +8621,16 @@ fn loops_of(nb: &Body, es: &[usize]) -> Vec<Vec<usize>> {
 }
 
 /// Where an open strip's rail k runs off its face and back between spine parameters t0 and t1
-/// (its ends): pairs of crossings of its face's edges, in order along the strip.
+/// (its ends): pairs of crossings of its face's edges, in order along the strip. `off`: the
+/// ends at tangent junctions where the rail is off its face ([`Crossing::w`]), which pair with
+/// a crossing like any other (the stretch off the face runs on into the next strip).
 fn open_cliffs(
     b: &Body,
     ef: &EdgeFillet,
     k: usize,
-    t0: f64,
-    t1: f64,
+    (t0, t1): (f64, f64),
     ends: [P3; 2],
+    off: [Option<Crossing>; 2],
 ) -> Result<Vec<(Crossing, Crossing)>> {
     let f = [&b.faces[ef.faces[0]], &b.faces[ef.faces[1]]];
     let fi = ef.faces[k];
@@ -8374,7 +8640,8 @@ fn open_cliffs(
         t0.min(t1).max(ed.t[0].min(ed.t[1])),
         t0.max(t1).min(ed.t[0].max(ed.t[1])),
     );
-    if hi <= lo {
+    let junctions = off.iter().any(Option::is_some);
+    if hi <= lo && !junctions {
         return Ok(Vec::new());
     }
     let margin = 1e-7 * (1.0 + (hi - lo));
@@ -8415,11 +8682,23 @@ fn open_cliffs(
                 ball,
                 into,
                 edge: c.edge,
+                w: None,
             });
         }
     }
-    if cs.is_empty() {
+    if cs.is_empty() && !junctions {
         return Ok(Vec::new());
+    }
+    // In order along the rail, from its start end, between the junctions' points there.
+    cs.sort_by(|a, b| a.t.total_cmp(&b.t));
+    if t1 < t0 {
+        cs.reverse();
+    }
+    if let Some(c) = off[0] {
+        cs.insert(0, c);
+    }
+    if let Some(c) = off[1] {
+        cs.push(c);
     }
     if !cs.len().is_multiple_of(2) {
         debug(|| {
@@ -8434,11 +8713,6 @@ fn open_cliffs(
         return Err(unsupported(
             "a fillet whose rail leaves its face and doesn't come back",
         ));
-    }
-    // In order along the rail, from its start end.
-    cs.sort_by(|a, b| a.t.total_cmp(&b.t));
-    if t1 < t0 {
-        cs.reverse();
     }
     debug(|| {
         format!(
@@ -8824,20 +9098,110 @@ fn missed_crossings(
             ball,
             into,
             edge,
+            w: None,
         });
     }
     Ok(out)
 }
 
-/// Where a closed strip's rail crosses an edge of its face that isn't the face's seam.
+/// Where a strip's rail crosses an edge of its face (a closed strip's: one that isn't the
+/// face's seam).
 #[derive(Debug, Clone, Copy)]
 struct Crossing {
-    /// Its spine parameter, unwrapped into the turn from the strip's seam.
+    /// Its spine parameter (a closed strip's unwrapped into the turn from its seam).
     t: f64,
     ball: Ball,
     into: usize,
     /// The edge crossed.
     edge: usize,
+    /// At an open strip's end at a tangent junction where the rail is off its face (the
+    /// stretch off it runs on into the next strip): the fraction across the section, from the
+    /// first contact, where the section leaves the faces beyond, there onto face `into`'s
+    /// surface; `edge` is then the edge between the rail's face and `into`. `None` on the rail.
+    w: Option<f64>,
+}
+
+impl Crossing {
+    /// Its point on the strip: rail k's, or the junction's across the section.
+    fn mark(&self, k: usize) -> Mark {
+        match self.w {
+            Some(w) => Mark {
+                t: self.t,
+                w,
+                ball: self.ball,
+                p: self.ball.arc_point(w),
+            },
+            None => Mark::rail(self.t, self.ball, k),
+        }
+    }
+}
+
+/// Where the section `ball` at an open strip's end at a tangent junction leaves the faces
+/// beyond rail k's face, the rail being off that face there (its stretch off the face runs on
+/// into the next strip): going across from the rail, the first point on the surface of one of
+/// the faces the rail lies beyond (across their edges with its face, near it, and outside
+/// them: the walls of the pocket it hangs over). The fraction across from the rail, and that
+/// face.
+fn junction_point(b: &Body, ef: &EdgeFillet, ball: &Ball, k: usize) -> Option<(f64, usize)> {
+    let fi = ef.faces[k];
+    let f = &b.faces[fi];
+    let q = ball.q[k].p;
+    let sd = |g: usize, p: &P3| -> f64 {
+        let f = &b.faces[g];
+        let c = geom::contact(f, geom::foot(f, p, None));
+        (p - c.p).dot(&c.n)
+    };
+    let reach = 4.0 * ef.r();
+    let mut walls: Vec<usize> = Vec::new();
+    for c in f.loops.iter().flatten() {
+        let x = &b.edges[c.edge];
+        if x.degenerate || is_seam(b, fi, c.edge) {
+            continue;
+        }
+        let Some(g) = beyond(b, c.edge, fi) else {
+            continue;
+        };
+        if g == ef.faces[1 - k] || walls.contains(&g) {
+            continue;
+        }
+        let t = x.curve.closest(&q, x.t[0], x.t[1]);
+        let at = x.point(t);
+        if (at - q).norm() > reach || sd(g, &q) <= tol::POINT {
+            continue;
+        }
+        // Across the edge from the face: against the way into the face there (its normal
+        // across the coedge's direction).
+        let uv = c.pc.point(t);
+        let n = f.surf.normal(uv.x, uv.y) * if f.sense { 1.0 } else { -1.0 };
+        let d = x.curve.tangent(t) * if c.fwd { 1.0 } else { -1.0 };
+        if (q - at).dot(&n.cross(&d)) < 0.0 {
+            walls.push(g);
+        }
+    }
+    // Across from the rail (s = 0) to the other contact (s = 1).
+    let at = |s: f64| ball.arc_point(if k == 0 { s } else { 1.0 - s });
+    let n = 64;
+    let mut best: Option<(f64, usize)> = None;
+    for &g in &walls {
+        let Some(i) = (1..=n).find(|&i| sd(g, &at(i as f64 / n as f64)) <= 0.0) else {
+            continue;
+        };
+        let (mut lo, mut hi) = ((i - 1) as f64 / n as f64, i as f64 / n as f64);
+        for _ in 0..60 {
+            let m = 0.5 * (lo + hi);
+            if sd(g, &at(m)) > 0.0 {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        let s = 0.5 * (lo + hi);
+        if best.is_none_or(|x| s < x.0) {
+            best = Some((s, g));
+        }
+    }
+    // (Short of the other contact: the strip keeps a piece of its section.)
+    best.filter(|x| x.0 < 1.0 - HAIR)
 }
 
 /// Adds a closed strip's rails, seam and face. A rail may run off its face over an edge and
@@ -8916,6 +9280,7 @@ fn closed_strip(
                             ball,
                             into,
                             edge: c.edge,
+                            w: None,
                         });
                     }
                 }
@@ -9028,7 +9393,7 @@ fn closed_strip(
     // stretches off its face (cut by the face beyond).
     enum Event {
         Seam(f64, Ball),
-        Off(Crossing, Crossing),
+        Off(Box<(Crossing, Crossing)>),
     }
     let mut events: [Vec<Event>; 2] = [Vec::new(), Vec::new()];
     for k in 0..2 {
@@ -9074,12 +9439,12 @@ fn closed_strip(
                     "a closed fillet's rail crossings don't pair up",
                 ));
             }
-            events[k].push(Event::Off(a, z));
+            events[k].push(Event::Off(Box::new((a, z))));
         }
         events[k].sort_by(|a, b| {
             let t = |e: &Event| match e {
                 Event::Seam(t, _) => *t,
-                Event::Off(a, _) => a.t,
+                Event::Off(x) => x.0.t,
             };
             t(a).total_cmp(&t(b))
         });
@@ -9216,7 +9581,8 @@ fn closed_strip(
                     rail_to(nb, tr, v, at_v, at_t, &mut fe, out);
                     (at_v, at_t) = (v, tr);
                 }
-                Event::Off(a, z) => {
+                Event::Off(x) => {
+                    let (a, z) = &**x;
                     let (pa, pz) = (a.ball.q[k].p, z.ball.q[k].p);
                     let va = vertex_on_boundary(nb, ef.faces[k], &pa, tol).ok_or_else(|| {
                         failed(
@@ -9512,6 +9878,31 @@ pub fn chamfer_offsets(b: &Body, e: usize, d: [f64; 2]) -> Option<[f64; 2]> {
     let (sn, cs) = th.sin_cos();
     let k = [(d[1] - d[0] * cs) / sn, (d[0] - d[1] * cs) / sn];
     (k[0] > 0.0 && k[1] > 0.0).then_some(k)
+}
+
+/// Whether edge e's faces both run straight across it, square to it (a plane; an extrusion or
+/// a cylinder whose rulings cross the edge at right angles): in the section the faces are
+/// lines, so the ball's offsets for contacts given distances along them ([`chamfer_offsets`])
+/// are exact.
+pub(crate) fn straight_across(b: &Body, e: usize) -> bool {
+    let Some(ed) = b.edges.get(e) else {
+        return false;
+    };
+    let Ok(s) = sides(b, e) else {
+        return false;
+    };
+    let square = |d: V3| {
+        [0.0, 0.25, 0.5, 0.75, 1.0].iter().all(|&s| {
+            let t = ed.t[0] + (ed.t[1] - ed.t[0]) * s;
+            ed.curve.tangent(t).normalize().dot(&d).abs() < tol::ANGULAR
+        })
+    };
+    s.iter().all(|&(f, _)| match &b.faces[f].surf {
+        Surface::Plane { .. } => true,
+        Surface::Extrusion { d, .. } => square(d.normalize()),
+        Surface::Cylinder { f, .. } => square(f.z.normalize()),
+        _ => false,
+    })
 }
 
 /// The angle between edge e's faces' directions away from it, if the same all along it (to
@@ -10300,6 +10691,8 @@ fn trim(
         // Each end: the rails' end vertices and the edge(s) across the strip.
         let mut rv = [[0usize; 2]; 2]; // [end][side]
         let mut rt = [[0.0f64; 2]; 2];
+        // The ends at tangent junctions where a rail is off its face ([`Crossing::w`]).
+        let mut junction: [[Option<Crossing>; 2]; 2] = [[None; 2]; 2];
         let mut across: Vec<usize> = Vec::new();
         let mut given: Vec<(usize, Curve)> = Vec::new();
         for j in 0..2 {
@@ -10495,19 +10888,22 @@ fn trim(
                         rv[j][0],
                         exits[0].into,
                     )];
-                    let mut ext: Vec<Option<usize>> = Vec::new();
+                    // (Each extension with the vertex it runs on from: v, or one a step along a
+                    // fillet face's boundary from it.)
+                    let mut ext: Vec<Option<(usize, usize)>> = Vec::new();
                     for l in links {
                         if l.past {
                             let xv = nb.add_vertex(l.mark.p);
                             let d = common_edge(b, marks[marks.len() - 1].2, l.after)
-                                .filter(|&d| b.edges[d].v.contains(&v))
+                                .filter(|&d| b.edges[d].v.contains(&l.at))
                                 .ok_or_else(|| {
                                     failed("end", "a fillet end's faces don't meet at its vertex")
                                 })?;
                             let de = &b.edges[d];
                             let tx = de.curve.closest(&l.mark.p, de.t[0] - 1e6, de.t[1] + 1e6);
-                            let tv = if de.v[0] == v { de.t[0] } else { de.t[1] };
-                            ext.push(Some(add_edge(&mut nb, de.curve.clone(), tv, tx, v, xv)));
+                            let tv = if de.v[0] == l.at { de.t[0] } else { de.t[1] };
+                            let x = add_edge(&mut nb, de.curve.clone(), tv, tx, l.at, xv);
+                            ext.push(Some((x, l.at)));
                             marks.push((l.mark, xv, l.after));
                         } else {
                             let xv = vertex_on_boundary(&mut nb, l.after, &l.mark.p, vtol)
@@ -10588,15 +10984,15 @@ fn trim(
                         // (through the extensions where the faces meet past it).
                         let mut path = Vec::new();
                         let mut from = marks[i].1;
-                        if let Some(x) = before {
-                            from = v;
+                        if let Some((x, at)) = before {
+                            from = at;
                             path.push((x, true));
                         }
                         path.push((ee, true));
                         let mut to = marks[i + 1].1;
-                        if let Some(x) = after {
+                        if let Some((x, at)) = after {
                             path.push((x, false));
-                            to = v;
+                            to = at;
                         }
                         if i == last && g != exits[1].into {
                             // The cut ran to the other rail's exit on this face: back to the
@@ -10612,12 +11008,19 @@ fn trim(
                             path.push((back, nb.edges[back].v[0] == to));
                             to = v;
                         }
+                        // The stretch replaced passes the vertex where the face has it (else, a
+                        // face a step along a fillet face's boundary, it's the shorter way).
+                        let at_v = b.faces[g]
+                            .loops
+                            .iter()
+                            .flatten()
+                            .any(|c| b.co_start(c) == v);
                         out.patches.push(Patch {
                             face: g,
                             from,
                             to,
                             path,
-                            via: (from != v && to != v).then_some(v),
+                            via: (from != v && to != v && at_v).then_some(v),
                             stretch: Vec::new(),
                         });
                     }
@@ -11223,16 +11626,57 @@ fn trim(
                 }
                 End::Section { ball, t, key } => {
                     let v = key.site();
+                    // A rail off its face at a tangent junction (a stretch off it running on
+                    // into the next strip): the strip's corner there is where its section
+                    // leaves the faces beyond (shared with the next strip), the section cut
+                    // there.
+                    let mut cut: Option<(usize, f64)> = None; // (side, fraction across)
+                    if cliffs && matches!(key, SectionKey::Junction(_)) {
+                        for k in 0..2 {
+                            let fi = ef.faces[k];
+                            let x = match out.junctions.get(&(v, fi)) {
+                                Some(&x) => x,
+                                None => {
+                                    let x = (!point_in_face(b, fi, &ball.q[k].p))
+                                        .then(|| junction_point(b, ef, ball, k))
+                                        .flatten();
+                                    out.junctions.insert((v, fi), x);
+                                    x
+                                }
+                            };
+                            let Some((s, g)) = x else { continue };
+                            if cut.is_some() {
+                                return Err(unsupported(
+                                    "a fillet off both its faces at a junction",
+                                ));
+                            }
+                            let w = if k == 0 { s } else { 1.0 - s };
+                            let edge = common_edge(b, fi, g).ok_or_else(|| {
+                                unsupported("a fillet's junction off its face past another face")
+                            })?;
+                            cut = Some((k, w));
+                            junction[j][k] = Some(Crossing {
+                                t: *t,
+                                ball: *ball,
+                                into: g,
+                                edge,
+                                w: Some(w),
+                            });
+                        }
+                    }
                     for k in 0..2 {
                         let fi = ef.faces[k];
                         let q = ball.q[k].p;
                         let vid = match out.contact_verts.get(&(v, fi)) {
                             Some(&x) => x,
                             None => {
-                                // On the face's boundary (a tangent junction where the face
-                                // changes) or inside it (a corner's contact).
-                                let x = vertex_on_boundary(&mut nb, fi, &q, vtol)
-                                    .unwrap_or_else(|| nb.add_vertex(q));
+                                let x = match cut {
+                                    Some((kc, w)) if kc == k => nb.add_vertex(ball.arc_point(w)),
+                                    // On the face's boundary (a tangent junction where the face
+                                    // changes) or inside it (a corner's contact).
+                                    _ => vertex_on_boundary(&mut nb, fi, &q, vtol)
+                                        .unwrap_or_else(|| nb.add_vertex(q)),
+                                };
                                 out.contact_verts.insert((v, fi), x);
                                 x
                             }
@@ -11246,6 +11690,11 @@ fn trim(
                             let (c, a0, a1) = ball
                                 .arc()
                                 .ok_or_else(|| bad_geometry("a fillet section degenerates"))?;
+                            let (a0, a1) = match cut {
+                                Some((0, w)) => (a0 + (a1 - a0) * w, a1),
+                                Some((_, w)) => (a0, a0 + (a1 - a0) * w),
+                                None => (a0, a1),
+                            };
                             let x = add_edge(&mut nb, c, a0, a1, rv[j][0], rv[j][1]);
                             out.section_edges.insert(*key, x);
                             x
@@ -11275,11 +11724,12 @@ fn trim(
             });
             for (k, o) in offs.iter_mut().enumerate() {
                 let (p0, p1) = (nb.verts[rv[0][k]].p, nb.verts[rv[1][k]].p);
+                let off = [junction[0][k], junction[1][k]];
                 let (t0, t1) = (
-                    ef.spine.param_of(&p0, near[0]),
-                    ef.spine.param_of(&p1, near[1]),
+                    off[0].map_or_else(|| ef.spine.param_of(&p0, near[0]), |c| c.t),
+                    off[1].map_or_else(|| ef.spine.param_of(&p1, near[1]), |c| c.t),
                 );
-                *o = open_cliffs(b, ef, k, t0, t1, [p0, p1])?;
+                *o = open_cliffs(b, ef, k, (t0, t1), [p0, p1], off)?;
             }
         }
         // A B-spline strip through the crossings' sections too, so its rails meet the faces'
@@ -11340,6 +11790,12 @@ fn trim(
                 pcurves,
             });
         }
+    }
+    // Every cut through a junction came back onto its face in some strip.
+    if !out.open_cuts.is_empty() {
+        return Err(unsupported(
+            "a fillet whose rail leaves its face and doesn't come back",
+        ));
     }
     // Corner patches.
     for c in &p.corners {

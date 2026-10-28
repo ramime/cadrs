@@ -383,19 +383,55 @@ pub fn import(
                     construction,
                 }
             }
-            "skSpline" => {
-                // A control-point B-spline (a projected edge, say): only its features.json
-                // entity has the geometry. Brought in as an interpolated spline through points
-                // sampled on it.
+            kind @ ("skSpline" | "skSplineSegment") => {
+                // A control-point B-spline (a projected edge, say), or a span of one (a used or
+                // projected conic): only its features.json entity has the geometry. Brought in
+                // as an interpolated spline through points sampled on it.
+                let span = (kind == "skSplineSegment").then(|| {
+                    (
+                        e["startParameter"].as_f64().unwrap_or(0.0),
+                        e["endParameter"].as_f64().unwrap_or(1.0),
+                    )
+                });
                 let Some(op) = bspline_entity(feature, eid)
-                    .and_then(|b| sampled_bspline(b, &xf, construction))
+                    .and_then(|b| sampled_bspline(b, span, &xf, construction))
                 else {
                     *skipped
-                        .entry("skSpline (unreadable geometry)".to_string())
+                        .entry(format!("{kind} (unreadable geometry)"))
                         .or_default() += 1;
                     continue;
                 };
-                let note = "skSpline (control-point spline) imported as an interpolated spline through points on it";
+                let note =
+                    "control-point splines imported as interpolated splines through points on them";
+                if !report.notes.iter().any(|n| n == note) {
+                    report.notes.push(note.into());
+                }
+                op
+            }
+            "skConicSegment" => {
+                // A conic (a rational quadratic Bézier: its ends, the corner of its end
+                // tangents and its `rho`), which cadrs has no curve for: an interpolated spline
+                // through points on it, as for a control-point spline.
+                let (Some(a), Some(c), Some(b), Some(rho)) = (
+                    v2(&g["startPosition2d"]),
+                    v2(&g["controlPoint2d"]),
+                    v2(&g["endPosition2d"]),
+                    g["rho"].as_f64().filter(|r| *r > 0.0 && *r < 1.0),
+                ) else {
+                    *skipped
+                        .entry("skConicSegment (unreadable geometry)".to_string())
+                        .or_default() += 1;
+                    continue;
+                };
+                let poles = [
+                    [a[0], a[1], 1.0],
+                    [c[0], c[1], rho / (1.0 - rho)],
+                    [b[0], b[1], 1.0],
+                ];
+                let Some(op) = conic(&poles, &xf, construction) else {
+                    continue;
+                };
+                let note = "conics imported as Bézier curves or splines through points on them";
                 if !report.notes.iter().any(|n| n == note) {
                     report.notes.push(note.into());
                 }
@@ -673,12 +709,16 @@ fn bspline_entity<'a>(feature: &'a Value, eid: &str) -> Option<&'a Value> {
         .then_some(g)
 }
 
-/// A B-spline (Onshape's `controlPoints`, `knots`, `degree`, `isPeriodic`; unweighted) as an
-/// interpolated spline through 24 points on it.
-fn sampled_bspline(g: &Value, xf: &Xf, construction: bool) -> Option<SketchOp> {
-    if g["isRational"].as_bool().unwrap_or(false) {
-        return None;
-    }
+/// A B-spline (Onshape's `controlPoints`, `knots`, `degree`, `isPeriodic`, and with
+/// `isRational` each control point's weight after it), or its parameter span `span`, as an
+/// interpolated spline through points on it.
+fn sampled_bspline(
+    g: &Value,
+    span: Option<(f64, f64)>,
+    xf: &Xf,
+    construction: bool,
+) -> Option<SketchOp> {
+    let rational = g["isRational"].as_bool().unwrap_or(false);
     let degree = g["degree"].as_u64()? as usize;
     let cp: Vec<f64> = g["controlPoints"]
         .as_array()?
@@ -690,25 +730,145 @@ fn sampled_bspline(g: &Value, xf: &Xf, construction: bool) -> Option<SketchOp> {
         .iter()
         .filter_map(Value::as_f64)
         .collect();
-    let dim = if cp.len() == 2 * (knots.len().checked_sub(degree + 1)?) {
-        2
+    // x, y (and a z on some), then the weight if rational.
+    let n = knots.len().checked_sub(degree + 1).filter(|n| *n > 0)?;
+    let stride = cp.len() / n;
+    if stride * n != cp.len() || stride < 2 + usize::from(rational) {
+        return None;
+    }
+    let poles: Vec<[f64; 3]> = cp
+        .chunks_exact(stride)
+        .map(|c| [c[0], c[1], if rational { c[stride - 1] } else { 1.0 }])
+        .collect();
+    let periodic = g["isPeriodic"].as_bool().unwrap_or(false);
+    // A whole single-span rational quadratic is a conic (a projected one, say).
+    let whole = span.is_none_or(|(a, b)| a <= knots[degree] && b >= knots[n]);
+    if rational && degree == 2 && n == 3 && whole {
+        return conic(&[poles[0], poles[1], poles[2]], xf, construction);
+    }
+    let (pts, ends) = sample_nurbs(&poles, &knots, degree, span, periodic)?;
+    let points: Vec<Vec2> = pts.into_iter().map(|p| xf.apply(p)).collect();
+    let periodic = periodic && span.is_none();
+    // An open one leaves its ends as the B-spline does, not with natural ends: its neighbours
+    // meet it tangent there (tangent chains and fillets run on round them). The directions are
+    // the B-spline's, the lengths the derivatives' through the points.
+    let (start_tangent, end_tangent) = if periodic {
+        (None, None)
     } else {
-        3
+        let (a, b) = cadrs_sketch::spline::end_derivatives(&points);
+        let along = |d: Option<Vec2>, dir: [f64; 2]| {
+            let dir = (xf.apply(dir) - xf.apply([0.0, 0.0])).normalize();
+            d.map(|d| dir * d.length()).filter(|_| dir != Vec2::ZERO)
+        };
+        (along(a, ends[0]), along(b, ends[1]))
     };
-    let poles: Vec<[f64; 2]> = cp.chunks_exact(dim).map(|c| [c[0], c[1]]).collect();
+    Some(SketchOp::AddSpline {
+        points,
+        periodic,
+        start_tangent,
+        end_tangent,
+        construction,
+    })
+}
+
+/// How far (mm) a conic's cubic Bézier may stray from it; a conic it doesn't fit comes in as
+/// an interpolated spline (many spans, which makes the solids built on it slow).
+const CONIC_TOLERANCE: f64 = 0.02;
+
+/// The conic `poles` (a rational quadratic Bézier: x, y in m, weight) as a cubic Bézier with
+/// the same ends, end tangents and shoulder point, or, if that strays more than
+/// [`CONIC_TOLERANCE`] from it, as an interpolated spline through points on it.
+fn conic(poles: &[[f64; 3]; 3], xf: &Xf, construction: bool) -> Option<SketchOp> {
+    let knots = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    let [a, c, b] = poles.map(|p| [p[0], p[1]]);
+    // The weight with the ends' at 1, and the shoulder (the middle) is at rho of the way
+    // from the ends' midpoint to the corner; the cubic's is at 3k/4.
+    let w = poles[1][2] / (poles[0][2] * poles[2][2]).sqrt();
+    if !w.is_finite() || w <= 0.0 {
+        return None;
+    }
+    let k = 4.0 / 3.0 * w / (1.0 + w);
+    let lerp =
+        |p: [f64; 2], q: [f64; 2], t: f64| [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])];
+    let cubic = [a, lerp(a, c, k), lerp(b, c, k), b];
+    let on_cubic: Vec<[f64; 2]> = (0..=256)
+        .map(|i| {
+            let t = i as f64 / 256.0;
+            let s = 1.0 - t;
+            let w = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+            std::array::from_fn(|d| (0..4).map(|j| w[j] * cubic[j][d]).sum())
+        })
+        .collect();
+    let (on_conic, _) = sample_nurbs(poles, &knots, 2, None, false)?;
+    // Each conic point's distance to the cubic (as the polyline through its points).
+    let to_segment = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
+        let d = [r[0] - q[0], r[1] - q[1]];
+        let len2 = d[0] * d[0] + d[1] * d[1];
+        let t = if len2 > 0.0 {
+            (((p[0] - q[0]) * d[0] + (p[1] - q[1]) * d[1]) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p[0] - q[0] - t * d[0]).hypot(p[1] - q[1] - t * d[1])
+    };
+    let stray = on_conic
+        .iter()
+        .map(|&p| {
+            on_cubic
+                .windows(2)
+                .map(|s| to_segment(p, s[0], s[1]))
+                .fold(f64::INFINITY, f64::min)
+        })
+        .fold(0.0, f64::max);
+    Some(if stray * 1000.0 <= CONIC_TOLERANCE {
+        SketchOp::AddBezier {
+            points: cubic.map(|p| xf.apply(p)),
+            construction,
+        }
+    } else {
+        SketchOp::AddSpline {
+            points: on_conic.into_iter().map(|p| xf.apply(p)).collect(),
+            periodic: false,
+            start_tangent: None,
+            end_tangent: None,
+            construction,
+        }
+    })
+}
+
+/// Points on a sketch curve (x, y in m) and its derivatives (by parameter) at its start and end.
+type Samples = (Vec<[f64; 2]>, [[f64; 2]; 2]);
+
+/// 24 evenly spaced points (by parameter) on a NURBS curve: its `poles` (x, y, weight), over
+/// its whole domain or the part `span` of it. Periodic and whole, the last one is left out
+/// (it is the first). Also its derivatives (by parameter) at the start and the end.
+fn sample_nurbs(
+    poles: &[[f64; 3]],
+    knots: &[f64],
+    degree: usize,
+    span: Option<(f64, f64)>,
+    periodic: bool,
+) -> Option<Samples> {
     let n = poles.len();
     if n <= degree || knots.len() != n + degree + 1 {
         return None;
     }
-    let periodic = g["isPeriodic"].as_bool().unwrap_or(false);
     let (lo, hi) = (knots[degree], knots[n]);
-    // de Boor.
+    let (lo, hi) = span.map_or((lo, hi), |(a, b)| (a.max(lo), b.min(hi)));
+    if hi <= lo || poles.iter().any(|p| p[2] <= 0.0) {
+        return None;
+    }
+    // de Boor, in homogeneous coordinates.
+    let h: Vec<[f64; 3]> = poles
+        .iter()
+        .map(|p| [p[0] * p[2], p[1] * p[2], p[2]])
+        .collect();
     let eval = |t: f64| -> [f64; 2] {
         let mut k = degree;
         while k < n - 1 && t >= knots[k + 1] {
             k += 1;
         }
-        let mut d: Vec<[f64; 2]> = (0..=degree).map(|j| poles[j + k - degree]).collect();
+        let mut d: Vec<[f64; 3]> = (0..=degree).map(|j| h[j + k - degree]).collect();
         for r in 1..=degree {
             for j in (r..=degree).rev() {
                 let i = j + k - degree;
@@ -718,31 +878,27 @@ fn sampled_bspline(g: &Value, xf: &Xf, construction: bool) -> Option<SketchOp> {
                 } else {
                     (t - knots[i]) / den
                 };
-                d[j] = [
-                    (1.0 - a) * d[j - 1][0] + a * d[j][0],
-                    (1.0 - a) * d[j - 1][1] + a * d[j][1],
-                ];
+                d[j] = std::array::from_fn(|c| (1.0 - a) * d[j - 1][c] + a * d[j][c]);
             }
         }
-        d[degree]
+        let p = d[degree];
+        [p[0] / p[2], p[1] / p[2]]
     };
     const N: usize = 24;
-    let pts: Vec<Vec2> = if periodic {
-        (0..N)
-            .map(|i| xf.apply(eval(lo + (hi - lo) * i as f64 / N as f64)))
-            .collect()
-    } else {
-        (0..=N)
-            .map(|i| xf.apply(eval(lo + (hi - lo) * i as f64 / N as f64)))
-            .collect()
+    let last = if periodic && span.is_none() { N - 1 } else { N };
+    // The derivative at each end, inward of it (one-sided, second order).
+    let d = |t: f64, e: f64| {
+        let (p0, p1, p2) = (eval(t), eval(t + e), eval(t + 2.0 * e));
+        std::array::from_fn(|c| (4.0 * p1[c] - 3.0 * p0[c] - p2[c]) / (2.0 * e))
     };
-    Some(SketchOp::AddSpline {
-        points: pts,
-        periodic,
-        start_tangent: None,
-        end_tangent: None,
-        construction,
-    })
+    let e = (hi - lo) * 1e-6;
+    let ends = [d(lo, e), d(hi, -e)];
+    Some((
+        (0..=last)
+            .map(|i| eval(lo + (hi - lo) * i as f64 / N as f64))
+            .collect(),
+        ends,
+    ))
 }
 
 /// How far any point of `g` moved from where it is in `base` (points only in `g` ignored).

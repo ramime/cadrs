@@ -2400,7 +2400,7 @@ fn walk(d: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Replays a dumped chamfer: CADRS_REPRO_CHAMFER=<file.body>, CADRS_REPRO_EDGES=<e,e,…>,
-/// CADRS_REPRO_D=<distance> (equal distance).
+/// CADRS_REPRO_D=<distance> (equal distance; two with CADRS_REPRO_D2=<second>).
 #[test]
 #[ignore]
 fn debug_repro_chamfer() {
@@ -2431,7 +2431,12 @@ fn debug_repro_chamfer() {
         );
     }
     let v0 = k.mass_properties(b).unwrap().volume;
-    let r = k.chamfer_with(b, &edges, &ChamferOpts::new(ChamferSpec::EqualDistance(d)));
+    // (Two distances with `CADRS_REPRO_D2`.)
+    let spec = match std::env::var("CADRS_REPRO_D2") {
+        Ok(d2) => ChamferSpec::TwoDistances(d, d2.parse().unwrap()),
+        Err(_) => ChamferSpec::EqualDistance(d),
+    };
+    let r = k.chamfer_with(b, &edges, &ChamferOpts::new(spec));
     match r {
         Ok(r) => eprintln!(
             "ok: removed {}",
