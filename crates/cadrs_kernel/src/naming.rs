@@ -637,7 +637,7 @@ pub fn name_body(
     let edges = k.edges(body)?;
     let vertices = k.vertices(body)?;
     let (mut face_names, mut aliases) = name_faces_aliased(op, history, inputs, &faces);
-    split_apart_sides(op, &mut face_names, &mut aliases, &faces, &edges);
+    split_apart_pieces(op, &mut face_names, &mut aliases, &faces, &edges);
     let tol = joint_tolerance(&edges);
     Ok(BodyNames {
         edges: name_edges(&face_names, &edges, tol),
@@ -648,10 +648,11 @@ pub fn name_body(
 }
 
 /// The faces one profile curve swept (one side name of `op`'s) that don't touch, as a line
-/// the rest of the profile cuts into stretches: each edge-connected group of them is a face of
-/// its own, numbered by position as a split face's pieces are (Onshape's are separate faces).
-/// A curve's pieces that meet (a spline's spans) stay one face.
-fn split_apart_sides(
+/// the rest of the profile cuts into stretches, or one cap's that don't (a split's cut across
+/// two prongs of a part): each edge-connected group of them is a face of its own, numbered by
+/// position as a split face's pieces are (Onshape's are separate faces). A curve's pieces that
+/// meet (a spline's spans) stay one face.
+fn split_apart_pieces(
     op: OpId,
     names: &mut [FaceName],
     aliases: &mut [(FaceName, FaceName)],
@@ -660,7 +661,10 @@ fn split_apart_sides(
 ) {
     let mut by_name: HashMap<FaceName, Vec<usize>> = HashMap::new();
     for (i, n) in names.iter().enumerate() {
-        if n.op == op && n.split == 0 && matches!(n.origin, FaceOrigin::Side { .. }) {
+        if n.op == op
+            && n.split == 0
+            && matches!(n.origin, FaceOrigin::Side { .. } | FaceOrigin::Cap { .. })
+        {
             by_name.entry(*n).or_default().push(i);
         }
     }

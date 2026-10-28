@@ -2783,19 +2783,17 @@ fn face_diff(name: &str, part: &Part, details: &Value, pid: &str) {
         Some((n, d)) => {
             let flip = n.iter().find(|c| c.abs() > 1e-6).is_some_and(|c| *c < 0.0);
             let (n, d) = if flip { (n.map(|c| -c), -d) } else { (n, d) };
+            // (No "-0.00": a component that rounds to nothing is 0.)
+            let n = n.map(|c| if c.abs() < 5e-3 { 0.0 } else { c });
             format!(
                 "plane ({:.2}, {:.2}, {:.2}) {:.1}, {:.0} mm²",
-                n[0] + 0.0,
-                n[1] + 0.0,
-                n[2] + 0.0,
-                d,
-                area
+                n[0], n[1], n[2], d, area
             )
         }
         None => format!("curved, {area:.0} mm²"),
     };
     let s = &part.solid;
-    let mut ours: Vec<String> = s
+    let named: Vec<(String, &cadrs_sketch::FaceName)> = s
         .faces
         .iter()
         .map(|f| {
@@ -2814,9 +2812,10 @@ fn face_diff(name: &str, part: &Part, details: &Value, pid: &str) {
                 let n = cross(p.u, p.v);
                 (n, dot(n, p.origin))
             });
-            key(plane, area)
+            (key(plane, area), &f.name)
         })
         .collect();
+    let mut ours: Vec<String> = named.iter().map(|x| x.0.clone()).collect();
     let mut theirs: Vec<String> = details["bodies"]
         .as_array()
         .and_then(|a| a.iter().find(|b| b["id"].as_str() == Some(pid)))
@@ -2852,7 +2851,12 @@ fn face_diff(name: &str, part: &Part, details: &Value, pid: &str) {
             .collect::<Vec<_>>()
     };
     for f in only(&ours, &theirs) {
-        eprintln!("FACES {name}: only here: {f}");
+        let names: Vec<String> = named
+            .iter()
+            .filter(|x| x.0 == f)
+            .map(|x| format!("{:?}", x.1))
+            .collect();
+        eprintln!("FACES {name}: only here: {f} ({})", names.join("; "));
     }
     for f in only(&theirs, &ours) {
         eprintln!("FACES {name}: only in Onshape: {f}");

@@ -57,7 +57,16 @@ pub struct NativeKernel {
     colors: HashMap<u64, Vec<Option<[u8; 4]>>>,
     /// The DRAW layer's last offset: its input body, result and history (`savehistory`).
     pub(crate) draw_history: Option<(BodyId, BodyId, crate::History)>,
+    /// The last unions [`Kernel::joins`] found one solid, by their inputs (a body's id is never
+    /// used again, and a body never changes): a rebuild asks whether a new body joins a part,
+    /// then unites them, and the second union of two bodies of many B-spline faces cost as
+    /// much as the first (6 s each by pi7zoll-gehäuse's foot). The oldest past
+    /// [`JOINED_KEPT`] is released.
+    joined: Vec<(BodyId, BodyId, OpResult)>,
 }
+
+/// How many of [`Kernel::joins`]'s unions a session keeps for the union that may follow.
+const JOINED_KEPT: usize = 4;
 
 impl NativeKernel {
     /// An empty session at the default tolerances.
@@ -663,6 +672,15 @@ impl Kernel for NativeKernel {
     }
 
     fn boolean(&mut self, op: BoolOp, target: BodyId, tools: &[BodyId]) -> Result<OpResult> {
+        // The union [`Kernel::joins`] just made of the same two bodies.
+        if let (BoolOp::Union, [tool]) = (op, tools)
+            && let Some(i) = self
+                .joined
+                .iter()
+                .position(|(a, b, _)| *a == target && b == tool)
+        {
+            return Ok(self.joined.remove(i).2);
+        }
         let r = super::boolean::boolean(self, op, target, tools);
         // With CADRS_DUMP_DIR set, a failed boolean leaves its inputs there.
         if r.is_err() && std::env::var("CADRS_DUMP_DIR").is_ok() {
@@ -1238,7 +1256,38 @@ impl Kernel for NativeKernel {
         Ok(e.edges.get_or_init(|| edge_infos(&e.body)).clone())
     }
 
+    fn joins(&mut self, a: BodyId, b: BodyId) -> Result<bool> {
+        // [`Kernel::joins`], its union kept when it is one solid (the union the rebuild asks for
+        // next).
+        if let Some((_, _, r)) = self.joined.iter().find(|(x, y, _)| *x == a && *y == b) {
+            return Ok(self.solid_count(r.bodies[0]).unwrap_or(2) == 1);
+        }
+        let r = self.boolean(BoolOp::Union, a, &[b])?;
+        let joined = self.solid_count(r.bodies[0]).unwrap_or(2) == 1;
+        if joined {
+            self.joined.push((a, b, r));
+            if self.joined.len() > JOINED_KEPT {
+                let (_, _, old) = self.joined.remove(0);
+                for x in old.bodies {
+                    self.release(x);
+                }
+            }
+        } else {
+            for x in r.bodies {
+                self.release(x);
+            }
+        }
+        Ok(joined)
+    }
+
     fn overlaps(&mut self, a: BodyId, b: BodyId) -> Result<bool> {
+        // The union [`Kernel::joins`] kept of them: what they share is what it lacks of their
+        // volumes (no second boolean over the same faces).
+        if let Some((_, _, r)) = self.joined.iter().find(|(x, y, _)| *x == a && *y == b) {
+            let v = |id: BodyId| self.get(id).map_or(0.0, |x| super::mass::body_volume(x));
+            let (va, vb, vu) = (v(a), v(b), v(r.bodies[0]));
+            return Ok(va + vb - vu > tol::REL_POINT * (va + vb));
+        }
         // [`Kernel::overlaps`] with the intersection's volume alone (the same number as its
         // mass properties', for a fraction of the work).
         let r = self.boolean(BoolOp::Intersect, a, &[b])?;

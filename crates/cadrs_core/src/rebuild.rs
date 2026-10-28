@@ -2251,7 +2251,12 @@ mod kernel_ops {
             // 265 000-facet mesh, issue #11).
             let wanted = !surface && (e.op != BooleanOp::New || self.stage_for == Some(id));
             let contacts = if wanted {
-                self.contacts(tool.0, state, e.op == BooleanOp::New)
+                self.contacts(
+                    tool.0,
+                    state,
+                    e.op == BooleanOp::New,
+                    matches!(e.op, BooleanOp::Add | BooleanOp::New),
+                )
             } else {
                 Contacts::default()
             };
@@ -2738,7 +2743,10 @@ mod kernel_ops {
 
         /// Which parts the new body touches (Add) and overlaps (Remove, Intersect). `only_ui`:
         /// only for the dialog (a New picking Add by itself), so huge parts are left out.
-        fn contacts(&mut self, tool: BodyId, state: &State, only_ui: bool) -> Contacts {
+        /// The parts a new body touches and overlaps. `adds`: a body that adds (or may: a New),
+        /// whose overlaps only show: asked whether it touches first, the union that answers is
+        /// the one its Add makes next, and says whether it overlaps too.
+        fn contacts(&mut self, tool: BodyId, state: &State, only_ui: bool, adds: bool) -> Contacts {
             let mut out = Contacts::default();
             let Ok(tb) = self.kernel.bounding_box(tool) else {
                 return out;
@@ -2761,11 +2769,19 @@ mod kernel_ops {
                 if only_ui && self.kernel.faces(b).is_ok_and(|f| f.len() > HUGE_FACES) {
                     continue;
                 }
-                // Overlapping, else touching: their union is one solid.
-                if self.kernel.overlaps(b, tool).unwrap_or(false) {
+                // Overlapping, else touching: their union is one solid. A body that adds is asked
+                // whether it touches first (its union is the Add's); where that union fails or
+                // falls apart, whether they overlap all the same (a boolean's trouble with them).
+                let joined = adds && self.kernel.joins(b, tool).unwrap_or(false);
+                if joined {
+                    out.touches.push(p.part.id);
+                    if self.kernel.overlaps(b, tool).unwrap_or(false) {
+                        out.overlaps.push(p.part.id);
+                    }
+                } else if self.kernel.overlaps(b, tool).unwrap_or(false) {
                     out.overlaps.push(p.part.id);
                     out.touches.push(p.part.id);
-                } else if self.kernel.joins(b, tool).unwrap_or(false) {
+                } else if !adds && self.kernel.joins(b, tool).unwrap_or(false) {
                     out.touches.push(p.part.id);
                 }
             }
