@@ -135,6 +135,9 @@ enum Request {
     Blobs(Vec<(String, Vec<u8>)>),
     /// Cache keys of features not to compute (they crashed it).
     Poison(Vec<u64>),
+    /// Stop the rebuild running early ([`super::Pending::stop`]); sent while it runs, so it is
+    /// read as it comes, not after.
+    Stop,
     Rebuild {
         features: Features,
         persist: bool,
@@ -171,6 +174,9 @@ pub(super) enum Event {
     /// The build, its parts' meshes taken out ([`each_solid`]): in the same order, each mesh's
     /// id and the mesh, or only the id of one sent before ([`SOLID_WINDOW`]).
     Rebuilt(Arc<Build>, SentMeshes),
+    /// The parts of the rebuild running, as far as it has got ([`super::Pending::partial`]): a
+    /// build of only its parts, their meshes sent as [`Event::Rebuilt`]'s are.
+    Partial(Arc<Build>, SentMeshes),
     Exported(Result<Vec<StepFile>, String>),
     Projected(Result<Arc<crate::views::ViewGeometry>, String>),
     TaskDone(Result<Vec<u8>, String>),
@@ -522,6 +528,9 @@ struct Remote {
     /// A session in this process, for closures ([`super::run_on_worker`]), which can't be sent.
     local: Option<Rebuilder>,
     recent: Recent,
+    /// The stop of the rebuild being asked for ([`super::Pending::stop`]): sent on to the kernel
+    /// process once set, while the reply is awaited.
+    stop: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Remote {
@@ -540,9 +549,30 @@ impl Remote {
         }
         let conn = self.conn.as_mut().expect("just started");
         let mut computing = None;
+        let stop = self.stop.clone();
+        let mut watch = None;
         let result = (|| -> io::Result<Event> {
             conn.sync()?;
             write_msg(&mut conn.writer, request)?;
+            // While the reply is awaited: a Stop once the request's stop is set (by a thread of
+            // its own, joined before the next request, so a late one can't stop that).
+            if let Some(stop) = stop
+                && let Ok(stream) = conn.writer.get_ref().try_clone()
+            {
+                let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let finished = done.clone();
+                let thread = std::thread::spawn(move || {
+                    let mut w = BufWriter::new(stream);
+                    while !finished.load(Ordering::Relaxed) {
+                        if stop.load(Ordering::Relaxed) {
+                            let _ = write_msg(&mut w, &Request::Stop);
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                });
+                watch = Some((done, thread));
+            }
             loop {
                 match read_msg::<Event>(&mut conn.reader)? {
                     Event::Progress(done, total) => {
@@ -550,6 +580,16 @@ impl Remote {
                         PROGRESS_TOTAL.store(total, Ordering::Relaxed);
                     }
                     Event::Computing(k) => computing = k,
+                    Event::Partial(b, solids) => {
+                        let mut b = Arc::unwrap_or_clone(b);
+                        if conn
+                            .solids
+                            .restore(&mut b, solids, &mut self.recent)
+                            .is_ok()
+                        {
+                            super::keep_partial(b.parts);
+                        }
+                    }
                     Event::Blob(hash, bytes) => {
                         crate::blobs::insert_known(&hash, bytes);
                         conn.blobs.insert(hash);
@@ -559,6 +599,10 @@ impl Remote {
                 }
             }
         })();
+        if let Some((done, thread)) = watch {
+            done.store(true, Ordering::Relaxed);
+            let _ = thread.join();
+        }
         result.map_err(|e| {
             let how = self.conn.take().map_or_else(|| e.to_string(), Conn::stop);
             eprintln!("cadrs: the geometry kernel process ended ({how}); the next request starts a new one");
@@ -622,14 +666,24 @@ impl Remote {
             match job {
                 Job::Rebuild {
                     features,
+                    ticket,
                     reply,
                     cancelled,
                     persist,
                 } => {
                     if cancelled.load(Ordering::Relaxed) {
+                        let _ = reply.send(Arc::new(Build {
+                            stopped: true,
+                            ..Build::default()
+                        }));
                         continue;
                     }
-                    let _ = reply.send(Arc::new(self.rebuild(features, persist)));
+                    super::start_progress(ticket);
+                    self.stop = Some(cancelled);
+                    let build = self.rebuild(features, persist);
+                    self.stop = None;
+                    super::clear_partial();
+                    let _ = reply.send(Arc::new(build));
                 }
                 Job::Export {
                     features,
@@ -725,6 +779,7 @@ pub(super) fn run_remote(rx: mpsc::Receiver<Job>) {
         poisoned: Vec::new(),
         local: None,
         recent: Recent::default(),
+        stop: None,
     }
     .run(rx);
 }
@@ -739,6 +794,23 @@ static SINK: OnceLock<Sink> = OnceLock::new();
 
 /// Features not to compute: their cache keys (in the kernel process).
 static POISONED: RwLock<Option<HashSet<u64>>> = RwLock::new(None);
+
+/// Sends the parts of the rebuild running to the app (set in the kernel process).
+type PartialSink = Box<dyn Fn(&[crate::parts::Part]) + Send + Sync>;
+
+static PARTIAL_SINK: OnceLock<PartialSink> = OnceLock::new();
+
+/// Sends `parts`, those of the rebuild running as far as it has got, to the app: `false` outside
+/// the kernel process (the caller keeps them, [`super::keep_partial`]).
+pub(super) fn send_partial(parts: &[crate::parts::Part]) -> bool {
+    match PARTIAL_SINK.get() {
+        Some(s) => {
+            s(parts);
+            true
+        }
+        None => false,
+    }
+}
 
 /// Tells the app (from the kernel process; nothing elsewhere).
 pub(super) fn emit(e: &Event) {
@@ -844,15 +916,54 @@ pub fn main(args: &[String]) -> i32 {
         .name("cadrs-rebuild".into())
         .spawn(move || super::run(rx))
         .expect("failed to start the rebuild thread");
-    let mut reader = BufReader::new(read);
-    let mut sent = SentSolids::default();
+    // The requests, read as they come: a Stop sets the stop of the rebuild running then (the
+    // loop below waits for that rebuild), the others queue for the loop.
+    let running: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> = Arc::default();
+    let (requests, queued) = mpsc::channel::<Request>();
+    let stop_of = running.clone();
+    std::thread::Builder::new()
+        .name("cadrs-kernel-requests".into())
+        .spawn(move || {
+            let mut reader = BufReader::new(read);
+            while let Ok(request) = read_msg::<Request>(&mut reader) {
+                if let Request::Stop = request {
+                    if let Ok(r) = stop_of.lock()
+                        && let Some(stop) = r.as_ref()
+                    {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    continue;
+                }
+                if requests.send(request).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("failed to start the request reader");
+    // The meshes sent, shared with the rebuild thread's parts sent as it goes.
+    let sent = Arc::new(Mutex::new(SentSolids::default()));
+    let partial_sent = sent.clone();
+    let partial_writer = writer.clone();
+    let _ = PARTIAL_SINK.set(Box::new(move |parts: &[crate::parts::Part]| {
+        let b = Build {
+            parts: parts.to_vec(),
+            ..Build::default()
+        };
+        let Ok(mut sent) = partial_sent.lock() else {
+            return;
+        };
+        let (b, solids) = sent.strip(&b);
+        if let Ok(mut w) = partial_writer.lock() {
+            let _ = write_msg(&mut *w, &Event::Partial(Arc::new(b), solids));
+        }
+    }));
     let send = |e: &Event| -> bool {
         writer
             .lock()
             .is_ok_and(|mut w| write_msg(&mut *w, e).is_ok())
     };
     loop {
-        let Ok(request) = read_msg::<Request>(&mut reader) else {
+        let Ok(request) = queued.recv() else {
             return 0;
         };
         let reply = match request {
@@ -884,17 +995,30 @@ pub fn main(args: &[String]) -> i32 {
                 }
                 continue;
             }
+            // (Read by the request reader as it comes.)
+            Request::Stop => continue,
             Request::Rebuild { features, persist } => {
                 let (reply, rx) = mpsc::channel();
                 let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                if let Ok(mut r) = running.lock() {
+                    *r = Some(cancelled.clone());
+                }
                 let _ = tx.send(Job::Rebuild {
                     features: features.into_list(),
+                    ticket: 0,
                     reply,
                     cancelled,
                     persist,
                 });
-                match rx.recv() {
+                let got = rx.recv();
+                if let Ok(mut r) = running.lock() {
+                    *r = None;
+                }
+                match got {
                     Ok(b) => {
+                        let Ok(mut sent) = sent.lock() else {
+                            return 1;
+                        };
                         let (b, solids) = sent.strip(&b);
                         Event::Rebuilt(Arc::new(b), solids)
                     }

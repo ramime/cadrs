@@ -118,6 +118,9 @@ pub struct Build {
     /// contexts", SM1.3), in list order; a failed model keeps its context (the flat view shows
     /// why, SM1.5).
     pub sheet_metal: Vec<crate::sheetmetal::SheetMetalContext>,
+    /// It was stopped before it finished ([`Pending::stop`], a newer request for the same list):
+    /// its parts are those of the features before where it stopped. Never the list's result.
+    pub stopped: bool,
 }
 
 /// P3D.1: how a feature came out of the last rebuild.
@@ -383,6 +386,9 @@ const MAX_ENTRIES: usize = 1024;
 pub struct Rebuilder {
     #[cfg(feature = "brep")]
     kernel: cadrs_kernel::DefaultKernel,
+    /// Set while a rebuild may be stopped early: it stops before the next feature it would
+    /// compute once this is set ([`Pending::stop`]).
+    stop: Option<Arc<AtomicBool>>,
     entries: HashMap<u64, Entry>,
     generation: u64,
     /// The feature whose [`Stage`] is worth meshing (the last part feature).
@@ -440,6 +446,58 @@ pub fn progress() -> (usize, usize) {
 
 static PROGRESS_DONE: AtomicUsize = AtomicUsize::new(0);
 static PROGRESS_TOTAL: AtomicUsize = AtomicUsize::new(0);
+/// The rebuild [`progress`] is of: its [`Pending::ticket`].
+static PROGRESS_TICKET: AtomicU64 = AtomicU64::new(0);
+/// The tickets [`request`] hands out.
+static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
+/// The parts of the rebuild running as far as it has got, by its ticket ([`Pending::partial`]).
+static PARTIAL: Mutex<Option<(u64, Arc<Vec<Part>>)>> = Mutex::new(None);
+
+/// How long a rebuild runs before it shows its parts as it goes ([`Pending::partial`]), and how
+/// often it shows them after that: quick ones never do (an edit at the end of a list would show
+/// the parts as they were before it, then after).
+const PARTIAL_AFTER: Duration = Duration::from_millis(400);
+const PARTIAL_EVERY: Duration = Duration::from_millis(150);
+
+/// Starts the progress of the rebuild with this ticket: nothing done yet, no parts to show.
+pub(crate) fn start_progress(ticket: u64) {
+    PROGRESS_TICKET.store(ticket, Ordering::Relaxed);
+    PROGRESS_DONE.store(0, Ordering::Relaxed);
+    PROGRESS_TOTAL.store(0, Ordering::Relaxed);
+    clear_partial();
+}
+
+/// Forgets the parts of the rebuild that was running (it finished).
+pub(crate) fn clear_partial() {
+    if let Ok(mut p) = PARTIAL.lock() {
+        *p = None;
+    }
+}
+
+/// Keeps `parts` as those of the rebuild running ([`Pending::partial`]): the kernel process
+/// sends them to the app, which keeps them so.
+pub(crate) fn keep_partial(parts: Vec<Part>) {
+    if let Ok(mut p) = PARTIAL.lock() {
+        *p = Some((PROGRESS_TICKET.load(Ordering::Relaxed), Arc::new(parts)));
+    }
+}
+
+/// The parts a build of `state` lists: all but the members of a closed composite part (P3H.6),
+/// without the connectors the finished build adds to them. What a rebuild still running shows.
+fn listed_parts(state: &State) -> Vec<Part> {
+    let absorbed: HashSet<PartId> = state
+        .composites
+        .iter()
+        .filter(|c| c.closed && state.part(c.part).is_some())
+        .flat_map(|c| c.members.iter().copied())
+        .collect();
+    state
+        .parts
+        .iter()
+        .filter(|p| !absorbed.contains(&p.part.id))
+        .map(|p| p.part.clone())
+        .collect()
+}
 
 thread_local! {
     /// Set on the rebuild thread: its rebuilds report [`progress`].
@@ -541,6 +599,7 @@ impl Rebuilder {
         Self {
             #[cfg(feature = "brep")]
             kernel: cadrs_kernel::DefaultKernel::new(),
+            stop: None,
             entries: HashMap::new(),
             generation: 0,
             stage_for: None,
@@ -645,6 +704,8 @@ impl Rebuilder {
             PROGRESS_TOTAL.store(total, Ordering::Relaxed);
             process::emit(&process::Event::Progress(0, total));
         }
+        // When the parts were last shown as far as the rebuild had got, and what they were.
+        let mut shown: Option<(Instant, Arc<State>)> = None;
         for i in 0..last.map_or(0, |l| l + 1) {
             let f = &features[i];
             key = chain_key(key, f);
@@ -680,7 +741,20 @@ impl Rebuilder {
             {
                 self.release_unheld(e.output.owned);
             }
-            if !self.entries.contains_key(&key) {
+            let computed = !self.entries.contains_key(&key);
+            // Asked to stop (a newer request waits): before the next feature it would compute,
+            // the parts as far as it got (those computed stay cached for the next one).
+            if computed
+                && self.depth == 0
+                && self
+                    .stop
+                    .as_ref()
+                    .is_some_and(|s| s.load(Ordering::Relaxed))
+            {
+                out.stopped = true;
+                break;
+            }
+            if computed {
                 out.computed += 1;
                 // Only the last feature's stage is kept (the one a dialog edits).
                 self.stage_for = (Some(i) == last).then_some(f.id);
@@ -736,6 +810,20 @@ impl Rebuilder {
             }
             let entry = self.entries.get(&key).expect("just inserted");
             state = entry.output.state.clone();
+            // A long rebuild shows its parts as it goes, after the features it computes.
+            if report
+                && computed
+                && start.elapsed() >= PARTIAL_AFTER
+                && shown
+                    .as_ref()
+                    .is_none_or(|(at, s)| at.elapsed() >= PARTIAL_EVERY && !Arc::ptr_eq(s, &state))
+            {
+                let parts = listed_parts(&state);
+                if !process::send_partial(&parts) {
+                    keep_partial(parts);
+                }
+                shown = Some((Instant::now(), state.clone()));
+            }
             out.times.push((f.id, entry.time));
             self.trail.push((f.id, state.clone()));
             for p in &state.parts {
@@ -3803,6 +3891,8 @@ pub fn sketch_chains(sketch: FeatureId, g: &Sketch) -> Vec<ChainGeom> {
 enum Job {
     Rebuild {
         features: Vec<Feature>,
+        /// Which request it is ([`Pending::ticket`]).
+        ticket: u64,
         reply: mpsc::Sender<Arc<Build>>,
         cancelled: Arc<AtomicBool>,
         /// The app's rebuild of a Part Studio: restored from and saved to the session
@@ -3954,20 +4044,28 @@ fn run_job(rebuilder: &mut Rebuilder, job: Job, pending_save: &mut PendingSave) 
     match job {
         Job::Rebuild {
             features,
+            ticket,
             reply,
             cancelled,
             persist,
         } => {
             if cancelled.load(Ordering::Relaxed) {
+                let _ = reply.send(Arc::new(Build {
+                    stopped: true,
+                    ..Build::default()
+                }));
                 return;
             }
+            start_progress(ticket);
             #[cfg(feature = "brep")]
             if persist {
                 let _ = catch_unwind(AssertUnwindSafe(|| rebuilder.restore_snapshot(&features)));
             }
             #[cfg(not(feature = "brep"))]
             let _ = persist;
+            rebuilder.stop = Some(cancelled.clone());
             let result = catch_unwind(AssertUnwindSafe(|| rebuilder.rebuild(&features)));
+            rebuilder.stop = None;
             let build = match result {
                 Ok(b) => b,
                 Err(_) => {
@@ -3977,9 +4075,10 @@ fn run_job(rebuilder: &mut Rebuilder, job: Job, pending_save: &mut PendingSave) 
                 }
             };
             #[cfg(feature = "brep")]
-            if persist && build.computed > 0 {
+            if persist && build.computed > 0 && !build.stopped {
                 *pending_save = rebuilder.plan_save(&features);
             }
+            clear_partial();
             let _ = reply.send(Arc::new(build));
         }
         Job::Export {
@@ -4345,9 +4444,40 @@ pub struct Pending {
     rx: Mutex<mpsc::Receiver<Arc<Build>>>,
     cancelled: Arc<AtomicBool>,
     done: Option<Arc<Build>>,
+    ticket: u64,
 }
 
 impl Pending {
+    /// Which request it is: [`progress`] and the parts shown as it goes are of one at a time.
+    pub fn ticket(&self) -> u64 {
+        self.ticket
+    }
+
+    /// Stops it early, a newer request waiting: before the next feature it would compute (not
+    /// at all if it hasn't started). Its result is then [`Build::stopped`].
+    pub fn stop(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    /// How far it is (part features done, part features in all) while it runs: `None` before
+    /// it starts (another rebuild still running) and once it is done.
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        (self.done.is_none() && PROGRESS_TICKET.load(Ordering::Relaxed) == self.ticket)
+            .then(progress)
+    }
+
+    /// Its parts as far as it has got, while it runs for longer than a moment: after the
+    /// features it computed, so often (the same list again until it gets further).
+    pub fn partial(&self) -> Option<Arc<Vec<Part>>> {
+        if self.done.is_some() {
+            return None;
+        }
+        let p = PARTIAL.lock().ok()?;
+        p.as_ref()
+            .filter(|(t, _)| *t == self.ticket)
+            .map(|(_, parts)| parts.clone())
+    }
+
     /// The result, if the rebuild finished.
     pub fn poll(&mut self) -> Option<Arc<Build>> {
         self.wait(Some(Duration::ZERO))
@@ -4393,8 +4523,10 @@ pub fn request_persisted(features: Vec<Feature>) -> Pending {
 fn request_with(features: Vec<Feature>, persist: bool) -> Pending {
     let (reply, rx) = mpsc::channel();
     let cancelled = Arc::new(AtomicBool::new(false));
+    let ticket = NEXT_TICKET.fetch_add(1, Ordering::Relaxed);
     let job = Job::Rebuild {
         features,
+        ticket,
         reply,
         cancelled: cancelled.clone(),
         persist,
@@ -4404,6 +4536,7 @@ fn request_with(features: Vec<Feature>, persist: bool) -> Pending {
         rx: Mutex::new(rx),
         cancelled,
         done: None,
+        ticket,
     };
     if !sent {
         pending.done = Some(Arc::new(Build::default()));

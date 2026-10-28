@@ -11,7 +11,7 @@ use crate::AppState;
 use crate::parts::PartCache;
 
 /// How long a rebuild runs before the pill shows (quick ones never flash it).
-const SHOW_AFTER_SECS: f32 = 0.4;
+pub(crate) const SHOW_AFTER_SECS: f32 = 0.4;
 
 pub struct RebuildIndicatorPlugin;
 

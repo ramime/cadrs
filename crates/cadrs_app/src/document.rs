@@ -66,7 +66,9 @@ impl Plugin for DocumentPlugin {
                     finish_loading,
                     rebuild_tabs,
                     rebuild_element_ui,
-                    rebuild_feature_rows.after(crate::sketch_constrain::update_analysis),
+                    rebuild_feature_rows
+                        .after(crate::sketch_constrain::update_analysis)
+                        .in_set(FeatureRowsSet),
                     space_features_header.after(rebuild_feature_rows),
                     sync_document_name,
                     crate::units_dialog::sync_units,
@@ -193,6 +195,11 @@ enum StripEntry {
 /// A feature's row in the feature list.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct FeatureRow(pub FeatureId);
+
+/// Where the feature list's rows are spawned (again whenever they change): what styles them in
+/// place runs after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FeatureRowsSet;
 
 /// The container of the feature rows (between Default geometry and the rollback bar).
 #[derive(Component)]

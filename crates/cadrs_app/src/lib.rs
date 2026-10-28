@@ -80,6 +80,7 @@ pub mod plane_display;
 pub mod preferences_ui;
 pub mod properties_dialog;
 pub mod rebuild_indicator;
+pub mod rebuild_rows;
 pub mod reference_manager;
 pub mod region_select;
 pub mod render_ui;
@@ -697,6 +698,7 @@ impl Plugin for CadrsAppPlugin {
             ))
             .add_plugins((
                 rebuild_indicator::RebuildIndicatorPlugin,
+                rebuild_rows::RebuildRowsPlugin,
                 accept::AcceptPlugin,
                 frame_stats::FrameStatsPlugin,
                 frame_profile::FrameProfilePlugin,

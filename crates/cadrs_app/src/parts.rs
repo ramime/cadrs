@@ -462,6 +462,20 @@ impl Default for RebuildBudget {
 struct PendingRebuild {
     element: ElementId,
     rebuild: cadrs_core::rebuild::Pending,
+    /// The features it rebuilds, in order, each with whether it is a part feature (those its
+    /// progress counts).
+    order: Vec<(FeatureId, bool)>,
+    /// Its part features' cache keys ([`cadrs_core::rebuild::chain_keys`]): those it shares
+    /// with the rebuild before it are cached, done as soon as it starts.
+    keys: Vec<u64>,
+}
+
+/// Where a feature of the rebuild running stands ([`PartCache::rebuild_steps`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildStep {
+    Done,
+    Busy,
+    Queued,
 }
 
 /// A direction arrow in the view: its origin and unit direction.
@@ -1028,6 +1042,61 @@ impl PartCache {
         self.generation += 1;
     }
 
+    /// Where each feature of the rebuild running stands: the part features before the one being
+    /// computed done (taken from the cache or computed), that one busy and the rest queued, a
+    /// sketch as far as the part features before it are. Before it starts (the rebuild before
+    /// it still stopping), the part features it shares with that one done and the rest queued.
+    /// `None` while nothing rebuilds.
+    pub fn rebuild_steps(&self) -> Option<Vec<(FeatureId, RebuildStep)>> {
+        let p = self.pending.as_ref().filter(|_| self.rebuilding)?;
+        let done = p.rebuild.progress().map(|(done, _)| done);
+        // Not started: as far as its keys are those of the rebuild before it (cached).
+        let shared = self.superseded.as_ref().map_or(0, |old| {
+            p.keys
+                .iter()
+                .zip(&old.keys)
+                .take_while(|(a, b)| a == b)
+                .count()
+        });
+        let mut parts = 0;
+        Some(
+            p.order
+                .iter()
+                .map(|&(id, part)| {
+                    let step = match done {
+                        None if parts < shared || (!part && parts == shared && shared > 0) => {
+                            RebuildStep::Done
+                        }
+                        None => RebuildStep::Queued,
+                        Some(d) if parts < d => RebuildStep::Done,
+                        Some(d) if part && parts == d => RebuildStep::Busy,
+                        Some(d) if parts == d => RebuildStep::Done,
+                        Some(_) => RebuildStep::Queued,
+                    };
+                    if part {
+                        parts += 1;
+                    }
+                    (id, step)
+                })
+                .collect(),
+        )
+    }
+
+    /// Shows the parts of a rebuild still running, as far as it has got: only the parts (the
+    /// errors, times and a dialog's stage wait for the finished build, [`Self::apply`]).
+    fn apply_partial(&mut self, parts: &[Part]) {
+        let same = self.parts.len() == parts.len()
+            && self.parts.iter().zip(parts).all(|(a, b)| {
+                a.id == b.id && a.name == b.name && std::sync::Arc::ptr_eq(&a.solid, &b.solid)
+            });
+        if same {
+            return;
+        }
+        self.generation += 1;
+        self.bounds = parts.iter().filter_map(|p| p.solid.bounds()).collect();
+        self.parts = parts.to_vec();
+    }
+
     /// Takes a finished rebuild's parts and errors. While `editing` is an Add extrude (the
     /// last part feature), the parts are the ones before it and [`Self::tool`] its new body
     /// (`over_result`: the parts are the result, the body faint over them).
@@ -1408,10 +1477,11 @@ fn update_part_cache(
             && let Some(p) = &mut cache.superseded
             && let Some(build) = p.rebuild.poll()
         {
-            // An older rebuild finished first: show it while the newer one runs.
+            // An older rebuild finished first: show it while the newer one runs (not one
+            // stopped early for it: that has only the parts as far as it got).
             let same_element = p.element == el.id;
             cache.superseded = None;
-            if same_element {
+            if same_element && !build.stopped {
                 log.0.push((features.len(), build.computed, build.elapsed));
                 cache.apply(
                     &build,
@@ -1421,6 +1491,13 @@ fn update_part_cache(
                 );
                 cache.rebuilding = true;
             }
+        } else if *over == PartOverride::default()
+            && let Some(p) = &cache.pending
+            && p.element == el.id
+            && let Some(parts) = p.rebuild.partial()
+        {
+            // A long rebuild's parts as far as it has got (not while a dialog shows its edit).
+            cache.apply_partial(&parts);
         }
         return;
     }
@@ -1434,12 +1511,14 @@ fn update_part_cache(
     // Rebuild on the kernel thread; wait a little so quick rebuilds show in this frame.
     // Restored from the session snapshot of these features when the session doesn't have them
     // (a document opened again), and snapshotted afterwards.
-    // The rebuild running now keeps running (one at most; a queued one is cancelled), so its
-    // result can show before this one's.
+    // The rebuild running now stops before the next feature it would compute (one at most; a
+    // queued one is cancelled): the features it got through stay cached for this one, and its
+    // result shows before this one's only if it was already on its last feature.
     if let Some(old) = cache.pending.take()
         && old.element == el.id
         && cache.superseded.is_none()
     {
+        old.rebuild.stop();
         cache.superseded = Some(old);
     }
     let mut rebuild = cadrs_core::rebuild::request_persisted(effective.clone());
@@ -1478,6 +1557,11 @@ fn update_part_cache(
             cache.pending = Some(PendingRebuild {
                 element: el.id,
                 rebuild,
+                order: effective
+                    .iter()
+                    .map(|f| (f.id, f.is_part_feature()))
+                    .collect(),
+                keys: cadrs_core::rebuild::chain_keys(&effective),
             });
         }
     }
