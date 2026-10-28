@@ -3853,6 +3853,9 @@ struct Link {
     after: usize,
     /// On the edge's extension past the vertex (the faces meet beyond the edge there).
     past: bool,
+    /// The vertex that extension runs on from: the edge's vertex at the end's own, or one a
+    /// step along a fillet face's boundary from it ([`step_along`]).
+    at: usize,
 }
 
 /// The faces round the end j's vertex between those the rails leave into, and where the strip
@@ -4030,6 +4033,7 @@ fn end_chain(b: &Body, ef: &EdgeFillet, j: usize, exits: &[Exit; 2]) -> Result<V
             mark,
             after,
             past: false,
+            at: v,
         });
         if after == exits[1].into {
             return Ok(links);
@@ -4046,70 +4050,162 @@ fn end_chain(b: &Body, ef: &EdgeFillet, j: usize, exits: &[Exit; 2]) -> Result<V
 /// each face round the vertex in turn (from those the rails leave into) until it reaches the
 /// next one's surface, past the vertex on the edge's extension between them (the fillet adds
 /// to those faces, or uncovers a face under the corner it takes away); on the last face, or
-/// on any it runs to the other rail's exit on, to there.
+/// on any it runs to the other rail's exit on, to there. Where the next face round the vertex
+/// is the fillet's own (a rail leaving into a face that doesn't reach the vertex: a chamfer's
+/// face at the vertex, the wall's top beside it), the faces meet a step along that face's
+/// boundary instead, and the cut goes on round the vertex there.
 fn end_chain_traced(b: &Body, ef: &EdgeFillet, j: usize, exits: &[Exit; 2]) -> Result<Vec<Link>> {
-    let v = b.edges[ef.e].v[j];
-    let edges = vertex_edges(b, v);
+    let mut v = b.edges[ef.e].v[j];
+    let steps = vertex_edges(b, v).len() + 4;
     let (mut prev, mut cur) = (ef.faces[0], exits[0].into);
     let mut links: Vec<Link> = Vec::new();
     let mut from = Mark::rail(exits[0].t, exits[0].ball, 0);
     let to = Mark::rail(exits[1].t, exits[1].ball, 1);
     let tol = tol::REL_POINT * (1.0 + ef.r());
-    for _ in 0..edges.len() {
+    let round = || unsupported("a fillet end whose faces don't go round its vertex");
+    // The edge at vertex u between faces f and g.
+    let between = |u: usize, f: usize, g: usize| {
+        vertex_edges(b, u)
+            .into_iter()
+            .find(|&x| {
+                sides(b, x).is_ok_and(|[(p, _), (q, _)]| (p, q) == (f, g) || (p, q) == (g, f))
+            })
+            .ok_or_else(round)
+    };
+    // The cut on face `cur` from `from` traced until it reaches face `after`'s surface, on
+    // their edge d (at vertex u) or its extension past u; `None` where it runs to the other
+    // rail's exit instead.
+    let meet =
+        |cur: usize, after: usize, d: usize, u: usize, from: &Mark| -> Result<Option<Link>> {
+            let (_, at) =
+                trace_until(b, ef, &b.faces[cur], from, &to, Some(&b.faces[after]), None)?;
+            let Some(mark) = at else {
+                debug(|| {
+                    format!(
+                        "edge {} end {j}: the cut on face {cur} runs to the other rail's exit",
+                        ef.e
+                    )
+                });
+                return Ok(None);
+            };
+            let de = &b.edges[d];
+            let tx = de.curve.closest(&mark.p, de.t[0] - 1e6, de.t[1] + 1e6);
+            let past = !(de.t[0] - tol::ROUNDOFF..=de.t[1] + tol::ROUNDOFF).contains(&tx);
+            // Past its end at u, not its other one.
+            let beyond_u = if de.v[0] == u {
+                tx < de.t[0]
+            } else {
+                tx > de.t[1]
+            };
+            if past && ((de.curve.point(tx) - mark.p).norm() > tol || !beyond_u) {
+                return Err(unsupported(
+                    "a fillet end whose faces meet past a vertex away from their edge's curve",
+                ));
+            }
+            debug(|| {
+                format!(
+                    "edge {} end {j}: the cut meets face {after} at {:?}{}",
+                    ef.e,
+                    mark.p,
+                    if past { " past the vertex" } else { "" }
+                )
+            });
+            Ok(Some(Link {
+                mark,
+                after,
+                past,
+                at: u,
+            }))
+        };
+    // Rail 0 leaving into a face that doesn't reach the vertex: it meets the face round the
+    // vertex beside rail 0's a step back along that face's boundary, where the cut crosses
+    // onto it first.
+    let on = |d: usize, f: usize| sides(b, d).is_ok_and(|[(p, _), (q, _)]| p == f || q == f);
+    if !vertex_edges(b, v).iter().any(|&d| on(d, cur)) {
+        let (d0, h) = vertex_edges(b, v)
+            .into_iter()
+            .filter(|&d| d != ef.e && on(d, ef.faces[0]))
+            .find_map(|d| {
+                let h = beyond(b, d, ef.faces[0])?;
+                (h != ef.faces[1]).then_some((d, h))
+            })
+            .ok_or_else(round)?;
+        let (u, _) = step_along(b, ef.faces[0], d0, v, h)
+            .filter(|&(_, g)| g == cur)
+            .ok_or_else(round)?;
+        let d = between(u, cur, h)?;
+        debug(|| {
+            format!(
+                "edge {} end {j}: faces {cur} and {h} meet along face {}'s boundary at vertex {u} (edge {d})",
+                ef.e, ef.faces[0]
+            )
+        });
+        let Some(l) = meet(cur, h, d, u, &from)? else {
+            return Ok(links);
+        };
+        from = l.mark;
+        links.push(l);
+        cur = h;
+    }
+    for _ in 0..steps {
         if cur == exits[1].into {
             return Ok(links);
         }
         let mut next = None;
-        for &d in &edges {
+        for d in vertex_edges(b, v) {
             let [(a, _), (o, _)] = sides(b, d)?;
             if d != ef.e && ((a == cur && o != prev) || (o == cur && a != prev)) {
                 next = Some((d, if a == cur { o } else { a }));
             }
         }
-        let (d, after) = next
-            .filter(|x| !ef.faces.contains(&x.1))
-            .ok_or_else(|| unsupported("a fillet end whose faces don't go round its vertex"))?;
-        let (_, at) = trace_until(
-            b,
-            ef,
-            &b.faces[cur],
-            &from,
-            &to,
-            Some(&b.faces[after]),
-            None,
-        )?;
-        let Some(mark) = at else {
+        let (mut d, mut after) = next.ok_or_else(round)?;
+        // Into a fillet face: the faces meet a step along its boundary.
+        if ef.faces.contains(&after) {
+            let (u, g) = step_along(b, after, d, v, cur)
+                .filter(|&(_, g)| !ef.faces.contains(&g))
+                .ok_or_else(round)?;
+            d = between(u, cur, g)?;
             debug(|| {
                 format!(
-                    "edge {} end {j}: the cut on face {cur} runs to the other rail's exit",
+                    "edge {} end {j}: faces {cur} and {g} meet along face {after}'s boundary at vertex {u} (edge {d})",
                     ef.e
                 )
             });
+            (v, after) = (u, g);
+        }
+        let Some(l) = meet(cur, after, d, v, &from)? else {
             return Ok(links);
         };
-        // On the edge itself, or on its extension past the vertex.
-        let de = &b.edges[d];
-        let tx = de.curve.closest(&mark.p, de.t[0] - 1e6, de.t[1] + 1e6);
-        let past = !(de.t[0] - tol::ROUNDOFF..=de.t[1] + tol::ROUNDOFF).contains(&tx);
-        if past && (de.curve.point(tx) - mark.p).norm() > tol {
-            return Err(unsupported(
-                "a fillet end whose faces meet past a vertex away from their edge's curve",
-            ));
-        }
-        debug(|| {
-            format!(
-                "edge {} end {j}: the cut meets face {after} at {:?}{}",
-                ef.e,
-                mark.p,
-                if past { " past the vertex" } else { "" }
-            )
-        });
-        links.push(Link { mark, after, past });
-        (prev, cur, from) = (cur, after, mark);
+        from = l.mark;
+        links.push(l);
+        (prev, cur) = (cur, after);
     }
-    Err(unsupported(
-        "a fillet end whose faces don't go round its vertex",
-    ))
+    Err(round())
+}
+
+/// From vertex `v` along face `own`'s boundary by its edge `d` (between it and face `cur`), on
+/// past the edges still between it and `cur`: the vertex where the face across changes, and
+/// that face.
+fn step_along(b: &Body, own: usize, d: usize, v: usize, cur: usize) -> Option<(usize, usize)> {
+    let l = b.faces[own]
+        .loops
+        .iter()
+        .find(|l| l.iter().any(|c| c.edge == d))?;
+    let n = l.len();
+    let mut k = l.iter().position(|c| c.edge == d)?;
+    // Away from v round the loop.
+    let fwd = b.co_start(&l[k]) == v;
+    let far = |c: &Coedge| if fwd { b.co_end(c) } else { b.co_start(c) };
+    let mut u = far(&l[k]);
+    for _ in 1..n {
+        k = if fwd { (k + 1) % n } else { (k + n - 1) % n };
+        let g = beyond(b, l[k].edge, own)?;
+        if g != cur {
+            return Some((u, g));
+        }
+        u = far(&l[k]);
+    }
+    None
 }
 
 /// The geometry of all strips' ends.
@@ -10792,19 +10888,22 @@ fn trim(
                         rv[j][0],
                         exits[0].into,
                     )];
-                    let mut ext: Vec<Option<usize>> = Vec::new();
+                    // (Each extension with the vertex it runs on from: v, or one a step along a
+                    // fillet face's boundary from it.)
+                    let mut ext: Vec<Option<(usize, usize)>> = Vec::new();
                     for l in links {
                         if l.past {
                             let xv = nb.add_vertex(l.mark.p);
                             let d = common_edge(b, marks[marks.len() - 1].2, l.after)
-                                .filter(|&d| b.edges[d].v.contains(&v))
+                                .filter(|&d| b.edges[d].v.contains(&l.at))
                                 .ok_or_else(|| {
                                     failed("end", "a fillet end's faces don't meet at its vertex")
                                 })?;
                             let de = &b.edges[d];
                             let tx = de.curve.closest(&l.mark.p, de.t[0] - 1e6, de.t[1] + 1e6);
-                            let tv = if de.v[0] == v { de.t[0] } else { de.t[1] };
-                            ext.push(Some(add_edge(&mut nb, de.curve.clone(), tv, tx, v, xv)));
+                            let tv = if de.v[0] == l.at { de.t[0] } else { de.t[1] };
+                            let x = add_edge(&mut nb, de.curve.clone(), tv, tx, l.at, xv);
+                            ext.push(Some((x, l.at)));
                             marks.push((l.mark, xv, l.after));
                         } else {
                             let xv = vertex_on_boundary(&mut nb, l.after, &l.mark.p, vtol)
@@ -10885,15 +10984,15 @@ fn trim(
                         // (through the extensions where the faces meet past it).
                         let mut path = Vec::new();
                         let mut from = marks[i].1;
-                        if let Some(x) = before {
-                            from = v;
+                        if let Some((x, at)) = before {
+                            from = at;
                             path.push((x, true));
                         }
                         path.push((ee, true));
                         let mut to = marks[i + 1].1;
-                        if let Some(x) = after {
+                        if let Some((x, at)) = after {
                             path.push((x, false));
-                            to = v;
+                            to = at;
                         }
                         if i == last && g != exits[1].into {
                             // The cut ran to the other rail's exit on this face: back to the
@@ -10909,12 +11008,19 @@ fn trim(
                             path.push((back, nb.edges[back].v[0] == to));
                             to = v;
                         }
+                        // The stretch replaced passes the vertex where the face has it (else, a
+                        // face a step along a fillet face's boundary, it's the shorter way).
+                        let at_v = b.faces[g]
+                            .loops
+                            .iter()
+                            .flatten()
+                            .any(|c| b.co_start(c) == v);
                         out.patches.push(Patch {
                             face: g,
                             from,
                             to,
                             path,
-                            via: (from != v && to != v).then_some(v),
+                            via: (from != v && to != v && at_v).then_some(v),
                             stretch: Vec::new(),
                         });
                     }
