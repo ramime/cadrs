@@ -273,6 +273,80 @@ fn shapes_are_watertight_and_within_the_chord() {
     }
 }
 
+/// A 10 mm box shelled open at its front and top with 1 mm walls, its back face chamfered 1 mm
+/// (issue 156): the chamfer eats the back wall's rim whole, so the top rim is left one face
+/// pinched to no width along the chamfer, with two boundary edges along one line (the inner
+/// back wall's, and the chamfer's running on past its ends). The triangulation splits the
+/// chamfer's edge at the other's ends; the face's triangles still cover it, no more.
+#[test]
+fn a_face_pinched_to_no_width_along_a_line() {
+    let mut k = NativeKernel::new();
+    let square = region(vec![
+        line(p(-5.0, -5.0), p(5.0, -5.0)),
+        line(p(5.0, -5.0), p(5.0, 5.0)),
+        line(p(5.0, 5.0), p(-5.0, 5.0)),
+        line(p(-5.0, 5.0), p(-5.0, -5.0)),
+    ]);
+    let block = k
+        .extrude(
+            &Profile::new(Plane::top(), vec![square]),
+            Extent::Blind(10.0),
+        )
+        .unwrap()
+        .bodies[0];
+    let open: Vec<FaceId> = k
+        .faces(block)
+        .unwrap()
+        .into_iter()
+        .filter(|f| (f.center.y + 5.0).abs() < 1e-9 || (f.center.z - 10.0).abs() < 1e-9)
+        .map(|f| f.id)
+        .collect();
+    let spec = ShellSpec {
+        remove: open,
+        thickness: 1.0,
+        outward: false,
+        hollow: false,
+        sharp: true,
+    };
+    let cup = k.shell_with(block, &spec).unwrap().bodies[0];
+    let back = k
+        .faces(cup)
+        .unwrap()
+        .into_iter()
+        .find(|f| (f.center.y - 5.0).abs() < 1e-9)
+        .unwrap()
+        .id;
+    let rim: Vec<EdgeId> = k
+        .edges(cup)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.faces.contains(&Some(back)))
+        .map(|e| e.id)
+        .collect();
+    let opts = ChamferOpts::new(ChamferSpec::EqualDistance(1.0));
+    let out = k.chamfer_with(cup, &rim, &opts).unwrap().bodies[0];
+    let (meshes, _) = tess::mesh_body(k.get(out).unwrap(), 0.01, 0.2);
+    for (f, m) in k.faces(out).unwrap().iter().zip(&meshes) {
+        let area: f64 = m
+            .indices
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| m.positions[i as usize]);
+                0.5 * (b - a).cross(&(c - a)).norm()
+            })
+            .sum();
+        assert!(
+            (area - f.area).abs() < 1e-9 * f.area,
+            "face {:?} at {:?}: triangles of {area} mm² for {} mm²",
+            f.id,
+            f.center,
+            f.area
+        );
+    }
+    let check = tess::check_faces(&meshes);
+    assert!(check.is_watertight(), "{check:?}");
+}
+
 #[test]
 fn controls_are_validated() {
     let mut k = NativeKernel::new();
