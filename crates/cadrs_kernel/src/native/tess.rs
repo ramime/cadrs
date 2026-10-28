@@ -1483,9 +1483,24 @@ fn triangulate(s: &Setup, p: &TessParams, refine: bool) -> FaceMesh {
     // already within a few times of the chord, so the bound is only reached there).
     // Inside by parity across the boundary, or, when boundary segments cross (a p-curve astray)
     // and one is missing from the triangulation so parity would leak, by the boundary's winding
-    // number at each triangle's centroid.
+    // number at each triangle's centroid. Likewise when a segment runs through another boundary
+    // vertex (a chamfer as wide as the wall it cuts leaves the wall's end face pinched to no
+    // width along it, two segments along one line, one running on past the other's ends): the
+    // triangulation splits it there, and parity, counted by the whole segments, would miss its
+    // pieces.
+    let split: Vec<[usize; 2]> = cons
+        .iter()
+        .filter(|&&[a, b]| {
+            cdt.get_edge_from_neighbors(
+                FixedVertexHandle::from_index(a),
+                FixedVertexHandle::from_index(b),
+            )
+            .is_none()
+        })
+        .copied()
+        .collect();
     let sides = |cdt: &Cdt| {
-        if conflicts.is_empty() {
+        if conflicts.is_empty() && split.is_empty() {
             classify(cdt, flip)
         } else {
             classify_winding(cdt, verts, cons)
@@ -1669,42 +1684,99 @@ fn triangulate(s: &Setup, p: &TessParams, refine: bool) -> FaceMesh {
     let mut out = FaceMesh::default();
     let mut map: Vec<u32> = vec![u32::MAX; cdt.num_vertices()];
     let mut weld: HashMap<[u64; 3], u32> = HashMap::new();
+    let mut index = |hi: usize| {
+        if map[hi] == u32::MAX {
+            let d = *cdt.vertex(FixedVertexHandle::from_index(hi)).data();
+            let mut push = || {
+                let (u, v) = dom.wrap(d.uv.x, d.uv.y);
+                out.positions.push(d.p);
+                out.normals.push(d.n * sign);
+                out.uvs.push(P2::new(u, v));
+                (out.positions.len() - 1) as u32
+            };
+            map[hi] = if hi < n_boundary {
+                *weld
+                    .entry([d.p.x.to_bits(), d.p.y.to_bits(), d.p.z.to_bits()])
+                    .or_insert_with(push)
+            } else {
+                push()
+            };
+        }
+        map[hi]
+    };
+    let distinct = |t: &[u32; 3]| t[0] != t[1] && t[1] != t[2] && t[2] != t[0];
+    let mut tris: Vec<[u32; 3]> = Vec::new();
     for face in cdt.inner_faces() {
         if !inside[face.fix().index()] {
             continue;
         }
-        let mut tri = [0u32; 3];
-        for (t, v) in face.vertices().iter().enumerate() {
-            let hi = v.fix().index();
-            if map[hi] == u32::MAX {
-                let d = v.data();
-                let mut push = || {
-                    let (u, v) = dom.wrap(d.uv.x, d.uv.y);
-                    out.positions.push(d.p);
-                    out.normals.push(d.n * sign);
-                    out.uvs.push(P2::new(u, v));
-                    (out.positions.len() - 1) as u32
-                };
-                map[hi] = if hi < n_boundary {
-                    *weld
-                        .entry([d.p.x.to_bits(), d.p.y.to_bits(), d.p.z.to_bits()])
-                        .or_insert_with(push)
-                } else {
-                    push()
-                };
-            }
-            tri[t] = map[hi];
-        }
-        if tri[0] == tri[1] || tri[1] == tri[2] || tri[2] == tri[0] {
+        let mut tri = face.vertices().map(|v| index(v.fix().index()));
+        if !distinct(&tri) {
             continue;
         }
         if !f.sense {
             tri.swap(1, 2);
         }
-        out.indices.push(tri);
+        tris.push(tri);
     }
-    drop_pillows(&mut out.indices);
+    drop_pillows(&mut tris);
+    // A segment split where another boundary vertex lies on it is still one side of the
+    // neighbouring face's triangles (that face's boundary has no vertex there): a fan of
+    // triangles of no area from its start over its pieces joins that side to this face's
+    // triangles along the pieces, and to the faces along the line on the pieces no triangle of
+    // this face is on (a pinch). Boundary sides run the loop's way in the triangles out, so the
+    // fan runs the segment's way along it and back along the pieces.
+    for &[a, b] in &split {
+        let Some(along) = chain(&cdt, a, b) else {
+            continue;
+        };
+        for w in along[1..].windows(2) {
+            let tri = [index(a), index(w[1]), index(w[0])];
+            if distinct(&tri) {
+                tris.push(tri);
+            }
+        }
+    }
+    out.indices = tris;
     out
+}
+
+/// The vertices along boundary segment `a`–`b` in the triangulation, `a` first and `b` last:
+/// its constraint edges through the boundary vertices on it, where it was split. None when it
+/// has no such path (a segment lost to a crossing one).
+fn chain(cdt: &Cdt, a: usize, b: usize) -> Option<Vec<usize>> {
+    let at = |i: usize| cdt.vertex(FixedVertexHandle::from_index(i)).position();
+    let (pa, pb) = (at(a), at(b));
+    let d = (pb.x - pa.x, pb.y - pa.y);
+    let len2 = d.0 * d.0 + d.1 * d.1;
+    if !(len2 > 0.0) {
+        return None;
+    }
+    let mut path = vec![a];
+    // How far along the segment the path has come (0 at `a`, 1 at `b`).
+    let mut reach = 0.0;
+    while path.last() != Some(&b) {
+        if path.len() > cdt.num_vertices() {
+            return None;
+        }
+        let cur = path[path.len() - 1];
+        let (s, next) = cdt
+            .vertex(FixedVertexHandle::from_index(cur))
+            .out_edges()
+            .filter(|e| e.is_constraint_edge())
+            .filter_map(|e| {
+                let t = e.to().fix().index();
+                let q = at(t);
+                let (x, y) = (q.x - pa.x, q.y - pa.y);
+                let s = (x * d.0 + y * d.1) / len2;
+                let off = (x * d.1 - y * d.0).abs() / len2;
+                (s > reach && s <= 1.0 + tol::REL && off <= tol::REL).then_some((s, t))
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))?;
+        reach = s;
+        path.push(next);
+    }
+    Some(path)
 }
 
 /// Removes pairs of triangles on the same three vertices the opposite ways round. Where an
