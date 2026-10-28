@@ -1,7 +1,9 @@
 // #69: the frame stats start as the frame rate line alone, with F12's hint; F12 shows the whole
-// panel (long system names cut at its edge), F12 again hides it.
+// panel (long system names cut at its edge), F12 again hides it. The systems are timed, as with
+// the *Time systems* preference.
 Scenario(
     start: Some("document"),
+    profile_cpu: true,
     steps: [
         WaitFor("document-shell"),
         Wait(40),

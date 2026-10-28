@@ -7,18 +7,24 @@
 //!
 //! Systems run in parallel on several threads, so their times can add up to more than the
 //! frame; the schedules on the main thread add up to about the frame.
+//!
+//! The CPU times are off unless wanted ([`CpuProfiling`]): the spans cost about a fifth of each
+//! frame, and a run decides as it starts (Bevy makes a system's span once, with the system).
+//! *Preferences › Time systems* turns them on from the next start; `CADRS_FRAME_PROFILE=1` for one
+//! run.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use web_time::Instant;
 
 use bevy::diagnostic::DiagnosticsStore;
 use bevy::gizmos::config::GizmoConfigStore;
 use bevy::gizmos::{GizmoAsset, GizmoHandles};
 use bevy::log::BoxedLayer;
-use bevy::log::tracing::Subscriber;
 use bevy::log::tracing::field::{Field, Visit};
 use bevy::log::tracing::span::{Attributes, Id};
+use bevy::log::tracing::{Metadata, Subscriber};
 use bevy::log::tracing_subscriber::Layer;
 use bevy::log::tracing_subscriber::layer::Context;
 use bevy::log::tracing_subscriber::registry::LookupSpan;
@@ -53,9 +59,48 @@ pub struct FrameProfilePlugin;
 impl Plugin for FrameProfilePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FrameProfile>()
+            .init_resource::<CpuProfiling>()
             .add_systems(First, take_frame);
         if !app.is_plugin_added::<RenderDiagnosticsPlugin>() {
             app.add_plugins(RenderDiagnosticsPlugin);
+        }
+    }
+}
+
+/// Whether this run times its systems and schedules. The app inserts it before its plugins:
+/// [`profiler_layer`] turns every span off unless it's [`CpuProfiling::On`], and a span made
+/// off (a system's, as the system is built) stays off.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CpuProfiling {
+    /// Built without the `profiler` feature (`bevy/trace`): there are no spans to time.
+    #[default]
+    NotBuilt,
+    Off,
+    On,
+}
+
+impl CpuProfiling {
+    /// For a build with the `profiler` feature or without: on when `wanted` (the preference, a
+    /// scenario's `profile_cpu`), with `CADRS_FRAME_PROFILE=1`, or with `CADRS_SLOW_FRAMES`
+    /// (which lists the slowest systems). `CADRS_FRAME_PROFILE=0` keeps it off.
+    pub fn at_start(built: bool, wanted: bool) -> Self {
+        if !built {
+            return Self::NotBuilt;
+        }
+        let on = match std::env::var("CADRS_FRAME_PROFILE").ok().as_deref() {
+            Some("0") => false,
+            Some(_) => true,
+            None => wanted || std::env::var_os("CADRS_SLOW_FRAMES").is_some(),
+        };
+        if on { Self::On } else { Self::Off }
+    }
+
+    /// Why there are no CPU times, if there aren't.
+    pub fn why_not(self) -> Option<&'static str> {
+        match self {
+            Self::NotBuilt => Some("not in this build"),
+            Self::Off => Some("off. Preferences › Time systems turns them on from the next start"),
+            Self::On => None,
         }
     }
 }
@@ -69,27 +114,48 @@ pub enum Kind {
     Commands,
 }
 
-/// What the layer adds up between two frames: per span, the total time (ns) and the runs.
-type Tally = HashMap<(Kind, Arc<str>), (u64, u32)>;
+/// What the layer adds up between two frames for one span name: the total time (ns) and the
+/// runs. Every span of that name shares it, so a run adds to it without a lock (thousands of
+/// spans run a frame, on every thread).
+#[derive(Default)]
+struct Slot {
+    ns: AtomicU64,
+    runs: AtomicU32,
+}
 
-/// The layer's tally, which [`take_frame`] empties each frame.
+type Slots = HashMap<(Kind, Arc<str>), Arc<Slot>>;
+
+/// The layer's slots, which [`take_frame`] empties each frame.
 #[derive(Resource, Clone, Default)]
-pub struct ProfilerTally(Arc<Mutex<Tally>>);
+pub struct ProfilerTally(Arc<Mutex<Slots>>);
 
 /// The [`bevy::log::LogPlugin::custom_layer`] that times system and schedule spans (none
-/// without the `bevy/trace` feature: the profile then has only the GPU passes).
+/// without the `bevy/trace` feature: the profile then has only the GPU passes). Unless the
+/// app's [`CpuProfiling`] is on, it turns every span off instead, so they cost next to nothing.
 pub fn profiler_layer(app: &mut App) -> Option<BoxedLayer> {
     let tally = ProfilerTally::default();
     app.insert_resource(tally.clone());
-    Some(Box::new(ProfilerLayer(tally.0)))
+    let on = app.world().get_resource::<CpuProfiling>() == Some(&CpuProfiling::On);
+    Some(Box::new(ProfilerLayer { slots: tally.0, on }))
 }
 
-struct ProfilerLayer(Arc<Mutex<Tally>>);
+struct ProfilerLayer {
+    slots: Arc<Mutex<Slots>>,
+    /// Off, no span is made at all (the layer's `enabled` turns them away for every layer).
+    on: bool,
+}
 
-/// A timed span's name, kept on the span.
-struct SpanLabel(Kind, Arc<str>);
-/// When the span was entered.
-struct Entered(Instant);
+/// A timed span's slot, kept on the span, and when it was last entered ([`now_ns`]).
+struct Timed {
+    slot: Arc<Slot>,
+    entered: AtomicU64,
+}
+
+/// Nanoseconds since the first call.
+fn now_ns() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
+}
 
 /// Reads a span's `name` field.
 #[derive(Default)]
@@ -110,6 +176,11 @@ impl Visit for NameField {
 }
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfilerLayer {
+    // (Its `register_callsite` follows this: a span's callsite is turned off for good.)
+    fn enabled(&self, metadata: &Metadata<'_>, _: Context<'_, S>) -> bool {
+        self.on || !metadata.is_span()
+    }
+
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let kind = match attrs.metadata().name() {
             "system" => Kind::System,
@@ -119,34 +190,36 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for ProfilerLayer {
         };
         let mut name = NameField::default();
         attrs.record(&mut name);
-        if let (Some(name), Some(span)) = (name.0, ctx.span(id)) {
-            span.extensions_mut().insert(SpanLabel(kind, name.into()));
-        }
+        let (Some(name), Some(span)) = (name.0, ctx.span(id)) else {
+            return;
+        };
+        // Systems' spans are made once, schedules' once a run: the lock is only taken here.
+        let Ok(mut slots) = self.slots.lock() else {
+            return;
+        };
+        let slot = slots.entry((kind, name.into())).or_default().clone();
+        drop(slots);
+        span.extensions_mut().insert(Timed {
+            slot,
+            entered: AtomicU64::new(0),
+        });
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-        if let Some(span) = ctx.span(id) {
-            let mut ext = span.extensions_mut();
-            if ext.get_mut::<SpanLabel>().is_some() {
-                ext.replace(Entered(Instant::now()));
-            }
+        if let Some(span) = ctx.span(id)
+            && let Some(t) = span.extensions().get::<Timed>()
+        {
+            t.entered.store(now_ns(), Ordering::Relaxed);
         }
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
-        let Some(span) = ctx.span(id) else { return };
-        let mut ext = span.extensions_mut();
-        let Some(Entered(start)) = ext.remove::<Entered>() else {
-            return;
-        };
-        let Some(SpanLabel(kind, name)) = ext.get_mut::<SpanLabel>() else {
-            return;
-        };
-        let ns = start.elapsed().as_nanos() as u64;
-        if let Ok(mut tally) = self.0.lock() {
-            let e = tally.entry((*kind, name.clone())).or_default();
-            e.0 += ns;
-            e.1 += 1;
+        if let Some(span) = ctx.span(id)
+            && let Some(t) = span.extensions().get::<Timed>()
+        {
+            let ns = now_ns().saturating_sub(t.entered.load(Ordering::Relaxed));
+            t.slot.ns.fetch_add(ns, Ordering::Relaxed);
+            t.slot.runs.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -280,7 +353,7 @@ impl FrameProfile {
     }
 
     /// What `get_frame_stats` returns about the frame's parts: the `top` slowest systems.
-    pub fn describe(&self, top: usize) -> Value {
+    pub fn describe(&self, top: usize, cpu: CpuProfiling) -> Value {
         let s = self.summary();
         let r = |x: f32| (x as f64 * 100.0).round() / 100.0;
         let rows = |rows: &[Row], top: usize| -> Vec<Value> {
@@ -292,6 +365,11 @@ impl FrameProfile {
         json!({
             "window_frames": s.frames,
             "cpu": {
+                "timed": cpu == CpuProfiling::On,
+                "why_not": cpu.why_not().map(|w| match cpu {
+                    CpuProfiling::Off => format!("{w} (or start cadrs with CADRS_FRAME_PROFILE=1)"),
+                    _ => w.to_string(),
+                }),
                 "main_loop": rows(&s.main, usize::MAX),
                 "render_thread": rows(&s.render, usize::MAX),
                 "schedules": rows(&s.schedules, top),
@@ -337,11 +415,20 @@ pub(crate) fn take_frame(
     mut profile: ResMut<FrameProfile>,
 ) {
     let cpu = tally
-        .and_then(|t| t.0.lock().ok().map(|mut m| std::mem::take(&mut *m)))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|((kind, name), (ns, runs))| (kind, name, ns as f32 / 1e6, runs))
-        .collect();
+        .and_then(|t| {
+            let slots = t.0.lock().ok()?;
+            Some(
+                slots
+                    .iter()
+                    .filter_map(|((kind, name), slot)| {
+                        let runs = slot.runs.swap(0, Ordering::Relaxed);
+                        let ns = slot.ns.swap(0, Ordering::Relaxed);
+                        (runs > 0).then(|| (*kind, name.clone(), ns as f32 / 1e6, runs))
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
     let now = Instant::now();
     let gpu = store
         .map(|s| {
@@ -405,6 +492,61 @@ mod tests {
     }
 
     #[test]
+    fn the_layer_adds_up_the_runs_of_each_name() {
+        use bevy::log::tracing_subscriber::layer::SubscriberExt;
+        let tally = ProfilerTally::default();
+        let subscriber = bevy::log::tracing_subscriber::registry().with(ProfilerLayer {
+            slots: tally.0.clone(),
+            on: true,
+        });
+        bevy::log::tracing::subscriber::with_default(subscriber, || {
+            // A system's span is made once and entered every run.
+            let a = bevy::log::info_span!("system", name = "a");
+            for _ in 0..3 {
+                drop(a.enter());
+            }
+            // Another span of the same name adds to the same slot.
+            drop(bevy::log::info_span!("system", name = "a").entered());
+            drop(bevy::log::info_span!("schedule", name = "Update").entered());
+            drop(bevy::log::info_span!("render pass", name = "a").entered());
+        });
+        let runs = |kind, name: &str| {
+            let slots = tally.0.lock().unwrap();
+            slots
+                .get(&(kind, Arc::from(name)))
+                .map(|s| s.runs.swap(0, Ordering::Relaxed))
+        };
+        assert_eq!(runs(Kind::System, "a"), Some(4));
+        assert_eq!(runs(Kind::Schedule, "Update"), Some(1));
+        assert_eq!(
+            tally.0.lock().unwrap().len(),
+            2,
+            "untimed spans get no slot"
+        );
+        // Read as `take_frame` reads it, a slot starts again from nothing.
+        assert_eq!(runs(Kind::System, "a"), Some(0));
+    }
+
+    #[test]
+    fn off_the_layer_turns_spans_away_but_not_events() {
+        use bevy::log::tracing_subscriber::layer::SubscriberExt;
+        let tally = ProfilerTally::default();
+        let subscriber = bevy::log::tracing_subscriber::registry().with(ProfilerLayer {
+            slots: tally.0.clone(),
+            on: false,
+        });
+        bevy::log::tracing::subscriber::with_default(subscriber, || {
+            let span = bevy::log::info_span!("system", name = "a");
+            assert!(span.is_disabled());
+            drop(span.entered());
+            assert!(bevy::log::tracing::event_enabled!(
+                bevy::log::tracing::Level::INFO
+            ));
+        });
+        assert!(tally.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn the_summary_averages_over_the_window() {
         let mut p = FrameProfile::default();
         let sys: Arc<str> = "a::b::slow".into();
@@ -441,6 +583,13 @@ mod tests {
             ..default()
         });
         assert_eq!(p.summary().frames, 1);
-        assert_eq!(p.describe(5)["window_frames"], 1);
+        let d = p.describe(5, CpuProfiling::Off);
+        assert_eq!(d["window_frames"], 1);
+        assert_eq!(d["cpu"]["timed"], false);
+        assert!(
+            d["cpu"]["why_not"]
+                .as_str()
+                .is_some_and(|w| w.contains("CADRS_FRAME_PROFILE=1"))
+        );
     }
 }

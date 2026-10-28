@@ -261,8 +261,10 @@ impl Cadrs {
         description = "The app's frame rate over the last two seconds: fps, the number of frames, and \
         frame times in ms (mean, median, 95th percentile, max); and where the last second's frames went \
         (profile): CPU ms a frame of the main loop's schedules, the slowest schedules and systems (with \
-        their most in one frame and runs a frame), and the GPU ms of the slowest render passes. The panel \
-        at the bottom left of the 3D view shows the same (F12 steps through it, the fps line, nothing)."
+        their most in one frame and runs a frame), and the GPU ms of the slowest render passes. The CPU \
+        times are only there when cadrs started with them on (profile.cpu.timed; they slow it down): \
+        the Time systems preference, or CADRS_FRAME_PROFILE=1. The panel at the bottom left of the 3D \
+        view shows the same (F12 steps through it, the fps line, nothing)."
     )]
     async fn get_frame_stats(&self) -> Result<CallToolResult, ErrorData> {
         self.call(Call::GetFrameStats).await

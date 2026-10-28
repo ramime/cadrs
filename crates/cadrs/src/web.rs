@@ -27,6 +27,12 @@ const DOWNLOADS: &str = "/Downloads";
 pub fn run() -> AppExit {
     cadrs_app::register_kernel_tasks();
     let mut app = App::new();
+    // A page times its systems when built with the `profiler` feature, which tools/web/build.sh
+    // leaves out (in a page, Bevy's log layer also hands every span to the browser).
+    app.insert_resource(cadrs_app::frame_profile::CpuProfiling::at_start(
+        cfg!(feature = "profiler"),
+        true,
+    ));
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {

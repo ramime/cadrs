@@ -179,8 +179,23 @@ fn main() -> AppExit {
         }
     };
 
+    let data_dir = opts.resolved_data_dir_for(scenario.as_ref());
+    let scripted = scenario.is_some();
     let mut app = App::new();
-    // The frame panel's CPU times: every system's and schedule's tracing span, added up.
+    // The frame panel's CPU times: every system's and schedule's tracing span, added up. They
+    // cost about a fifth of a frame, so only when wanted: the user's preference (a scenario's
+    // own setting). Systems make their spans as they're added, so it's decided before the plugins.
+    let profile_cpu = match &scenario {
+        Some(s) => s.profile_cpu,
+        None => data_dir
+            .clone()
+            .or_else(Store::default_root)
+            .is_some_and(|r| cadrs_core::preferences::Preferences::load(&r).profile_cpu),
+    };
+    app.insert_resource(cadrs_app::frame_profile::CpuProfiling::at_start(
+        cfg!(feature = "profiler"),
+        profile_cpu,
+    ));
     app.add_plugins(
         cadrs_harness::default_plugins(&opts).set(bevy::log::LogPlugin {
             custom_layer: cadrs_app::frame_profile::profiler_layer,
@@ -197,10 +212,8 @@ fn main() -> AppExit {
     if let Some(start) = scenario.as_ref().and_then(|s| s.start.clone()) {
         app.insert_resource(StartState(start));
     }
-    let data_dir = opts.resolved_data_dir_for(scenario.as_ref());
     let data_from = opts.data_from_dir(scenario.as_ref());
     let seed = scenario.as_ref().map_or(0, |s| s.seed_documents);
-    let scripted = scenario.is_some();
     // Scenarios and headless runs export into their output folder (a BOM's CSV, P3B.6), never
     // into the user's Downloads (Final part 3: golden runs had written there).
     // Nor do they see or add to the user's own libraries.

@@ -265,8 +265,9 @@ jobs:
         with:
           key: web
 
+      # With tools/web/build.sh's features.
       - name: Check
-        run: cargo check --locked --target wasm32-unknown-unknown -p cadrs
+        run: cargo check --locked --target wasm32-unknown-unknown -p cadrs --no-default-features -F gpu
 
   macos:
     name: Build and test (macOS)
