@@ -33,7 +33,7 @@ use cadrs_core::{ElementId, FeatureId, PartId};
 use cadrs_sketch::PlaneRef;
 use cadrs_ui::{FinishAnimations, RenderSurface, Selected, Theme};
 
-use crate::camera::{self, StandardView, ViewState, ease_in_out, ray_square};
+use crate::camera::{self, StandardView, Turn, ViewState, ease_in_out, ease_out, ray_square};
 use crate::{ActiveDocument, AppState};
 
 pub struct ViewportPlugin;
@@ -48,6 +48,7 @@ impl Plugin for ViewportPlugin {
             .init_resource::<GridVisible>()
             .init_resource::<PlanesVisible>()
             .init_resource::<ViewportView>()
+            .init_resource::<ArrowHold>()
             .init_resource::<ViewportRect>()
             .init_resource::<DialogInset>()
             .init_resource::<PlaneHighlight>()
@@ -87,6 +88,7 @@ impl Plugin for ViewportPlugin {
                     viewport_pointer,
                     apply_pick_requests.run_if(in_state(crate::sketch::PartStudioMode::Modeling)),
                     view_shortcuts,
+                    arrow_keys_held,
                     animate_view,
                     update_hover,
                     apply_view_to_camera,
@@ -215,8 +217,25 @@ impl ViewportRect {
 pub struct ViewAnimation {
     pub from: ViewState,
     pub to: ViewState,
+    /// The turn from `from`'s orientation to `to`'s, the way the view goes.
+    pub turn: Turn,
     pub elapsed: f32,
     pub duration: f32,
+    /// It took over from one in progress: it starts at speed ([`ease_out`]) instead of from
+    /// rest.
+    pub moving: bool,
+}
+
+impl ViewAnimation {
+    /// How far along it is (0..=1), eased.
+    fn progress(&self) -> f32 {
+        let t = self.elapsed / self.duration;
+        if self.moving {
+            ease_out(t)
+        } else {
+            ease_in_out(t)
+        }
+    }
 }
 
 /// Seconds a view change (N, Shift+7, view cube) takes.
@@ -240,29 +259,83 @@ pub struct ViewportView {
 }
 
 impl ViewportView {
-    /// Animates to `to`.
+    /// Animates to `to`, its orientation turned the shortest way.
     pub fn animate_to(&mut self, to: ViewState) {
-        // The render mode and the projection are the tab's (P3E.3a): a change of view keeps
-        // them (`crate::view_options` sets them).
-        let to = ViewState {
-            render: self.view.render,
-            perspective: self.view.perspective,
-            ..to
-        };
+        let to = self.keeping_mode(to);
         if self.view.approx_eq(&to) {
             return;
         }
+        let turn = Turn::between(self.view.rotation(), to.rotation());
+        self.start(to, turn, VIEW_ANIMATION_TIME);
+    }
+
+    /// Turns the view by `yaw` and `pitch` degrees about the screen axes (as
+    /// [`ViewState::rotate_by`]: the arrow keys, the view cube's arrows), on from the turn in
+    /// progress: presses quicker than their turns add up (four of 90° turn it all the way
+    /// round), and the view goes on turning without stopping in between (#91).
+    pub fn turn_by(&mut self, yaw: f32, pitch: f32) {
+        self.turn_by_in(yaw, pitch, VIEW_ANIMATION_TIME);
+    }
+
+    /// [`Self::turn_by`], the view getting there in `duration` seconds.
+    pub fn turn_by_in(&mut self, yaw: f32, pitch: f32, duration: f32) {
+        let from = self.target();
+        let mut to = from;
+        to.rotate_by(yaw, pitch);
+        let step = Turn::between(from.rotation(), to.rotation());
+        let turn = self.turn_left().then(step);
+        self.start(self.keeping_mode(to), turn, duration);
+    }
+
+    /// What's left of the turn in progress ([`Turn::NONE`] when the view isn't moving).
+    pub fn turn_left(&self) -> Turn {
+        self.animation.map_or(Turn::NONE, |a| Turn {
+            angle: a.turn.angle * (1.0 - a.progress()),
+            ..a.turn
+        })
+    }
+
+    /// `to` with the tab's render mode and projection (P3E.3a): a change of view keeps them
+    /// (`crate::view_options` sets them).
+    fn keeping_mode(&self, to: ViewState) -> ViewState {
+        ViewState {
+            render: self.view.render,
+            perspective: self.view.perspective,
+            ..to
+        }
+    }
+
+    /// Animates from the view now to `to` in `duration` seconds, its orientation turned by
+    /// `turn`.
+    fn start(&mut self, to: ViewState, turn: Turn, duration: f32) {
         self.animation = Some(ViewAnimation {
             from: self.view,
             to,
+            turn,
             elapsed: 0.0,
-            duration: VIEW_ANIMATION_TIME,
+            duration,
+            moving: self.animation.is_some(),
         });
     }
 
     /// The view the current animation ends at (or the current view).
     pub fn target(&self) -> ViewState {
         self.animation.map(|a| a.to).unwrap_or(self.view)
+    }
+
+    /// Moves the animation on by `dt` seconds (to its end with `finish`).
+    pub fn advance(&mut self, dt: f32, finish: bool) {
+        let Some(mut a) = self.animation else {
+            return;
+        };
+        a.elapsed += dt;
+        if finish || a.elapsed >= a.duration {
+            self.view = a.to;
+            self.animation = None;
+        } else {
+            self.view = a.from.lerp_turn(&a.to, a.turn, a.progress());
+            self.animation = Some(a);
+        }
     }
 }
 
@@ -311,6 +384,23 @@ impl PlaneKind {
             PlaneKind::Front => "Front",
             PlaneKind::Right => "Right",
         }
+    }
+
+    /// The name of its side facing the viewer in `view`, and how much of its label shows
+    /// ([`label_alpha`]): seen from behind, the other side's (Front reads Back, Right Left, Top
+    /// Bottom).
+    pub fn label(self, view: &ViewState) -> (&'static str, f32) {
+        let facing = self.normal().dot(view.back());
+        let name = if facing >= 0.0 {
+            self.name()
+        } else {
+            match self {
+                PlaneKind::Top => "Bottom",
+                PlaneKind::Front => "Back",
+                PlaneKind::Right => "Left",
+            }
+        };
+        (name, label_alpha(facing.abs()))
     }
 
     /// Its place in [`PlaneKind::ALL`].
@@ -1585,8 +1675,9 @@ pub fn pick_in(view: &ViewState, offset: Vec2, planes: bool) -> Option<Pick> {
 
 /// Keyboard view commands (`reference/onshape/shortcuts.md`, 3D view): Shift+1…7 standard
 /// views, N normal to (the sketch plane, a selected plane or a selected sketch's plane), F zoom
-/// to fit, Z / Shift+Z zoom out / in, arrows rotate 15° (Shift 90°, Ctrl 5°), Ctrl+Shift+arrows
-/// pan, P shows or hides the default planes, Space clears the selection.
+/// to fit, Z / Shift+Z zoom out / in, Ctrl+Shift+arrows pan, P shows or hides the default
+/// planes, Space clears the selection. (The arrows held turn the view: `arrow_keys_held`.) And
+/// Blender's numpad ([`numpad_key`]).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn view_shortcuts(
     mut keys_in: MessageReader<KeyboardInput>,
@@ -1624,7 +1715,8 @@ fn view_shortcuts(
         if k.state != bevy::input::ButtonState::Pressed || typing || !q_dialogs.is_empty() || alt {
             continue;
         }
-        // Arrows: rotate (15°, Shift 90°, Ctrl 5°) or, with Ctrl+Shift, pan.
+        // Arrows: with Ctrl+Shift, pan; otherwise they turn the view while held
+        // (`arrow_keys_held`).
         let arrow = match k.shortcut_code() {
             KeyCode::ArrowLeft => Some(Vec2::new(-1.0, 0.0)),
             KeyCode::ArrowRight => Some(Vec2::new(1.0, 0.0)),
@@ -1633,16 +1725,32 @@ fn view_shortcuts(
             _ => None,
         };
         if let Some(dir) = arrow {
-            let mut to = view.target();
             if ctrl && shift {
                 // The scene moves with the arrow, a tenth of the viewport per press.
+                let mut to = view.target();
                 to.pan(dir * rect.0.size().min_element() * 0.1);
-            } else {
-                let step = arrow_step(shift, ctrl);
-                to.rotate_by(dir.x * step, dir.y * step);
+                view.animate_to(to);
             }
-            view.animate_to(to);
             continue;
+        }
+        match numpad_key(k.shortcut_code(), ctrl) {
+            Some(NumpadKey::View(s)) => {
+                let to = view.target().oriented(s);
+                view.animate_to(to);
+                continue;
+            }
+            Some(NumpadKey::Opposite) => {
+                view.turn_by(180.0, 0.0);
+                continue;
+            }
+            Some(NumpadKey::Perspective) => {
+                let on = !view.view.perspective;
+                commands.queue(move |world: &mut World| {
+                    crate::view_options::set_perspective(world, on)
+                });
+                continue;
+            }
+            None => {}
         }
         if ctrl {
             continue;
@@ -1859,6 +1967,130 @@ pub fn plane_normal(p: PlaneRef) -> Vec3 {
     Vec3::new(n[0] as f32, n[1] as f32, n[2] as f32)
 }
 
+/// What a numpad key does, as in Blender ([`numpad_key`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumpadKey {
+    /// A standard view.
+    View(StandardView),
+    /// The view turned round to its other side, about the screen's up axis.
+    Opposite,
+    /// Perspective or orthographic, whichever the view isn't.
+    Perspective,
+}
+
+/// What a numpad key does, as in Blender (the keys themselves, Num Lock on or off): 7 Top, 1
+/// Front, 3 Right, with Ctrl the opposite (Bottom, Back, Left); 9 the other side; 5 perspective
+/// or orthographic. (8, 2, 4 and 6 turn the view as the arrows: [`held_direction`].)
+pub fn numpad_key(key: KeyCode, ctrl: bool) -> Option<NumpadKey> {
+    let (view, opposite) = match key {
+        KeyCode::Numpad7 => (StandardView::Top, StandardView::Bottom),
+        KeyCode::Numpad1 => (StandardView::Front, StandardView::Back),
+        KeyCode::Numpad3 => (StandardView::Right, StandardView::Left),
+        KeyCode::Numpad9 if !ctrl => return Some(NumpadKey::Opposite),
+        KeyCode::Numpad5 if !ctrl => return Some(NumpadKey::Perspective),
+        _ => return None,
+    };
+    Some(NumpadKey::View(if ctrl { opposite } else { view }))
+}
+
+/// Which way the keys held turn the view (x right, y down, each -1, 0 or 1): the arrows, and
+/// Blender's numpad 8, 2, 4 and 6 (Num Lock on or off).
+pub fn held_direction(keys: &ButtonInput<KeyCode>) -> Vec2 {
+    let key = |k: [KeyCode; 2]| f32::from(u8::from(keys.any_pressed(k)));
+    Vec2::new(
+        key([KeyCode::ArrowRight, KeyCode::Numpad6]) - key([KeyCode::ArrowLeft, KeyCode::Numpad4]),
+        key([KeyCode::ArrowDown, KeyCode::Numpad2]) - key([KeyCode::ArrowUp, KeyCode::Numpad8]),
+    )
+}
+
+/// The arrow keys held down, turning the view ([`hold_arrows`]).
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct ArrowHold {
+    /// Degrees turned since the first of them was pressed.
+    turned: f32,
+    /// While any is held: the way they turn the view (x right, y down, unit) and the step a
+    /// press turns at least (degrees).
+    held: Option<(Vec2, f32)>,
+}
+
+/// Degrees a second held arrows turn the view: 90 (Shift 180, Ctrl 30).
+pub fn arrow_rate(shift: bool, ctrl: bool) -> f32 {
+    if shift {
+        180.0
+    } else if ctrl {
+        30.0
+    } else {
+        90.0
+    }
+}
+
+/// Seconds the view takes to catch up with held arrows' turn: short, so it stops soon after
+/// they're let go.
+const HELD_TURN_TIME: f32 = 0.15;
+
+/// A frame of the arrow keys (`held`: the ones held, x right, y down, each -1, 0 or 1; `dt`
+/// seconds). From the first pressed to the last let go, the view turns their way at
+/// [`arrow_rate`], diagonally with two, a press turning at least its step ([`arrow_step`]: a tap
+/// turns 15°). (#91: by the system's key repeats, it waited out their delay, then turned in
+/// steps.)
+pub fn hold_arrows(
+    view: &mut ViewportView,
+    hold: &mut ArrowHold,
+    held: Vec2,
+    shift: bool,
+    ctrl: bool,
+    dt: f32,
+) {
+    if held != Vec2::ZERO {
+        let dir = held.normalize();
+        let d = dir * arrow_rate(shift, ctrl) * dt;
+        view.turn_by_in(d.x, d.y, HELD_TURN_TIME);
+        hold.turned += d.length();
+        hold.held = Some((dir, arrow_step(shift, ctrl)));
+    } else if let Some((dir, step)) = hold.held.take() {
+        let short = step - hold.turned;
+        if short > 0.0 {
+            view.turn_by(dir.x * short, dir.y * short);
+        }
+        hold.turned = 0.0;
+    }
+}
+
+/// The arrow keys (and the numpad's, [`held_direction`]) held down turn the view
+/// ([`hold_arrows`]); with Ctrl+Shift the arrows pan instead (`view_shortcuts`).
+#[allow(clippy::too_many_arguments)]
+fn arrow_keys_held(
+    keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
+    q_fields: Query<(), With<cadrs_ui::KeyboardField>>,
+    q_dialogs: Query<(), With<cadrs_ui::DialogRoot>>,
+    kind: Res<ActiveKind>,
+    eda2d: Res<crate::eda::Eda2d>,
+    time: Res<Time>,
+    mut view: ResMut<ViewportView>,
+    mut hold: ResMut<ArrowHold>,
+) {
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    let off = kind.is_flat()
+        || eda2d.flat()
+        || focus.get().is_some_and(|e| q_fields.contains(e))
+        || !q_dialogs.is_empty()
+        || alt
+        || (ctrl && shift);
+    let held = if off {
+        Vec2::ZERO
+    } else {
+        held_direction(&keys)
+    };
+    // (Nothing held nor let go: the view isn't touched, for its change detection.)
+    if held == Vec2::ZERO && hold.held.is_none() {
+        return;
+    }
+    hold_arrows(&mut view, &mut hold, held, shift, ctrl, time.delta_secs());
+}
+
 /// Degrees an arrow key rotates the view: 15°, Shift 90°, Ctrl 5° (as the view cube arrows).
 pub fn arrow_step(shift: bool, ctrl: bool) -> f32 {
     if shift {
@@ -1990,16 +2222,8 @@ fn animate_view(
     mut view: ResMut<ViewportView>,
 ) {
     let finish_all = finish.read().count() > 0;
-    let Some(mut a) = view.animation else {
-        return;
-    };
-    a.elapsed += time.delta_secs();
-    if finish_all || a.elapsed >= a.duration {
-        view.view = a.to;
-        view.animation = None;
-    } else {
-        view.view = a.from.lerp(&a.to, ease_in_out(a.elapsed / a.duration));
-        view.animation = Some(a);
+    if view.animation.is_some() {
+        view.advance(time.delta_secs(), finish_all);
     }
 }
 
@@ -2499,7 +2723,10 @@ fn place_plane_labels(
         ),
         Without<AffineInner>,
     >,
-    mut q_inner: Query<(&ComputedNode, &mut UiTransform, &mut TextColor), With<AffineInner>>,
+    mut q_inner: Query<
+        (&ComputedNode, &mut UiTransform, &mut TextColor, &mut Text),
+        With<AffineInner>,
+    >,
     sketch: Res<crate::sketch_tools::SketchScreen>,
     planes: Res<PlanesVisible>,
     parts: Option<Res<crate::parts::PartCache>>,
@@ -2538,7 +2765,7 @@ fn place_plane_labels(
         let Some(&child) = children.first() else {
             continue;
         };
-        let Ok((inner_node, mut inner_t, mut color)) = q_inner.get_mut(child) else {
+        let Ok((inner_node, mut inner_t, mut color, mut text)) = q_inner.get_mut(child) else {
             continue;
         };
         let k = label.0;
@@ -2548,13 +2775,15 @@ fn place_plane_labels(
         let a = v.project_vector(u) * v.scale;
         let b = v.project_vector(-w) * v.scale;
         // Hide the label once the plane is more than about 70° from facing the viewer (the
-        // squashed text smears) and whenever it is seen from behind (the text would read
-        // mirrored), fading in over a few degrees.
-        let facing = k.normal().dot(v.back());
-        let alpha = label_alpha(facing);
+        // squashed text smears), fading in over a few degrees. Seen from behind, it names that
+        // side (the text turned to read: `readable_axes`).
+        let (name, alpha) = k.label(&v);
+        if text.0 != name {
+            text.0 = name.to_string();
+        }
         // The plane being sketched on keeps its label (`screens/08`) except when viewed
         // straight on, where the sketch covers it (`screens/09`).
-        let normal_view = facing > 0.999;
+        let normal_view = k.normal().dot(v.back()).abs() > 0.999;
         let show = *kind == ActiveKind::PartStudio
             && planes.shows(k)
             && alpha > 0.0
@@ -2781,6 +3010,363 @@ fn flag_pending_work(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turn (world axis, radians) taking rotation `a` to `b`, the short way.
+    fn turn_between(a: Quat, b: Quat) -> (Vec3, f32) {
+        let q = b * a.inverse();
+        let q = if q.w < 0.0 { -q } else { q };
+        q.normalize().to_axis_angle()
+    }
+
+    /// Runs the view's animation to its end, a frame at a time, checking each frame's turn from
+    /// the last with `check` (axis, radians).
+    fn run(v: &mut ViewportView, mut check: impl FnMut(Vec3, f32)) {
+        let mut prev = v.view.rotation();
+        for _ in 0..600 {
+            if v.animation.is_none() {
+                return;
+            }
+            v.advance(1.0 / 60.0, false);
+            let q = v.view.rotation();
+            let (axis, angle) = turn_between(prev, q);
+            check(axis, angle);
+            prev = q;
+        }
+        panic!("the view never stopped");
+    }
+
+    /// #91: a turn by the arrows (a tap, the view cube's) is animated about the screen axis it
+    /// turns about, whatever the orientation (over the top too, where the azimuth and roll swing
+    /// round).
+    #[test]
+    fn an_arrow_turn_is_animated_about_the_screen_axis() {
+        for (azimuth, elevation, roll) in [
+            (30.0, 30.0, 0.0),
+            (10.0, 85.0, 0.0),
+            (-120.0, -80.0, 40.0),
+            (150.0, 60.0, -30.0),
+        ] {
+            for (yaw, pitch) in [
+                (15.0f32, 0.0f32),
+                (-15.0, 0.0),
+                (0.0, 15.0),
+                (0.0, -15.0),
+                (90.0, 0.0),
+                (0.0, 90.0),
+            ] {
+                let from = ViewState {
+                    azimuth,
+                    elevation,
+                    roll,
+                    ..ViewState::default()
+                };
+                // Positive yaw turns the model right: the view about screen up, the other way.
+                let axis = if yaw != 0.0 {
+                    -from.up() * yaw.signum()
+                } else {
+                    -from.right() * pitch.signum()
+                };
+                let mut v = ViewportView {
+                    view: from,
+                    ..default()
+                };
+                v.turn_by(yaw, pitch);
+                let mut total = 0.0;
+                run(&mut v, |a, angle| {
+                    if angle > 1e-4 {
+                        assert!(
+                            a.dot(axis) > 0.999,
+                            "from ({azimuth}, {elevation}, {roll}) by ({yaw}, {pitch}): \
+                             turned about {a} by {angle}, not {axis}"
+                        );
+                    }
+                    total += angle;
+                });
+                let want = (yaw + pitch).abs().to_radians();
+                assert!(
+                    (total - want).abs() < 1e-3,
+                    "from ({azimuth}, {elevation}, {roll}) by ({yaw}, {pitch}): {total}"
+                );
+            }
+        }
+    }
+
+    /// Frames (60 a second) of the arrow keys `held` (x right, y down) for `frames` frames, then
+    /// let go and the view run to its end; each frame's turn checked with `check` (axis,
+    /// radians). The degrees turned while held and after.
+    fn hold(
+        v: &mut ViewportView,
+        held: Vec2,
+        (shift, ctrl): (bool, bool),
+        frames: usize,
+        mut check: impl FnMut(usize, Vec3, f32),
+    ) -> (f32, f32) {
+        let dt = 1.0 / 60.0;
+        let mut keys = ArrowHold::default();
+        let mut prev = v.view.rotation();
+        let mut during = 0.0;
+        for frame in 0..frames {
+            hold_arrows(v, &mut keys, held, shift, ctrl, dt);
+            v.advance(dt, false);
+            let q = v.view.rotation();
+            let (a, angle) = turn_between(prev, q);
+            check(frame, a, angle);
+            during += angle;
+            prev = q;
+        }
+        hold_arrows(v, &mut keys, Vec2::ZERO, shift, ctrl, dt);
+        let mut after = 0.0;
+        run(v, |a, angle| {
+            check(frames, a, angle);
+            after += angle;
+        });
+        (during.to_degrees(), after.to_degrees())
+    }
+
+    /// #91: an arrow held turns the view from the moment it's pressed, one way about the
+    /// screen's up axis at a steady 90° a second (not waiting out the system's key repeat, then
+    /// stepping), and stops within a few degrees of being let go.
+    #[test]
+    fn a_held_arrow_turns_the_view_steadily() {
+        let from = ViewState::default();
+        let axis = from.up();
+        let mut v = ViewportView {
+            view: from,
+            ..default()
+        };
+        let (during, after) = hold(
+            &mut v,
+            Vec2::new(-1.0, 0.0),
+            (false, false),
+            180,
+            |f, a, angle| {
+                assert!(angle > 1e-5 || f >= 180, "frame {f}: still");
+                if angle > 1e-5 {
+                    assert!(a.dot(axis) > 0.999, "frame {f}: about {a} by {angle}");
+                }
+                // Past the first few frames, at its rate.
+                if (30..180).contains(&f) {
+                    let rate = angle.to_degrees() * 60.0;
+                    assert!((rate - 90.0).abs() < 1.0, "frame {f}: {rate}°/s");
+                }
+            },
+        );
+        assert!(after < 8.0, "{after}");
+        assert!((during + after - 270.0).abs() < 0.1, "{during} + {after}");
+    }
+
+    /// #91: a tap turns the view one step (15°, Shift 90°, Ctrl 5°), however short.
+    #[test]
+    fn a_tap_turns_the_view_one_step() {
+        for (keys, step) in [
+            ((false, false), 15.0),
+            ((true, false), 90.0),
+            ((false, true), 5.0),
+        ] {
+            for frames in [1, 3] {
+                let from = ViewState::default();
+                let axis = -from.up();
+                let mut v = ViewportView {
+                    view: from,
+                    ..default()
+                };
+                let (during, after) =
+                    hold(&mut v, Vec2::new(1.0, 0.0), keys, frames, |f, a, angle| {
+                        assert!(
+                            angle < 1e-5 || a.dot(axis) > 0.999,
+                            "{keys:?} frame {f}: about {a}"
+                        );
+                    });
+                assert!(
+                    (during + after - step).abs() < 0.05,
+                    "{keys:?} for {frames} frames: {during} + {after}"
+                );
+            }
+        }
+    }
+
+    /// #91: two arrows held turn the view diagonally: → and ↑ about the axis halfway between the
+    /// screen's down and right axes (as the view turns, its axes with it: the same world axis).
+    #[test]
+    fn two_arrows_held_turn_the_view_diagonally() {
+        let from = ViewState::default();
+        let axis = (from.right() - from.up()).normalize();
+        let mut v = ViewportView {
+            view: from,
+            ..default()
+        };
+        let (during, after) = hold(
+            &mut v,
+            Vec2::new(1.0, -1.0),
+            (false, false),
+            60,
+            |f, a, angle| {
+                assert!(
+                    angle < 1e-5 || a.dot(axis) > 0.999,
+                    "frame {f}: about {a}, not {axis}"
+                );
+            },
+        );
+        // A second: 90°, as fast as one arrow.
+        assert!((during + after - 90.0).abs() < 0.1, "{during} + {after}");
+    }
+
+    /// A default plane seen from behind is labelled with that side's name: Front reads Back,
+    /// Right Left, Top Bottom; edge on, no label.
+    #[test]
+    fn default_planes_are_labelled_by_the_side_seen() {
+        use StandardView as V;
+        for (plane, front, back) in [
+            (PlaneKind::Front, V::Front, V::Back),
+            (PlaneKind::Right, V::Right, V::Left),
+            (PlaneKind::Top, V::Top, V::Bottom),
+        ] {
+            assert_eq!(
+                plane.label(&ViewState::standard(front)),
+                (plane.name(), 1.0)
+            );
+            let behind = plane.label(&ViewState::standard(back));
+            assert_eq!(behind, (back_name(back), 1.0), "{plane:?}");
+        }
+        // Isometric: the three front sides; turned round, the three others.
+        let iso = ViewState::standard(V::Isometric);
+        let names = |v: &ViewState| PlaneKind::ALL.map(|k| k.label(v).0);
+        assert_eq!(names(&iso), ["Top", "Front", "Right"]);
+        let mut other = ViewportView {
+            view: iso,
+            ..default()
+        };
+        other.turn_by(180.0, 0.0);
+        other.advance(1.0, true);
+        assert_eq!(names(&other.view), ["Bottom", "Back", "Left"]);
+        // Edge on (the Front view, the Top plane): hidden.
+        assert_eq!(PlaneKind::Top.label(&ViewState::standard(V::Front)).1, 0.0);
+    }
+
+    fn back_name(v: StandardView) -> &'static str {
+        match v {
+            StandardView::Back => "Back",
+            StandardView::Left => "Left",
+            StandardView::Bottom => "Bottom",
+            _ => unreachable!(),
+        }
+    }
+
+    /// Blender's numpad: 7 Top, 1 Front, 3 Right, with Ctrl Bottom, Back and Left; 9 the other
+    /// side, 5 perspective; 8, 2, 4 and 6 turn the view as the arrows (two at once diagonally).
+    #[test]
+    fn numpad_keys_as_blender() {
+        use StandardView as V;
+        for (key, view, opposite) in [
+            (KeyCode::Numpad7, V::Top, V::Bottom),
+            (KeyCode::Numpad1, V::Front, V::Back),
+            (KeyCode::Numpad3, V::Right, V::Left),
+        ] {
+            assert_eq!(numpad_key(key, false), Some(NumpadKey::View(view)));
+            assert_eq!(numpad_key(key, true), Some(NumpadKey::View(opposite)));
+        }
+        assert_eq!(
+            numpad_key(KeyCode::Numpad9, false),
+            Some(NumpadKey::Opposite)
+        );
+        assert_eq!(
+            numpad_key(KeyCode::Numpad5, false),
+            Some(NumpadKey::Perspective)
+        );
+        for key in [KeyCode::Numpad9, KeyCode::Numpad5] {
+            assert_eq!(numpad_key(key, true), None);
+        }
+        for key in [KeyCode::Numpad8, KeyCode::Numpad0, KeyCode::Digit7] {
+            assert_eq!(numpad_key(key, false), None);
+        }
+        let held = |ks: &[KeyCode]| {
+            let mut keys = ButtonInput::<KeyCode>::default();
+            for &k in ks {
+                keys.press(k);
+            }
+            held_direction(&keys)
+        };
+        assert_eq!(held(&[KeyCode::Numpad4]), held(&[KeyCode::ArrowLeft]));
+        assert_eq!(held(&[KeyCode::Numpad6]), Vec2::new(1.0, 0.0));
+        assert_eq!(held(&[KeyCode::Numpad8]), Vec2::new(0.0, -1.0));
+        assert_eq!(held(&[KeyCode::Numpad2]), Vec2::new(0.0, 1.0));
+        assert_eq!(
+            held(&[KeyCode::Numpad8, KeyCode::Numpad6]),
+            Vec2::new(1.0, -1.0)
+        );
+        // Both ways at once: still.
+        assert_eq!(held(&[KeyCode::Numpad4, KeyCode::ArrowRight]), Vec2::ZERO);
+    }
+
+    /// Numpad 9 turns the view round to its other side about the screen's up axis: what faced
+    /// the viewer faces away, up stays up.
+    #[test]
+    fn numpad_9_turns_the_view_to_its_other_side() {
+        for s in [
+            StandardView::Front,
+            StandardView::Top,
+            StandardView::Isometric,
+        ] {
+            let from = ViewState::standard(s);
+            let axis = from.up();
+            let mut v = ViewportView {
+                view: from,
+                ..default()
+            };
+            v.turn_by(180.0, 0.0);
+            run(&mut v, |a, angle| {
+                assert!(
+                    angle < 1e-4 || a.dot(axis).abs() > 0.999,
+                    "{s:?}: about {a}"
+                );
+            });
+            assert!(
+                (v.view.back() + from.back()).length() < 1e-3,
+                "{s:?}: {:?}",
+                v.view
+            );
+            assert!(
+                (v.view.up() - from.up()).length() < 1e-3,
+                "{s:?}: {:?}",
+                v.view
+            );
+        }
+    }
+
+    /// #91: taps quicker than their turns add up: four of Shift+→ (90° each) turn the view a
+    /// whole revolution, the same way all along, back where it started.
+    #[test]
+    fn quick_taps_add_up_to_a_whole_turn() {
+        let from = ViewState::default();
+        let axis = -from.up();
+        let mut v = ViewportView {
+            view: from,
+            ..default()
+        };
+        let dt = 1.0 / 60.0;
+        let mut keys = ArrowHold::default();
+        let mut total = 0.0;
+        let mut prev = from.rotation();
+        for frame in 0..8 {
+            let held = if frame % 2 == 0 { Vec2::X } else { Vec2::ZERO };
+            hold_arrows(&mut v, &mut keys, held, true, false, dt);
+            v.advance(dt, false);
+            let q = v.view.rotation();
+            let (a, angle) = turn_between(prev, q);
+            assert!(
+                angle < 1e-4 || a.dot(axis) > 0.999,
+                "frame {frame}: about {a}"
+            );
+            total += angle;
+            prev = q;
+        }
+        run(&mut v, |a, angle| {
+            assert!(angle < 1e-4 || a.dot(axis) > 0.999, "about {a} by {angle}");
+            total += angle;
+        });
+        assert!((total - std::f32::consts::TAU).abs() < 1e-3, "{total}");
+        assert!(v.view.approx_eq(&from), "{:?}", v.view);
+    }
 
     /// P3E.3a (TD6.5): the render mode and the projection are per tab: they stay with a tab's
     /// view when another tab is shown and come back with it; a tab opened for the first time

@@ -1,0 +1,28 @@
+// Blender's numpad views, and the default planes labelled by the side seen (#91).
+// 01 the isometric view: Top, Front and Right; 02 Numpad 9, the other side: Bottom, Back and Left.
+// 03 Numpad 1, Front; 04 Ctrl+Numpad 1, Back: the Front plane reads Back.
+// 05 Ctrl+Numpad 7, Bottom: the Top plane reads Bottom; 06 Ctrl+Numpad 3, Left: the Right plane
+//    reads Left.
+Scenario(
+    start: Some("document"),
+    steps: [
+        Wait(10),
+        MoveTo(1300, 700),
+        Screenshot("01-isometric"),
+        Key("Numpad9"),
+        Wait(30),
+        Screenshot("02-numpad-9-other-side"),
+        Key("Numpad1"),
+        Wait(30),
+        Screenshot("03-numpad-1-front"),
+        Key("Ctrl+Numpad1"),
+        Wait(30),
+        Screenshot("04-ctrl-numpad-1-back"),
+        Key("Ctrl+Numpad7"),
+        Wait(30),
+        Screenshot("05-ctrl-numpad-7-bottom"),
+        Key("Ctrl+Numpad3"),
+        Wait(30),
+        Screenshot("06-ctrl-numpad-3-left"),
+    ],
+)
