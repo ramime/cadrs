@@ -1357,7 +1357,6 @@ impl Model<'_> {
     }
 
     fn copies(&self, q: &Value, derived: &[&Value], depth: usize) -> Vec<Ent> {
-        use cadrs_kernel::naming::face_hash;
         if let Some(op) = q.get("operationId").and_then(Value::as_str)
             && let Some((fid, lazy)) = self.derived.and_then(|m| m.get(op_feature(op)))
         {
@@ -1378,10 +1377,62 @@ impl Model<'_> {
             .get("instanceName")
             .and_then(Value::as_str)
             .and_then(|s| crate::features::cadrs_instance(self.doc, FeatureId(op), s));
+        // A copy of an edge between a cap and a side face, or two side faces: the edge between
+        // the copies of those faces. That finds it where the original edge is gone (a later
+        // feature reshaped the original body there while the copy lives on).
+        if let [d] = derived
+            && d.get("entityType").and_then(Value::as_str) == Some("EDGE")
+            && let Some(faces) = edge_faces(d)
+            && let [fa, fb] = &faces[..]
+        {
+            let seeds = |f: &Value| -> Vec<Ent> {
+                let mut s = self.eval_depth(f, depth + 1);
+                // A cap only where a face is named so (a query for a cap no face holds the name
+                // of finds the operation's faces at large).
+                if f.get("queryType").and_then(Value::as_str) == Some("CAP_FACE") {
+                    let fop = f
+                        .get("operationId")
+                        .and_then(Value::as_str)
+                        .and_then(|o| self.features.get(op_feature(o)))
+                        .map(|f| f.0);
+                    let end = f.get("isStart").and_then(Value::as_bool).map(|s| !s);
+                    s.retain(|e| {
+                        self.face_names(*e).iter().any(|n| {
+                            Some(n.op) == fop
+                                && matches!(n.origin, FaceOrigin::Cap { end: x, .. } if end.is_none_or(|e| e == x))
+                        })
+                    });
+                }
+                s
+            };
+            let (sa, sb) = (seeds(fa), seeds(fb));
+            if !sa.is_empty() && !sb.is_empty() {
+                let a: HashSet<Ent> = self.copied(op, instance, &sa).into_iter().collect();
+                let b: HashSet<Ent> = self.copied(op, instance, &sb).into_iter().collect();
+                let found: Vec<Ent> = self
+                    .all_edges()
+                    .filter(|e| {
+                        let faces = self.adjacent(*e);
+                        faces.iter().any(|f| a.contains(f)) && faces.iter().any(|f| b.contains(f))
+                    })
+                    .collect();
+                if !found.is_empty() {
+                    return found;
+                }
+            }
+        }
         let seeds: Vec<Ent> = derived
             .iter()
             .flat_map(|d| self.eval_depth(d, depth + 1))
             .collect();
+        let out = self.copied(op, instance, &seeds);
+        // No copies named that way (the operation kept the seeds' names): the seeds themselves.
+        if out.is_empty() { seeds } else { out }
+    }
+
+    /// The copies operation `op` made of `seeds` (in instance `instance`, else in any).
+    fn copied(&self, op: uuid::Uuid, instance: Option<u32>, seeds: &[Ent]) -> Vec<Ent> {
+        use cadrs_kernel::naming::face_hash;
         // A copy of seed face `s` in instance `k` (any instance when `k` is None).
         let copy_of = |n: &FaceName, s: &FaceName, k: Option<u32>| {
             n.op == op
@@ -1389,7 +1440,7 @@ impl Model<'_> {
         };
         for k in [instance, None] {
             let mut out = Vec::new();
-            for seed in &seeds {
+            for seed in seeds {
                 match *seed {
                     Ent::Face(..) => {
                         // By any of their names (a merged face answers to its pieces' names).
@@ -1417,8 +1468,7 @@ impl Model<'_> {
                 return out;
             }
         }
-        // No copies named that way (the operation kept the seeds' names): the seeds themselves.
-        seeds
+        Vec::new()
     }
 
     /// The face `q` refers to, as a reference.

@@ -3,7 +3,7 @@
 //! feature of the same name and adds it through the command layer.
 
 use crate::ids::stable_u128;
-use cadrs_core::advanced::{LoftFeature, LoftProfile};
+use cadrs_core::advanced::{LoftFeature, LoftProfile, SplitFeature, SplitToolRef, SplitType};
 use cadrs_core::applied::{ChamferFeature, ChamferType, EdgeOrFace, FilletFeature};
 use cadrs_core::command::CommandError;
 use cadrs_core::commands::{AddFeature, RenameFeature};
@@ -570,19 +570,44 @@ impl PartStudio<'_> {
         fid: &str,
         fr: &mut FeatureReport,
     ) -> Result<(), CommandError> {
-        if Self::text(f, "patternType") != "PART" {
-            return Err(CommandError::Invalid(
-                "feature and face mirrors are not imported yet".into(),
-            ));
+        let mirror_type = match Self::text(f, "patternType").as_str() {
+            "PART" => PatternType::Part,
+            "FEATURE" => PatternType::Feature,
+            _ => {
+                return Err(CommandError::Invalid(
+                    "face mirrors are not imported yet".into(),
+                ));
+            }
+        };
+        let (mut parts, mut features) = (Vec::new(), Vec::new());
+        if mirror_type == PatternType::Part {
+            let mut lost = 0;
+            parts = self.parts_param(f, "entities", &mut lost);
+            if parts.is_empty() {
+                return Err(CommandError::Invalid(
+                    "its parts could not be translated".into(),
+                ));
+            }
+            Self::lost_note(fr, lost, "part selections");
+        } else {
+            // The features it mirrors, those imported.
+            let ids: Vec<&str> = param(f, "instanceFunction")
+                .and_then(|p| p["featureIds"].as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            features = ids
+                .iter()
+                .filter_map(|i| self.features.get(*i).copied())
+                .collect();
+            if features.is_empty() {
+                return Err(CommandError::Invalid(
+                    "none of its features were imported".into(),
+                ));
+            }
+            Self::lost_note(fr, ids.len() - features.len(), "features (not imported)");
         }
-        let mut lost = 0;
-        let parts = self.parts_param(f, "entities", &mut lost);
-        if parts.is_empty() {
-            return Err(CommandError::Invalid(
-                "its parts could not be translated".into(),
-            ));
-        }
-        Self::lost_note(fr, lost, "part selections");
         let plane = match refs::picks(param(f, "mirrorPlane")).into_iter().next() {
             Some(p) => match self.plane_ref(&p) {
                 Some(pl) => Some(MirrorPlane::Plane(pl)),
@@ -604,15 +629,63 @@ impl PartStudio<'_> {
             self.parts_param(f, "booleanScope", &mut lost)
         };
         let x = MirrorFeature {
-            mirror_type: PatternType::Part,
+            mirror_type,
             parts,
+            features,
             plane: Some(plane),
             op,
             merge_all: Self::flag(f, "defaultScope"),
             merge_scope,
+            // Onshape's "Reapply features".
+            reapply: Self::flag(f, "fullFeaturePattern"),
             ..MirrorFeature::default()
         };
         self.add(f, fid, "Mirror", FeatureKind::Mirror(x), fr)
+    }
+
+    /// A Split of parts by a plane or a face (Onshape's Split, Part type).
+    pub(crate) fn split(
+        &mut self,
+        f: &Value,
+        fid: &str,
+        fr: &mut FeatureReport,
+    ) -> Result<(), CommandError> {
+        if Self::text(f, "splitType") != "PART" {
+            return Err(CommandError::Invalid(
+                "face splits are not imported yet".into(),
+            ));
+        }
+        let mut lost = 0;
+        let parts = self.parts_param(f, "targets", &mut lost);
+        if parts.is_empty() {
+            return Err(CommandError::Invalid(
+                "its parts could not be translated".into(),
+            ));
+        }
+        Self::lost_note(fr, lost, "part selections");
+        let tool = match refs::picks(param(f, "tool")).into_iter().next() {
+            Some(p) => match self.plane_ref(&p) {
+                Some(pl) => Some(SplitToolRef::Plane(pl)),
+                None => match p {
+                    Pick::Query(q) => self.face_of(&q).map(SplitToolRef::Face),
+                    _ => None,
+                },
+            },
+            None => None,
+        };
+        let tool =
+            tool.ok_or_else(|| CommandError::Invalid("its tool could not be translated".into()))?;
+        let x = SplitFeature {
+            parts,
+            tool: Some(tool),
+            split_type: SplitType::Part,
+            keep_tools: Self::flag(f, "keepTools"),
+            trim: Self::flag(f, "useTrimmed"),
+            keep_both: Self::flag(f, "keepBothSides"),
+            flip: !Self::flag(f, "keepFront"),
+            ..SplitFeature::default()
+        };
+        self.add(f, fid, "Split", FeatureKind::Split(x), fr)
     }
 
     pub(crate) fn pattern(

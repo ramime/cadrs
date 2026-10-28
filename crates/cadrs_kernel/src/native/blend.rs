@@ -2740,6 +2740,10 @@ pub fn chamfer(
     let spec = opts.spec;
     let b = (**k.get(body)?).clone();
     let edges = &real_edges(&b, edges)?[..];
+    let opts = &match spec {
+        ChamferSpec::EqualDistance(_) => opts.clone(),
+        _ => chain_sides(&b, edges, opts),
+    };
     // (Local trimming passes over edges whose faces join smoothly.)
     let sharp = sharp_edges(&b, edges)?;
     // Equal distances: by local trimming, their contacts that far along the faces
@@ -2775,8 +2779,9 @@ pub fn chamfer(
     }
     // The other specs and measures: by local trimming too, each edge with its distances along
     // its two faces (tangent ones converted once the edge's rule is chosen, as below). Two
-    // distances that differ only along straight edges between flat faces; equal ones wherever
-    // the faces meet at one angle (as the equal-distance chamfer above).
+    // distances that differ only along edges whose faces run straight across them (flat ones,
+    // or walls square to them); equal ones wherever the faces meet at one angle (as the
+    // equal-distance chamfer above).
     if !matches!(
         (spec, opts.measurement),
         (ChamferSpec::EqualDistance(_), ChamferMeasure::Offset)
@@ -2814,6 +2819,7 @@ pub fn chamfer(
                     && d2 > 0.0
                     && (flat
                         || d1 == d2
+                        || super::fillet::straight_across(&b, ei)
                         || super::fillet::chamfer_offsets_along(&b, ei, d).is_some()))
                 .then_some((ei, d))
             })
@@ -2846,6 +2852,79 @@ pub fn chamfer(
         }
     }
     chamfer_tool(k, body, edges, opts)
+}
+
+/// `opts` with the first distance's side ([`ChamferSpec::TwoDistances`]) made explicit: the
+/// face whose loop runs along the edge, for the first edge of each tangent chain (in the order
+/// given: the picks first); along the chain, each edge's sides as the edge before it has them
+/// where they meet (the face it shares with it, else the one facing the same way there). The
+/// edges whose sides that swaps from their faces' order go into `flipped` (an edge flipped on
+/// its own stays flipped against its chain).
+fn chain_sides(b: &Body, edges: &[EdgeId], opts: &ChamferOpts) -> ChamferOpts {
+    let ids: Vec<usize> = edges.iter().map(|e| e.0 as usize).collect();
+    // Edge e's face on side `s` (in `edge_sides` order) and its outward normal at vertex v.
+    let face_at = |e: usize, s: usize, v: usize| -> Option<(usize, V3)> {
+        let ed = &b.edges[e];
+        let (fi, fwd) = edge_sides(b, e).ok()?[s];
+        let t = if ed.v[0] == v { ed.t[0] } else { ed.t[1] };
+        Some((fi, face_dirs(b, fi, e, fwd, t).0))
+    };
+    let tangent = |x: usize, y: usize, v: usize| {
+        let dir = |e: usize| {
+            let ed = &b.edges[e];
+            let t = if ed.v[0] == v { ed.t[0] } else { ed.t[1] };
+            ed.curve.tangent(t).normalize()
+        };
+        dir(x).dot(&dir(y)).abs() >= crate::TANGENT_ANGLE.cos()
+    };
+    let mut swap: std::collections::HashMap<usize, bool> = Default::default();
+    for &start in &ids {
+        if swap.contains_key(&start) {
+            continue;
+        }
+        let Ok([(_, fwd), _]) = edge_sides(b, start) else {
+            continue;
+        };
+        swap.insert(start, !fwd);
+        let mut todo = vec![start];
+        while let Some(x) = todo.pop() {
+            for &y in &ids {
+                if swap.contains_key(&y) {
+                    continue;
+                }
+                let Some(&v) = b.edges[x].v.iter().find(|v| b.edges[y].v.contains(v)) else {
+                    continue;
+                };
+                if !tangent(x, y, v) {
+                    continue;
+                }
+                let first = usize::from(swap[&x]);
+                let (Some((fx, nx)), Some((f0, n0)), Some((f1, n1))) =
+                    (face_at(x, first, v), face_at(y, 0, v), face_at(y, 1, v))
+                else {
+                    continue;
+                };
+                let s = if f0 == fx {
+                    false
+                } else if f1 == fx {
+                    true
+                } else {
+                    n1.dot(&nx) > n0.dot(&nx)
+                };
+                swap.insert(y, s);
+                todo.push(y);
+            }
+        }
+    }
+    let flipped = edges
+        .iter()
+        .copied()
+        .filter(|e| swap.get(&(e.0 as usize)).copied().unwrap_or(false) != opts.flipped.contains(e))
+        .collect();
+    ChamferOpts {
+        flipped,
+        ..opts.clone()
+    }
 }
 
 /// The chamfer by a tool and boolean alone (the sections solved on the exact faces, their

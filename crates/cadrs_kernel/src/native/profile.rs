@@ -1036,7 +1036,7 @@ pub fn merge_regions(regions: &[Region2]) -> Result<Vec<MergedFace>> {
                 ));
             }
         }
-        traced.push(fuse_pieces(lp, tol, false));
+        traced.push(share_curve_names(fuse_pieces(lp, tol, false)));
     }
     // Outer loops and holes.
     let mut outers: Vec<(Loop2, Vec<P2>, f64)> = Vec::new();
@@ -1098,6 +1098,55 @@ pub fn merge_regions(regions: &[Region2]) -> Result<Vec<MergedFace>> {
         faces[i].regions.push(r.source);
     }
     Ok(faces)
+}
+
+/// A merged loop with the pieces of one sketch curve that meet across where two regions joined
+/// (a spline split at a junction of their boundaries) named alike: each takes the others'
+/// origins too, so the faces they sweep take one name, as a curve's pieces within one region
+/// do (a spline's spans), and show as one face.
+fn share_curve_names(mut lp: Loop2) -> Loop2 {
+    let n = lp.len();
+    if n < 2 {
+        return lp;
+    }
+    let curve = |p: &Piece| match p.src {
+        Src::Curve { curve, .. } => Some(curve),
+        Src::Edge { .. } => None,
+    };
+    // Runs of adjacent pieces of one curve, round the loop.
+    let mut class: Vec<usize> = (0..n).collect();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        if curve(&lp[i]).is_some() && curve(&lp[i]) == curve(&lp[j]) {
+            let (a, b) = (class[i], class[j]);
+            for c in &mut class {
+                if *c == b {
+                    *c = a;
+                }
+            }
+        }
+    }
+    let srcs: Vec<Vec<Src>> = (0..n)
+        .map(|i| {
+            let mut out: Vec<Src> = Vec::new();
+            for k in (0..n).filter(|&k| class[k] == class[i]) {
+                for s in std::iter::once(lp[k].src).chain(lp[k].more.iter().copied()) {
+                    if !out.contains(&s) {
+                        out.push(s);
+                    }
+                }
+            }
+            out
+        })
+        .collect();
+    for (p, s) in lp.iter_mut().zip(srcs) {
+        for o in s {
+            if o != p.src && !p.more.contains(&o) {
+                p.more.push(o);
+            }
+        }
+    }
+    lp
 }
 
 /// The faces with each loop's pieces that continue each other on one line fused into one (a

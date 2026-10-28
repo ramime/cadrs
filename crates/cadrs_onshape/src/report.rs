@@ -34,6 +34,8 @@ pub struct PartCheck {
     pub cadrs_volume: Option<f64>,
     /// How the matched part's bounding box differs from Onshape's, if it does.
     pub bbox_note: Option<String>,
+    /// Onshape's face count and the matched cadrs part's, when both are known.
+    pub faces: Option<(usize, usize)>,
 }
 
 impl PartCheck {
@@ -43,9 +45,12 @@ impl PartCheck {
             .map(|v| (v - self.onshape_volume).abs() / self.onshape_volume.abs().max(1e-9))
     }
 
-    /// Matched: within 0.1 % of Onshape's volume, and where Onshape has it (its box).
+    /// Matched: within 0.1 % of Onshape's volume, where Onshape has it (its box), and with as
+    /// many faces.
     pub fn matches(&self) -> bool {
-        self.error().is_some_and(|e| e < 1e-3) && self.bbox_note.is_none()
+        self.error().is_some_and(|e| e < 1e-3)
+            && self.bbox_note.is_none()
+            && self.faces.is_none_or(|(o, c)| o == c)
     }
 }
 
@@ -164,6 +169,9 @@ impl fmt::Display for DocumentReport {
                         "      missing    part {} ({:.1} mm³)",
                         p.name, p.onshape_volume
                     )?,
+                }
+                if let Some((o, c)) = p.faces.filter(|(o, c)| o != c) {
+                    writeln!(f, "      faces      {}: {c} vs {o}", p.name)?;
                 }
             }
         }

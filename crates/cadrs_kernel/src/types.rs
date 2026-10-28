@@ -780,7 +780,9 @@ pub struct Axis {
 pub enum ChamferSpec {
     /// The same distance (mm) on both faces.
     EqualDistance(f64),
-    /// The first distance on the edge's first face, the second on the other (mm).
+    /// The first distance on the edge's first face, the second on the other (mm). The first
+    /// face is the one whose boundary runs along the edge (as Onshape's); along a tangent chain
+    /// of edges, the face on the same side as the first edge's.
     TwoDistances(f64, f64),
     /// A distance on the first face and the chamfer's angle to it (radians).
     DistanceAngle {
