@@ -58,6 +58,10 @@ clients take the URL in their MCP settings.
 | `cadrs_harness` | Scripted scenarios, synthetic input and screenshots |
 | `cadrs_mcp` | The MCP server through which AI assistants drive the app |
 
+### Tests
+
+`cargo test -r -p cadrs_core --test reference_parts -- --nocapture`
+
 ## Sponsors
 Thank you to: 
 
