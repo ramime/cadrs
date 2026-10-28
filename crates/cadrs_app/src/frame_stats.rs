@@ -15,7 +15,7 @@ use cadrs_ui::{ShortcutKey, Theme};
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::frame_profile::{FrameProfile, Row, short_name};
+use crate::frame_profile::{CpuProfiling, FrameProfile, Row, short_name};
 
 /// How far back the stats look.
 const WINDOW_SECS: f64 = 2.0;
@@ -254,6 +254,7 @@ fn sync_panel(
     mut q_text: Query<&mut Text, (With<FrameStatsText>, Without<FrameStatsHint>)>,
     mut q_hint: Query<&mut Text, With<FrameStatsHint>>,
     q_rows: Query<Entity, With<FrameProfileRows>>,
+    cpu: Res<CpuProfiling>,
 ) {
     let display = if stats.mode == PanelMode::Hidden {
         Display::None
@@ -295,83 +296,102 @@ fn sync_panel(
             )
         };
         commands.entity(rows).with_children(|r| {
-            // The main thread: one bar of the loop's schedules, then their names.
-            r.spawn(small("CPU · main loop".into(), t.muted_foreground));
-            r.spawn((
-                Node {
-                    width: Val::Px(BAR_PX),
-                    height: Val::Px(8.0),
-                    ..default()
-                },
-                BackgroundColor(t.secondary),
-                Pickable::IGNORE,
-            ))
-            .with_children(|bar| {
-                for (i, row) in s.main.iter().enumerate() {
-                    let (cr, cg, cb) = SCHEDULE_COLORS[i % SCHEDULE_COLORS.len()];
-                    bar.spawn((
-                        Node {
-                            width: Val::Px(px(row.ms)),
-                            height: Val::Percent(100.0),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb_u8(cr, cg, cb)),
-                        Pickable::IGNORE,
-                    ));
-                }
-            });
-            let mut by_time: Vec<(usize, &Row)> = s.main.iter().enumerate().collect();
-            by_time.sort_by(|a, b| b.1.ms.total_cmp(&a.1.ms));
-            r.spawn(Node {
-                column_gap: Val::Px(6.0),
-                flex_wrap: FlexWrap::Wrap,
-                max_width: Val::Px(BAR_PX),
-                ..default()
-            })
-            .insert(Pickable::IGNORE)
-            .with_children(|legend| {
-                for (i, row) in by_time.into_iter().take(4) {
-                    let (cr, cg, cb) = SCHEDULE_COLORS[i % SCHEDULE_COLORS.len()];
-                    legend.spawn(small(
-                        format!("{} {:.1}", row.name, row.ms),
-                        Color::srgb_u8(cr, cg, cb),
-                    ));
-                }
-            });
-            // The render thread, on the same scale.
-            let render_ms: f32 = s.render.iter().map(|r| r.ms).sum();
-            r.spawn((
-                Node {
-                    column_gap: Val::Px(6.0),
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ))
-            .with_children(|line| {
-                line.spawn((
+            // Without the CPU times (off unless wanted: `CpuProfiling`), why not.
+            if let Some(why) = cpu.why_not() {
+                r.spawn((
+                    t.text(
+                        format!("CPU times: {why}."),
+                        t.font_sm - 1.0,
+                        FontWeight::NORMAL,
+                        t.muted_foreground,
+                    ),
                     Node {
-                        width: Val::Px(BAR_PX * 0.7),
-                        height: Val::Px(6.0),
+                        max_width: Val::Px(BAR_PX),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ))
+                // Wrapped at the bars' width (the theme's text doesn't wrap).
+                .insert(TextLayout::default());
+            } else {
+                // The main thread: one bar of the loop's schedules, then their names.
+                r.spawn(small("CPU · main loop".into(), t.muted_foreground));
+                r.spawn((
+                    Node {
+                        width: Val::Px(BAR_PX),
+                        height: Val::Px(8.0),
                         ..default()
                     },
                     BackgroundColor(t.secondary),
                     Pickable::IGNORE,
                 ))
-                .with_child((
+                .with_children(|bar| {
+                    for (i, row) in s.main.iter().enumerate() {
+                        let (cr, cg, cb) = SCHEDULE_COLORS[i % SCHEDULE_COLORS.len()];
+                        bar.spawn((
+                            Node {
+                                width: Val::Px(px(row.ms)),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb_u8(cr, cg, cb)),
+                            Pickable::IGNORE,
+                        ));
+                    }
+                });
+                let mut by_time: Vec<(usize, &Row)> = s.main.iter().enumerate().collect();
+                by_time.sort_by(|a, b| b.1.ms.total_cmp(&a.1.ms));
+                r.spawn(Node {
+                    column_gap: Val::Px(6.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    max_width: Val::Px(BAR_PX),
+                    ..default()
+                })
+                .insert(Pickable::IGNORE)
+                .with_children(|legend| {
+                    for (i, row) in by_time.into_iter().take(4) {
+                        let (cr, cg, cb) = SCHEDULE_COLORS[i % SCHEDULE_COLORS.len()];
+                        legend.spawn(small(
+                            format!("{} {:.1}", row.name, row.ms),
+                            Color::srgb_u8(cr, cg, cb),
+                        ));
+                    }
+                });
+                // The render thread, on the same scale.
+                let render_ms: f32 = s.render.iter().map(|r| r.ms).sum();
+                r.spawn((
                     Node {
-                        width: Val::Px(px(render_ms) * 0.7),
-                        height: Val::Percent(100.0),
+                        column_gap: Val::Px(6.0),
+                        align_items: AlignItems::Center,
                         ..default()
                     },
-                    BackgroundColor(Color::srgb_u8(0x9c, 0x75, 0x5f)),
                     Pickable::IGNORE,
-                ));
-                line.spawn(small(
-                    format!("render thread {render_ms:.1}"),
-                    t.muted_foreground,
-                ));
-            });
+                ))
+                .with_children(|line| {
+                    line.spawn((
+                        Node {
+                            width: Val::Px(BAR_PX * 0.7),
+                            height: Val::Px(6.0),
+                            ..default()
+                        },
+                        BackgroundColor(t.secondary),
+                        Pickable::IGNORE,
+                    ))
+                    .with_child((
+                        Node {
+                            width: Val::Px(px(render_ms) * 0.7),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb_u8(0x9c, 0x75, 0x5f)),
+                        Pickable::IGNORE,
+                    ));
+                    line.spawn(small(
+                        format!("render thread {render_ms:.1}"),
+                        t.muted_foreground,
+                    ));
+                });
+            }
             let bar_row = |r: &mut ChildSpawnerCommands, row: &Row, name: String, color: Color| {
                 r.spawn((
                     Node {
@@ -404,12 +424,7 @@ fn sync_panel(
                     line.spawn(small(format!("{:>6.1} {name}", row.ms), t.foreground));
                 });
             };
-            if s.systems.is_empty() {
-                r.spawn(small(
-                    "systems: not traced (build without bevy/trace)".into(),
-                    t.muted_foreground,
-                ));
-            } else {
+            if !s.systems.is_empty() {
                 r.spawn(small(
                     "CPU · systems (ms a frame)".into(),
                     t.muted_foreground,

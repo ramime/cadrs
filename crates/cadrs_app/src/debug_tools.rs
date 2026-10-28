@@ -3,9 +3,12 @@
 //!
 //! - `CADRS_SLOW_FRAMES=<ms>`: prints every frame that took longer than this (wall clock, so
 //!   scripted runs' fixed time steps don't hide it) with its slowest schedules, systems and
-//!   systems' commands (observers included; those over 1 ms), from the frame profile ([`crate::frame_profile`]; needs the default
-//!   `profiler` feature for the system times). `CADRS_SLOW_FRAMES=1` (or any value that isn't a
-//!   number) uses 50 ms.
+//!   systems' commands (observers included; those over 1 ms), from the frame profile ([`crate::frame_profile`]; it turns
+//!   the system times on, which need the default `profiler` feature). `CADRS_SLOW_FRAMES=1` (or
+//!   any value that isn't a number) uses 50 ms.
+//! - `CADRS_FRAME_PROFILE=1`: times every system and schedule for the frame panel and
+//!   `get_frame_stats`, as the *Time systems* preference does (`0` keeps them off;
+//!   [`crate::frame_profile::CpuProfiling`]).
 
 use web_time::Instant;
 

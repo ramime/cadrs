@@ -313,6 +313,11 @@ pub struct Preferences {
     /// as cadrs starts. Off, cadrs stays off the network until the user connects (issue #148).
     #[serde(default)]
     pub autoconnect_p2p: bool,
+    /// Time every system and schedule, for the frame panel's details (F12) and
+    /// `get_frame_stats`. It costs about a fifth of each frame, so it's off unless wanted, and
+    /// takes effect at the next start (`cadrs_app::frame_profile::CpuProfiling`).
+    #[serde(default)]
+    pub profile_cpu: bool,
 }
 
 fn default_rotation_snap_degrees() -> f64 {
@@ -333,6 +338,7 @@ impl Default for Preferences {
             color_scheme: ColorScheme::default(),
             whats_new_seen: 0,
             autoconnect_p2p: false,
+            profile_cpu: false,
         }
     }
 }
@@ -517,6 +523,7 @@ mod tests {
             color_scheme: ColorScheme::Dark,
             whats_new_seen: 1,
             autoconnect_p2p: true,
+            profile_cpu: true,
         };
         p.save(&dir).unwrap();
         assert_eq!(Preferences::load(&dir), p);

@@ -65,6 +65,10 @@ pub struct Scenario {
     /// 200%). `--window-size` overrides it.
     #[serde(default)]
     pub window_size: Option<(u32, u32)>,
+    /// Time every system and schedule, for the frame panel's details (off unless wanted, as
+    /// the app's *Time systems* preference is).
+    #[serde(default)]
+    pub profile_cpu: bool,
     pub steps: Vec<Step>,
 }
 

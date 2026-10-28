@@ -8,6 +8,9 @@
 //! **Interface › UI scale** (issue #12): 75–200 % of the display's own scale, for large or
 //! high-resolution screens; applied to the whole window as soon as OK is pressed. Ctrl+= and
 //! Ctrl+- step through its sizes anywhere, as a browser's zoom does ([`step_ui_scale`]).
+//! **Frame panel › Time systems** (`profile_cpu`): the CPU time of every system and schedule in
+//! the frame panel's details (F12) and `get_frame_stats`. Off by default (it costs about a fifth of
+//! each frame), and it takes effect at the next start ([`crate::frame_profile::CpuProfiling`]).
 //!
 //! **Color scheme**: the top bar's light / dark / system toggle ([`cadrs_ui::scheme_toggle`])
 //! is saved here too, as soon as it's clicked. `CADRS_COLOR_SCHEME=light|dark|system` overrides
@@ -289,6 +292,8 @@ pub fn open_preferences(world: &mut World) {
     let mcp = world.resource::<LocalPreferences>().0.mcp;
     #[cfg(not(target_arch = "wasm32"))]
     let autoconnect = world.resource::<LocalPreferences>().0.autoconnect_p2p;
+    #[cfg(not(target_arch = "wasm32"))]
+    let profile_cpu = world.resource::<LocalPreferences>().0.profile_cpu;
     let snap = world
         .resource::<LocalPreferences>()
         .0
@@ -342,6 +347,23 @@ pub fn open_preferences(world: &mut World) {
                 }
                 let at = UI_SCALES.iter().position(|p| *p == ui_scale).unwrap_or(2);
                 b.spawn(form_row(t, "pref-ui-scale-row", "UI scale", 150.0)).with_child(sizes.selected(at).build(t));
+                // The browser build has no system times to show.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                b.spawn(form_row(t, "pref-profile-cpu-row", "Frame panel (F12)", 150.0))
+                    .with_child(Switch::new("pref-profile-cpu").label("Time systems").on(profile_cpu).build(t));
+                b.spawn((
+                    Name::new("pref-profile-cpu-note"),
+                    t.text(
+                        "Shows where each frame's CPU time goes, system by system. It slows cadrs down, so it's off unless you need it. Takes effect at the next start.",
+                        t.font_sm,
+                        FontWeight::NORMAL,
+                        t.muted_foreground,
+                    ),
+                    Node { width: Val::Px(400.0), margin: UiRect::top(Val::Px(6.0)), ..default() },
+                ))
+                .insert(TextLayout::default());
+                }
                 b.spawn((
                     Name::new("pref-assembly-heading"),
                     t.text("Assembly manipulation", t.font_base, FontWeight::BOLD, t.foreground),
@@ -520,6 +542,13 @@ fn save_preferences(world: &mut World) {
         .map(|(_, s)| s.on);
     if let Some(on) = autoconnect {
         world.resource_mut::<LocalPreferences>().0.autoconnect_p2p = on;
+    }
+    let profile_cpu = qm
+        .iter(world)
+        .find(|(n, _)| n.as_str() == "pref-profile-cpu")
+        .map(|(_, s)| s.on);
+    if let Some(on) = profile_cpu {
+        world.resource_mut::<LocalPreferences>().0.profile_cpu = on;
     }
     save(world);
     world.trigger(DialogClose { entity: dialog });

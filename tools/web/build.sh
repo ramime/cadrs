@@ -27,7 +27,11 @@ if [[ "$have" != "$want" ]]; then
     exit 1
 fi
 
-cargo build -r --locked --target wasm32-unknown-unknown -p cadrs
+# Without the default `profiler` feature (bevy/trace): in a page, Bevy's log layer hands each of
+# its spans (one a run of every system and schedule, thousands a frame) to the browser's
+# performance timeline (tracing-wasm), and frames took about seven times as long. The frame panel
+# then shows the GPU passes alone.
+cargo build -r --locked --target wasm32-unknown-unknown -p cadrs --no-default-features -F gpu
 names=(--remove-name-section)
 [[ "${CADRS_WEB_DEBUG:-0}" != 0 ]] && names=()
 wasm-bindgen --target web --no-typescript "${names[@]}" --remove-producers-section \

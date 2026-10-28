@@ -283,7 +283,8 @@ fn run(world: &mut World, call: &Call) -> Result<Value, String> {
                 stats.as_object_mut(),
                 world.get_resource::<crate::frame_profile::FrameProfile>(),
             ) {
-                o.insert("profile".into(), p.describe(25));
+                let cpu = *world.resource::<crate::frame_profile::CpuProfiling>();
+                o.insert("profile".into(), p.describe(25, cpu));
             }
             Ok(stats)
         }
