@@ -1,14 +1,10 @@
 # Faster Linux builds (https://bevy.org/learn/quick-start/getting-started/setup/): link with mold,
-# share monomorphized generics between crates, and run rustc's front end on 2 threads (both
+# share monomorphized generics between crates, and run rustc's front end on 8 threads (both
 # nightly). The Linux release build has no mold: release.yml and tools/release/build.sh turn
 # these off there.
-[build]
-# Leave CPU capacity available for interactive use, especially on hybrid P/E-core desktops.
-jobs = 4
-
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold", "-Zshare-generics=y", "-Zthreads=2"]
+rustflags = ["-C", "link-arg=-fuse-ld=mold", "-Zshare-generics=y", "-Zthreads=8"]
 
 [alias]
 # Builds in release and installs it for the current user, with a launcher entry (Linux; see

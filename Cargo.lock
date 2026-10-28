@@ -2247,6 +2247,7 @@ dependencies = [
  "serde_json",
  "spnav-rs",
  "tar",
+ "tokio",
  "ureq",
  "uuid",
  "wayland-backend",
