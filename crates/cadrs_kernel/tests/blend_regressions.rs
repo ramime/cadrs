@@ -2561,3 +2561,29 @@ fn chamfer_two_distances_round_a_spline_hole() {
         .sum();
     assert!((ring - 112.31).abs() < 0.05, "end ring {ring}");
 }
+
+/// A 5 mm chamfer round a 2 mm hole's rim in a floor rounded 2 mm along an edge nearby (issue
+/// #155): its contact on the floor reaches the round's tangent edge and sits there, leaving
+/// the floor and the round at the same point. The rolling ball grazed the round there again and
+/// again without moving on, and the rebuild never finished; the local chamfer now gives up
+/// there, and the chamfer is answered (built, or refused) at once.
+#[test]
+fn chamfer_whose_contact_sits_on_a_rounds_edge_is_answered() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut k = NativeKernel::new();
+        let b =
+            k.insert(bodyio::read(include_bytes!("data/chamfer_hole_beside_fillet.body")).unwrap());
+        let r = k.chamfer_with(
+            b,
+            &[EdgeId(27)],
+            &ChamferOpts::new(ChamferSpec::EqualDistance(5.0)),
+        );
+        let valid = r.map(|r| k.get(r.bodies[0]).unwrap().check().is_empty());
+        let _ = tx.send(valid);
+    });
+    let r = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the chamfer is answered within a minute");
+    assert!(r.is_err() || r == Ok(true), "{r:?}");
+}
