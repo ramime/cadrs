@@ -244,13 +244,9 @@ fn follow_busy(
     motion: Res<MotionSettings>,
     mut follow: Local<Follow>,
     overlays: Query<(&ChildOf, &StepOverlay)>,
+    nodes: Query<(&Name, &ComputedNode, &bevy::ui::UiGlobalTransform)>,
     rows: Query<(&ComputedNode, &bevy::ui::UiGlobalTransform)>,
-    mut lists: Query<(
-        &Name,
-        &ComputedNode,
-        &bevy::ui::UiGlobalTransform,
-        &mut ScrollPosition,
-    )>,
+    mut lists: Query<(&Name, &ComputedNode, &mut ScrollPosition)>,
 ) {
     let busy = overlays
         .iter()
@@ -261,7 +257,7 @@ fn follow_busy(
         *follow = Follow::default();
         return;
     };
-    let Some((_, list, list_at, mut pos)) = lists
+    let Some((_, list, mut pos)) = lists
         .iter_mut()
         .find(|(n, ..)| n.as_str() == "feature-scroll")
     else {
@@ -279,21 +275,33 @@ fn follow_busy(
     if row.size().y <= 0.0 {
         return;
     }
-    // In the list's logical pixels: the row's top within the scrolled content.
+    // The row's top within the scrolled content (the list's logical pixels): from the content's
+    // top, laid out in the same pass, so whatever the scroll was then (the view's own position
+    // lags the scroll set a frame, and is rounded to the pixel).
+    let Some((_, content, content_at)) = nodes.iter().find(|(n, ..)| n.as_str() == "feature-tree")
+    else {
+        return;
+    };
     let s = list.inverse_scale_factor();
-    let view_top = (list_at.translation.y - list.size().y / 2.0) * s;
-    let row_top = (row_at.translation.y - row.size().y / 2.0) * s;
+    let top = |n: &ComputedNode, at: &bevy::ui::UiGlobalTransform| {
+        (at.translation.y - n.size().y / 2.0) * s
+    };
+    let offset = top(row, row_at) - top(content, content_at);
     let max = ((list.content_size().y - list.size().y) * s).max(0.0);
-    let target = (row_top - view_top + pos.y - FOLLOW_AT * list.size().y * s).clamp(0.0, max);
+    let target = (offset - FOLLOW_AT * list.size().y * s)
+        .round()
+        .clamp(0.0, max);
+    if (target - pos.y).abs() < 1.0 {
+        follow.set = Some(pos.y);
+        return;
+    }
     let y = if motion.enabled {
         let k = 1.0 - (-FOLLOW_RATE * time.delta_secs()).exp();
         let y = pos.y + (target - pos.y) * k;
-        if (target - y).abs() < 0.5 { target } else { y }
+        if (target - y).abs() < 1.0 { target } else { y }
     } else {
         target
     };
-    if y != pos.y {
-        pos.y = y;
-    }
+    pos.y = y;
     follow.set = Some(y);
 }
