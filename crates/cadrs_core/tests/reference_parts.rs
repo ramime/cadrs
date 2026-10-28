@@ -9,8 +9,9 @@
 //! `oracle.rs`. A case using something not translated yet is reported as such, not failed.
 //! (With a command registry, #102, this becomes a recipe → registry mapping, as SolidCraft's is.)
 //!
-//! `passing.txt` lists the cases that must pass. `CADRS_BLESS=1` records the cases passing now
-//! and writes `docs/reference-parts.md`.
+//! Each case is a test of its own (`case_49_helical_sweep` for `49-helical-sweep`), which fails
+//! if `passing.txt` lists the case and it doesn't pass. `CADRS_BLESS=1` records the cases passing
+//! now and writes `docs/reference-parts.md`.
 #![cfg(feature = "brep")]
 #![allow(clippy::field_reassign_with_default)]
 
@@ -2512,6 +2513,8 @@ struct Outcome {
     pass: Option<bool>,
     checks: Vec<Check>,
     note: String,
+    /// What was measured, when it failed.
+    measured: String,
 }
 
 fn run_case(dir: &Path) -> Outcome {
@@ -2527,6 +2530,7 @@ fn run_case(dir: &Path) -> Outcome {
         pass: None,
         checks: Vec::new(),
         note: String::new(),
+        measured: String::new(),
     };
     let mut r = Recipe::new();
     for p in recipe["parameters"].as_array().into_iter().flatten() {
@@ -2652,9 +2656,9 @@ fn run_case(dir: &Path) -> Outcome {
     });
     outcome.pass = Some(checks.iter().all(|c| c.ok));
     if outcome.pass == Some(false) {
-        println!(
-            "  {}: bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {}",
-            outcome.case, got.bodies, got.volume, got.area, got.com, got.bbox, got.faces
+        outcome.measured = format!(
+            "bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {}",
+            got.bodies, got.volume, got.area, got.com, got.bbox, got.faces
         );
     }
     let bad: Vec<String> = checks
@@ -2764,22 +2768,172 @@ fn table(outcomes: &[Outcome]) -> String {
     s
 }
 
-#[test]
-fn reference_parts() {
-    let dir = root().join("solidcraft");
-    let mut cases: Vec<PathBuf> = std::fs::read_dir(&dir)
+/// The cases' folders (`solidcraft/<case>/`), in order.
+fn case_dirs() -> Vec<PathBuf> {
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(root().join("solidcraft"))
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.join("recipe.json").is_file())
         .collect();
     cases.sort();
-    if let Ok(only) = std::env::var("CADRS_REFERENCE_CASE") {
-        cases.retain(|c| {
-            c.file_name()
-                .is_some_and(|n| n.to_string_lossy().contains(&only))
-        });
+    cases
+}
+
+/// The case a test is for: `case_49_helical_sweep` is `49-helical-sweep`.
+fn case_of(test: &str) -> String {
+    test.trim_start_matches("case_").replace('_', "-")
+}
+
+/// The cases that must pass (`passing.txt`).
+fn must_pass() -> Vec<String> {
+    std::fs::read_to_string(root().join("passing.txt"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// One case's test: it fails if the case is in `passing.txt` and doesn't pass now. (While
+/// blessing, `bless` runs them all instead.)
+fn check(test: &str) {
+    if std::env::var("CADRS_BLESS").is_ok() {
+        return;
     }
-    let outcomes: Vec<Outcome> = cases.iter().map(|c| run_case(c)).collect();
+    let case = case_of(test);
+    let o = run_case(&root().join("solidcraft").join(&case));
+    match o.pass {
+        Some(false) if must_pass().contains(&case) => {
+            panic!("{case} no longer passes: {}\n  {}", o.note, o.measured)
+        }
+        Some(false) => println!("FAIL {case} {} (not in passing.txt)", o.note),
+        None => println!("SKIP {case} {}", o.note),
+        Some(true) => println!("PASS {case} {}", o.note),
+    }
+}
+
+/// A test per case, named after its folder; `every_case_has_a_test` keeps the list whole.
+macro_rules! cases {
+    ($($test:ident)*) => {
+        $(
+            #[test]
+            fn $test() {
+                check(stringify!($test));
+            }
+        )*
+        const CASES: &[&str] = &[$(stringify!($test)),*];
+    };
+}
+
+cases! {
+    case_01_box
+    case_02_cylinder
+    case_03_box_through_hole
+    case_04_revolve_vase
+    case_05_taper_extrude
+    case_06_symmetric_extrude
+    case_07_fillet_all_edges
+    case_08_chamfer
+    case_09_shell
+    case_10_rect_pattern_holes
+    case_11_circular_pattern_flange
+    case_12_mirror_feature
+    case_13_combine_join
+    case_14_combine_cut
+    case_15_combine_intersect
+    case_16_sweep
+    case_17_loft
+    case_18_hole_features
+    case_19_l_bracket_constrained
+    case_20_slot_constrained
+    case_21_draft
+    case_22_split_body
+    case_23_bracket_multifeature
+    case_24_user_parameters
+    case_25_sketch_triangle
+    case_26_sketch_belt
+    case_27_sketch_trapezoid
+    case_28_blind_pocket_fillets
+    case_29_two_sided_and_partial_revolve
+    case_30_fillet_after_shell
+    case_31_fillet_l_all_edges
+    case_32_boss_plate_fillets
+    case_33_fillet_tangent_chain
+    case_34_chamfer_then_fillet
+    case_35_fillet_curved_curved
+    case_36_corner_blend_two_radii
+    case_37_pyramid_apex_blend
+    case_38_coincident_cylinders
+    case_39_tee_pipe
+    case_40_box_sphere_torus
+    case_41_tube_radial_holes
+    case_42_overlapping_patterns
+    case_43_cut_splits_body
+    case_44_shell_l_bracket
+    case_45_shell_boss_plate
+    case_46_shell_two_open_faces
+    case_47_draft_curved_pocket
+    case_48_pulley
+    case_49_helical_sweep
+    case_50_sweep_tight_bend
+    case_51_loft_rect_circle_offset
+    case_52_circular_pattern_fillet
+    case_53_path_pattern
+    case_54_mirror_body_fillets
+    case_55_tapped_hole_cosmetic
+    case_56_holes_on_curved_face
+    case_57_hole_pattern_sketch_points
+    case_58_phone_stand
+    case_59_enclosure_base
+    case_60_pipe_flange
+    case_61_shaft_keyway
+    case_62_heat_sink
+    case_63_hinge_knuckle
+    case_64_sketch_tangent_arc_chain
+    case_65_sketch_gear_tooth
+    case_66_sketch_linkage
+    case_67_sm_base_flange
+    case_68_sm_edge_flange
+    case_69_sm_tray
+    case_70_sm_flange_45
+    case_71_sm_custom_rule
+    case_72_sm_contour_flange
+    case_73_sm_hem
+    case_74_sm_unfold_refold
+    case_75_sm_bracket_holes
+    case_76_sm_thickness_variant
+    case_77_fillet_variable_linear
+    case_78_fillet_variable_to_zero
+    case_79_fillet_chord_length
+    case_80_fillet_taper_to_fit
+    case_81_fillet_spline_radius
+    case_82_thin_extrude_frame
+    case_83_boundary_loop_thicken
+}
+
+/// A case copied in needs its line in `cases!`, and a test its folder.
+#[test]
+fn every_case_has_a_test() {
+    let folders: Vec<String> = case_dirs()
+        .iter()
+        .map(|d| d.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    let tested: Vec<String> = CASES.iter().map(|t| case_of(t)).collect();
+    assert_eq!(
+        folders, tested,
+        "the case folders and the tests in `cases!` differ"
+    );
+}
+
+/// With `CADRS_BLESS=1`: every case run, the ones passing now recorded in `passing.txt` and
+/// the table written to `docs/reference-parts.md`.
+#[test]
+fn bless() {
+    if std::env::var("CADRS_BLESS").is_err() {
+        return;
+    }
+    let outcomes: Vec<Outcome> = case_dirs().iter().map(|c| run_case(c)).collect();
     for o in &outcomes {
         let result = match o.pass {
             Some(true) => "PASS",
@@ -2788,30 +2942,15 @@ fn reference_parts() {
         };
         println!("{result} {} {}", o.case, o.note);
     }
-    let passing_file = root().join("passing.txt");
     let now: Vec<&str> = outcomes
         .iter()
         .filter(|o| o.pass == Some(true))
         .map(|o| o.case.as_str())
         .collect();
-    if std::env::var("CADRS_BLESS").is_ok() {
-        std::fs::write(&passing_file, now.join("\n") + "\n").unwrap();
-        let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(docs.join("reference-parts.md"), table(&outcomes)).unwrap();
-        return;
-    }
-    let must = std::fs::read_to_string(&passing_file).unwrap_or_default();
-    let lost: Vec<&str> = must
-        .lines()
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-        .filter(|c| cases.iter().any(|p| p.ends_with(c)) && !now.contains(c))
-        .collect();
-    assert!(
-        lost.is_empty(),
-        "reference parts no longer passing: {lost:?}"
-    );
+    std::fs::write(root().join("passing.txt"), now.join("\n") + "\n").unwrap();
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(docs.join("reference-parts.md"), table(&outcomes)).unwrap();
 }
 
 /// A clamped B-spline of degree `p` with control values `cps` on `knots`, at u (de Boor).
