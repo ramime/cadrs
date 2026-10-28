@@ -19,7 +19,8 @@ The translation into cadrs features follows SolidCraft's own reader
 (`apps/solidcraft-cli/src/recipe.rs`) for what the format means, and its comparison rules
 (`apps/solidcraft-cli/src/oracle.rs`): volume and area within a relative 1e-3 unless a case
 says otherwise, centre of mass and bounding box within 1e-3 of the bounding box's diagonal,
-face counts where given, and a STEP export read back with the same volume and area.
+face counts where given, and a STEP export read back with the same volume and area. cadrs
+also checks the mesh it draws: each face's triangles cover its exact area within 1e-2.
 
 ## Running
 

@@ -68,6 +68,9 @@ use cadrs_sketch::{
 const REL_TOL: f64 = 1e-3;
 /// Centre of mass and bounding box: this fraction of the bounding box's diagonal.
 const ABS_FRAC: f64 = 1e-3;
+/// The mesh: each face's triangles cover its exact area within this fraction of it (curved
+/// faces' chords keep the triangles a little short of it).
+const MESH_TOL: f64 = 1e-2;
 
 type V3 = [f64; 3];
 
@@ -2460,11 +2463,14 @@ struct Measured {
     com: V3,
     bbox: (V3, V3),
     faces: usize,
+    /// The worst relative difference between a face's triangles' area and its exact area: the
+    /// mesh drawn covers each face, no more and no less.
+    mesh: f64,
 }
 
 fn measure(parts: &[Part]) -> Measured {
     let solids: Vec<&Part> = parts.iter().filter(|p| p.kind == PartKind::Solid).collect();
-    let (mut volume, mut area, mut faces) = (0.0, 0.0, 0);
+    let (mut volume, mut area, mut faces, mut mesh) = (0.0, 0.0, 0, 0.0f64);
     let mut moment = [0.0; 3];
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for p in &solids {
@@ -2479,6 +2485,17 @@ fn measure(parts: &[Part]) -> Measured {
                     f.kind, f.radius, f.area, f.center, f.name
                 );
             }
+        }
+        let s = &p.solid;
+        for f in &s.faces {
+            let Some(exact) = f.area else { continue };
+            let triangles: f64 = (f.first_triangle..f.first_triangle + f.triangle_count)
+                .map(|t| {
+                    let q = |k: usize| s.positions[s.indices[3 * t + k] as usize];
+                    0.5 * norm(cross(sub(q(1), q(0)), sub(q(2), q(0))))
+                })
+                .sum();
+            mesh = mesh.max((triangles - exact).abs() / exact.max(1e-9));
         }
         let c = [m.center_of_mass.x, m.center_of_mass.y, m.center_of_mass.z];
         for k in 0..3 {
@@ -2498,6 +2515,7 @@ fn measure(parts: &[Part]) -> Measured {
         com: moment.map(|x| x / volume),
         bbox: (lo, hi),
         faces,
+        mesh,
     }
 }
 
@@ -2668,6 +2686,12 @@ fn run_case(dir: &Path) -> Outcome {
             ok: got.faces == w,
         });
     }
+    // The mesh drawn: each face's triangles cover the face.
+    checks.push(Check {
+        what: "mesh",
+        error: got.mesh,
+        ok: got.mesh <= MESH_TOL,
+    });
     // STEP: written and read back with the same volume and area.
     let (ok, e) = step_round_trip(&features, &mut rb, &got);
     checks.push(Check {
@@ -2678,7 +2702,7 @@ fn run_case(dir: &Path) -> Outcome {
     outcome.pass = Some(checks.iter().all(|c| c.ok));
     if outcome.pass == Some(false) {
         outcome.measured = format!(
-            "got  bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {}\n  \
+            "got  bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {} mesh {:.1e}\n  \
              want bodies {} volume {:.4} area {:.4} com {:.4?} bbox {:.4?} faces {}",
             got.bodies,
             got.volume,
@@ -2686,6 +2710,7 @@ fn run_case(dir: &Path) -> Outcome {
             got.com,
             got.bbox,
             got.faces,
+            got.mesh,
             want["body_count"],
             want["volume_mm3"].as_f64().unwrap_or(f64::NAN),
             want["area_mm2"].as_f64().unwrap_or(f64::NAN),
@@ -2802,11 +2827,12 @@ fn table(outcomes: &[Outcome]) -> String {
          independently of cadrs: closed-form geometry (**analytic**) or an independent kernel \
          (**freecad**). The cases are [SolidCraft's](https://github.com/tangency-labs/solidcraft) \
          reference parts (MIT; see `crates/cadrs_core/tests/reference_parts/README.md`) and parts \
-         from cadrs' issues (**onshape**: the user's document, against the part as Onshape \
-         builds it), rebuilt through cadrs' feature list and compared as SolidCraft compares them: body \
+         from cadrs' issues (the user's document, against the part as **onshape** or \
+         **solidcraft** builds it), rebuilt through cadrs' feature list and compared as SolidCraft compares them: body \
          count, volume and area within a relative 1e-3, centre of mass and bounding box within \
          1e-3 of the part's diagonal, face count where the geometry fixes it, and a STEP export \
-         read back with the same volume and area. The error columns give how close cadrs comes.\n\n",
+         read back with the same volume and area; and the mesh drawn, each face's triangles \
+         covering its exact area within 1e-2. The error columns give how close cadrs comes.\n\n",
     );
     s.push_str(&format!(
         "**{passed} / {} cases pass**, {failed} fail, {skipped} not translated yet.\n\n",
@@ -2994,6 +3020,7 @@ cases! {
     case_82_thin_extrude_frame
     case_83_boundary_loop_thicken
     issue_156_face_chamfer_fillet
+    issue_156_wall_as_thick_as_chamfer
 }
 
 /// A case copied in needs its line in `cases!`, and a test its folder.
