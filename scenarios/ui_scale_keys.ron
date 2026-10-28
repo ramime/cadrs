@@ -1,0 +1,18 @@
+// Ctrl+= and Ctrl+- step the UI scale through its sizes, as a browser's zoom does, with a toast
+// naming the size reached (it fades out after a second and a half).
+// 01 100%; 02 Ctrl+=: 110%, "UI scale 110%"; 03 Ctrl+- twice: 90%, "UI scale 90%".
+Scenario(
+    start: Some("document"),
+    steps: [
+        Wait(10),
+        MoveTo(1300, 700),
+        Screenshot("01-100"),
+        Key("Ctrl+="),
+        Wait(10),
+        Screenshot("02-ctrl-equal-110"),
+        Key("Ctrl+-"),
+        Key("Ctrl+-"),
+        Wait(10),
+        Screenshot("03-ctrl-minus-twice-90"),
+    ],
+)

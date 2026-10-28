@@ -46,6 +46,7 @@ pub const SHORTCUTS: &[(usize, &str, &str, u8)] = &[
     (0, "Enter", "Accept command", LOCKED),
     (0, "Escape", "Cancel", LOCKED),
     (0, "Space", "Clear selection", LOCKED),
+    (0, "Ctrl+= / Ctrl+-", "UI scale up or down", 0),
     (0, "Ctrl+C", "Copy", LOCKED | OFF),
     (0, "Shift+C", "Curve/surface analysis", OFF),
     (0, "Delete / Backspace", "Delete selection", LOCKED),
