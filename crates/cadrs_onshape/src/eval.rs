@@ -1060,6 +1060,16 @@ impl Model<'_> {
                         })
                 });
             }
+            // Where a split's tool cut the face it derives from: the edges along that face.
+            "SPLIT_SURFACE_INTERSECT" => {
+                let faces: HashSet<Ent> = derived()
+                    .into_iter()
+                    .flat_map(|d| self.eval_depth(d, depth + 1))
+                    .collect();
+                cands = narrow(cands, &|e| {
+                    self.adjacent(e).iter().any(|f| faces.contains(f))
+                });
+            }
             _ => {}
         }
 

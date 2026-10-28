@@ -1712,6 +1712,13 @@ fn ball_centre(b: &Body, v: usize, r: f64) -> Option<P3> {
     Some(p + m.try_inverse()? * V3::new(-r, -r, -r))
 }
 
+/// Whether faces meeting at an edge with the angle `theta` between them (across the material
+/// or the air) form a wedge narrow enough (under 60°) that a little curvature across the edge
+/// moves a blend's contacts far from where `r / tan(theta / 2)` puts them.
+fn narrow_wedge(theta: f64) -> bool {
+    theta < std::f64::consts::FRAC_PI_3
+}
+
 /// Refuses a blend whose contact lines would leave the faces. A chamfer may (Onshape's does):
 /// its tool, the wedge between the edge and its contact lines, cuts away only what is there,
 /// so one wider than a wall is high runs on through the wall and out of the face beyond.
@@ -1732,26 +1739,36 @@ fn check_fits(b: &Body, e: usize, kind: &dyn Fn(f64) -> SectionKind) -> Result<(
     };
     // The contact lines must reach the faces somewhere along the edge (a fillet running into a
     // hole beside the edge is the boolean's business, not a misfit).
+    let narrow = narrow_wedge(theta);
     let mut fits = [false, false];
     for frac in [0.1, 0.3, 0.5, 0.7, 0.9] {
         let tm = ed.t[0] + (ed.t[1] - ed.t[0]) * frac;
         let p = ed.point(tm);
-        for (side, (s, w, a)) in [(s1, w1, a1), (s2, w2, a2)].into_iter().enumerate() {
-            if !(a > 0.0) || !a.is_finite() {
-                return Err(KernelError::InvalidParameter(
-                    "The blend's size must be positive".into(),
-                ));
-            }
+        let sides = [(s1, w1, a1), (s2, w2, a2)];
+        if sides.iter().any(|&(_, _, a)| !(a > 0.0) || !a.is_finite()) {
+            return Err(KernelError::InvalidParameter(
+                "The blend's size must be positive".into(),
+            ));
+        }
+        // Each contact point and where it projects onto its face's surface.
+        let at = sides.map(|(s, w, a)| {
             let q = p + w * a;
-            let f = &b.faces[s.0];
-            let polys = super::classify::face_polygons(b, f);
-            let (u, v) = f.surf.project(&q, None);
-            if (f.surf.eval(u, v) - q).norm() > tol::REL_POINT * (1.0 + a) {
-                // Curved across the edge: the contact point isn't on the face's surface; leave the
-                // check to the boolean.
+            let surf = &b.faces[s.0].surf;
+            let (u, v) = surf.project(&q, None);
+            let on = (surf.eval(u, v) - q).norm() <= tol::REL_POINT * (1.0 + a);
+            (u, v, on)
+        });
+        for (side, (s, _, _)) in sides.into_iter().enumerate() {
+            let (u, v, on) = at[side];
+            if !on || (narrow && !at[1 - side].2) {
+                // A face curved across the edge: its contact point isn't on its surface; in a
+                // narrow wedge the other's isn't where the faces' angle says either (a wall the
+                // other face cuts at a slant, bending away from it). Leave the check to the blend.
                 fits[side] = true;
                 continue;
             }
+            let f = &b.faces[s.0];
+            let polys = super::classify::face_polygons(b, f);
             let inside = super::classify::periodic_candidates(&f.surf, u, v, &polys)
                 .into_iter()
                 .any(|uv| {
@@ -1827,6 +1844,26 @@ fn check_overlaps(b: &Body, edges: &[EdgeBlend]) -> Result<()> {
             SectionKind::Asymmetric { r1, r2 } => {
                 (r1 / (theta / 2.0).tan(), r2 / (theta / 2.0).tan())
             }
+        };
+        // Those offsets hold where both faces are flat across the edge. In a narrow wedge, a
+        // face curved across it (a rounded wall a plane cuts at a slant) moves the contacts a
+        // long way, so the other face's strip is as wide as the blend makes it: leave it to the
+        // blend.
+        let (a1, a2) = if narrow_wedge(theta) {
+            let p = b.edges[e].point(tm);
+            let flat = |s: usize, w: V3, a: f64| {
+                let f = &b.faces[s];
+                let q = p + w * a;
+                let (u, v) = f.surf.project(&q, None);
+                (f.surf.eval(u, v) - q).norm() <= tol::REL_POINT * (1.0 + a)
+            };
+            let (flat1, flat2) = (flat(s1.0, w1, a1), flat(s2.0, w2, a2));
+            (
+                if flat2 { a1 } else { f64::NAN },
+                if flat1 { a2 } else { f64::NAN },
+            )
+        } else {
+            (a1, a2)
         };
         info.push((e, [(s1.0, a1, s1.1), (s2.0, a2, s2.1)]));
     }
