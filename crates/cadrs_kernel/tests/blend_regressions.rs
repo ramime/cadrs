@@ -2561,3 +2561,98 @@ fn chamfer_two_distances_round_a_spline_hole() {
         .sum();
     assert!((ring - 112.31).abs() < 0.05, "end ring {ring}");
 }
+
+/// Onshape's Verrundung 4 on pi7zoll-gehäuse's right foot: 3 mm rounds on the edges a cut plane
+/// makes across a pocket's two walls (extruded splines, a face per span), meeting them at 3.4°.
+/// The ball touches each wall a dozen spans from the edge and the plane past the arm the edge
+/// tops, so each round is one cylinder taking the arm whole; at the pocket's floor both rails
+/// stop on the floor's plane (the plane runs on 0.5 mm over the floor's wall), which grows to
+/// the round. As Onshape: each cylinder 109.619 mm², the floor 1816.224 mm², the cut plane's
+/// rest 242.722 mm².
+#[test]
+fn fillet_round_a_cut_pocket_wall() {
+    let mut k = NativeKernel::new();
+    let b =
+        k.insert(bodyio::read(include_bytes!("data/fillet_round_cut_pocket_wall.body")).unwrap());
+    let v0 = k.mass_properties(b).unwrap().volume;
+    let r = k
+        .fillet_with(b, &[EdgeId(565), EdgeId(570)], &FilletSpec::radius(3.0))
+        .unwrap();
+    let out = r.bodies[0];
+    assert!(k.get(out).unwrap().check().is_empty());
+    let removed = v0 - k.mass_properties(out).unwrap().volume;
+    assert!((624.18..624.21).contains(&removed), "{removed}");
+    let faces = k.faces(out).unwrap();
+    let rounds: Vec<f64> = faces
+        .iter()
+        // (The part's other cylinders, its holes, lie past x = -62.)
+        .filter(|f| f.kind == SurfaceKind::Cylinder && (-61.0..-50.0).contains(&f.center.x))
+        .map(|f| f.area)
+        .collect();
+    assert!(
+        rounds.len() == 2 && rounds.iter().all(|a| (a - 109.619).abs() < 1e-3),
+        "rounds {rounds:?}"
+    );
+    let floor: f64 = faces
+        .iter()
+        .filter(|f| f.kind == SurfaceKind::Plane && (f.center.x + 71.6).abs() < 1e-6)
+        .map(|f| f.area)
+        .sum();
+    assert!((floor - 1816.224).abs() < 1e-3, "floor {floor}");
+    let cut: f64 = faces
+        .iter()
+        // The cut plane: 0.866 y − 0.5 z = −50.49.
+        .filter(|f| {
+            f.kind == SurfaceKind::Plane
+                && (0.75f64.sqrt() * f.center.y - 0.5 * f.center.z + 50.49).abs() < 0.01
+        })
+        .map(|f| f.area)
+        .sum();
+    assert!((cut - 242.722).abs() < 1e-3, "cut plane {cut}");
+}
+
+/// The same on the left foot, whose pocket opens through the outer wall by a 3 mm round: each
+/// round runs (by tangent propagation) round that round, as big as itself, onto the outer
+/// wall's edge, so its ball can't roll round it and is the round's own there. Onshape's corner:
+/// a sphere about where the two cylinders' axes meet, between their sections and the round's
+/// own section there, which cuts the round. As Onshape: the spheres 18.897 mm², the cylinders
+/// 102.417 (twice), 82.252 and 56.780 mm².
+#[test]
+fn fillet_round_a_rounded_pocket_mouth() {
+    let mut k = NativeKernel::new();
+    let b = k.insert(
+        bodyio::read(include_bytes!(
+            "data/fillet_round_rounded_pocket_mouth.body"
+        ))
+        .unwrap(),
+    );
+    let v0 = k.mass_properties(b).unwrap().volume;
+    let r = k
+        .fillet_with(b, &[EdgeId(647), EdgeId(650)], &FilletSpec::radius(3.0))
+        .unwrap();
+    let out = r.bodies[0];
+    assert!(k.get(out).unwrap().check().is_empty());
+    let removed = v0 - k.mass_properties(out).unwrap().volume;
+    assert!((734.52..734.55).contains(&removed), "{removed}");
+    let faces = k.faces(out).unwrap();
+    // (The part's other cylinders, its holes, are under 33 mm² or 179 mm².)
+    let areas = |kind: SurfaceKind, range: std::ops::Range<f64>| -> Vec<f64> {
+        let mut a: Vec<f64> = faces
+            .iter()
+            .filter(|f| f.kind == kind && range.contains(&f.area))
+            .map(|f| f.area)
+            .collect();
+        a.sort_by(f64::total_cmp);
+        a
+    };
+    let near = |got: &[f64], want: &[f64]| {
+        got.len() == want.len() && got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3)
+    };
+    let spheres = areas(SurfaceKind::Sphere, 0.0..f64::INFINITY);
+    assert!(near(&spheres, &[18.897, 18.897]), "spheres {spheres:?}");
+    let rounds = areas(SurfaceKind::Cylinder, 50.0..150.0);
+    assert!(
+        near(&rounds, &[56.780, 82.252, 102.417, 102.417]),
+        "rounds {rounds:?}"
+    );
+}
