@@ -102,6 +102,29 @@ fn parse_key(name: &str, shifted: bool) -> Option<KeySpec> {
         "f12" => return named(C::F12, Key::F12),
         _ => {}
     }
+    // The numpad's digits ("Numpad7"), as typed with Num Lock on.
+    if let Some(d) = name.to_ascii_lowercase().strip_prefix("numpad")
+        && let Ok(n) = d.parse::<usize>()
+        && n < 10
+    {
+        const PAD: [KeyCode; 10] = [
+            C::Numpad0,
+            C::Numpad1,
+            C::Numpad2,
+            C::Numpad3,
+            C::Numpad4,
+            C::Numpad5,
+            C::Numpad6,
+            C::Numpad7,
+            C::Numpad8,
+            C::Numpad9,
+        ];
+        return Some(KeySpec {
+            code: PAD[n],
+            logical: Key::Character(d.into()),
+            text: Some(d.into()),
+        });
+    }
     let mut chars = name.chars();
     let c = chars.next()?;
     if chars.next().is_some() {
