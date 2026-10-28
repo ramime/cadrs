@@ -297,8 +297,9 @@ fn a_remove_that_splits_a_part() {
 }
 
 /// PS1.1: a whole sketch is its outer boundary less the loops inside it: a 100 × 60 plate with
-/// a Ø20 circle inside, and a Ø8 circle inside that (a boss in the hole, even-odd), 10 deep:
-/// V = (6000 − π·10² + π·4²)·10.
+/// a Ø20 circle inside, and a Ø8 circle inside that, 10 deep. As Onshape's whole sketch
+/// (`qSketchRegion(sketch, true)`), the disc in the hole is left out too (it is inside another
+/// region's outer boundary): V = (6000 − π·10²)·10.
 #[test]
 fn whole_sketch_input() {
     let mut doc = Doc::new();
@@ -320,11 +321,10 @@ fn whole_sketch_input() {
     let ps = doc.parts();
     assert_eq!(
         ps.len(),
-        2,
-        "the plate with its hole, and the boss in the hole"
+        1,
+        "the plate with its hole, without the disc in it"
     );
-    let total: f64 = ps.iter().map(volume).sum();
-    close(total, (6000.0 - PI * 100.0 + PI * 16.0) * 10.0, 1e-6);
+    close(volume(&ps[0]), (6000.0 - PI * 100.0) * 10.0, 1e-6);
 }
 
 /// End types through the feature list (PS4.3, PS4.7):

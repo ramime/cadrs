@@ -2480,3 +2480,84 @@ fn chamfers_meet_in_a_ridge() {
     assert!((removed - 60.0).abs() < 1e-6, "{removed}");
     assert_eq!(k.faces(out).unwrap().len(), 6 - 1 + 2);
 }
+
+/// A 3 mm fillet round a hollow boss's foot on a plate (Onshape's "pi7zoll-gehäuse", Verrundung
+/// 6), the boss's outline lines and splines (one face per Bézier span) tangent all round, and
+/// a 2 mm deep notch in the plate 1.5 mm from it where two splines meet: the fillet's rail on
+/// the plate runs off over the notch on one span and comes back on another, the cut by the
+/// notch's walls running through the junctions between. As Onshape has it: the walls grow up
+/// to the fillet (to 10.328 and 21.969 mm² from 10 and 21.77) and the fillet adds 359.57 mm³
+/// (the boss loop's fill less the plate's seven rounded edges).
+#[test]
+fn fillet_over_a_pocket_across_junctions() {
+    let mut k = NativeKernel::new();
+    let b =
+        k.insert(bodyio::read(include_bytes!("data/fillet_over_pocket_junction.body")).unwrap());
+    let v0 = k.mass_properties(b).unwrap().volume;
+    // The plate's seven edges and one span of the boss's foot: the rest by tangent propagation.
+    let edges = [104, 27, 30, 33, 11, 5, 8, 14].map(EdgeId);
+    let r = k.fillet_with(b, &edges, &FilletSpec::radius(3.0)).unwrap();
+    let out = r.bodies[0];
+    assert!(k.get(out).unwrap().check().is_empty());
+    let added = k.mass_properties(out).unwrap().volume - v0;
+    assert!((359.55..359.58).contains(&added), "{added}");
+    // The notch's walls (square to the plate): its end, the side the fillet crosses and the
+    // far side, which it doesn't reach (16 mm² as before).
+    let mut walls: Vec<f64> = k
+        .faces(out)
+        .unwrap()
+        .iter()
+        .filter(|f| {
+            f.plane.is_some_and(|p| p.normal.x.abs() < 1e-9) && (-67.1..-64.0).contains(&f.center.x)
+        })
+        .map(|f| f.area)
+        .collect();
+    walls.sort_by(f64::total_cmp);
+    assert!(
+        walls.len() == 3
+            && walls
+                .iter()
+                .zip([10.328, 16.0, 21.969])
+                .all(|(a, b)| (a - b).abs() < 1e-3),
+        "notch walls {walls:?}"
+    );
+}
+
+/// Onshape's Fase 5 on the same part: a chamfer 1.4 mm on the boss's 2 mm end ring and 5 mm down
+/// the hole, round the hole's rim (two flats and four splines of a face per span), picked on
+/// one flat edge and propagated. The first distance is on the face whose boundary runs along
+/// the picked edge (the ring here), and stays on the ring all along the chain, whichever way
+/// round each span's faces come: as Onshape, the ring keeps 112.31 mm² and 627.84 mm³ go.
+#[test]
+fn chamfer_two_distances_round_a_spline_hole() {
+    let mut k = NativeKernel::new();
+    let b = k.insert(bodyio::read(include_bytes!("data/chamfer_round_spline_hole.body")).unwrap());
+    let v0 = k.mass_properties(b).unwrap().volume;
+    let pick = EdgeId(504);
+    let mut edges = vec![pick];
+    edges.extend(
+        k.tangent_chain(b, pick)
+            .unwrap()
+            .into_iter()
+            .filter(|&e| e != pick),
+    );
+    let r = k
+        .chamfer_with(
+            b,
+            &edges,
+            &ChamferOpts::new(ChamferSpec::TwoDistances(1.4, 5.0)),
+        )
+        .unwrap();
+    let out = r.bodies[0];
+    assert!(k.get(out).unwrap().check().is_empty());
+    let removed = v0 - k.mass_properties(out).unwrap().volume;
+    assert!((627.83..627.85).contains(&removed), "{removed}");
+    let ring: f64 = k
+        .faces(out)
+        .unwrap()
+        .iter()
+        .filter(|f| f.kind == SurfaceKind::Plane && (f.center.x + 42.1).abs() < 1e-6)
+        .map(|f| f.area)
+        .sum();
+    assert!((ring - 112.31).abs() < 0.05, "end ring {ring}");
+}
