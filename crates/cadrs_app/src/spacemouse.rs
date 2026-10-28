@@ -110,13 +110,12 @@ fn apply_sample(view: &mut ViewportView, sample: MotionSample) {
         view.view.zoom_at(factor, Vec2::ZERO);
     }
 
-    let yaw = -ry * ROTATION_DEGREES_PER_SECOND * dt;
-    let pitch = rx * ROTATION_DEGREES_PER_SECOND * dt;
-    let roll = -rz * ROTATION_DEGREES_PER_SECOND * dt;
+    let rotation = ROTATION_DEGREES_PER_SECOND.to_radians() * dt;
     let pivot = view.pivot;
     let turn = |state: &mut ViewState| {
-        state.rotate_by(yaw, pitch);
-        state.roll = (state.roll + roll).rem_euclid(360.0);
+        state.rotate_model_about(Vec3::X, rx * rotation);
+        state.rotate_model_about(Vec3::Y, ry * rotation);
+        state.rotate_model_about(Vec3::Z, rz * rotation);
     };
     if let Some(pivot) = pivot {
         view.view.orbit_about(pivot, turn);
@@ -373,11 +372,38 @@ mod tests {
         apply_sample(
             &mut view,
             MotionSample {
-                axes: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                axes: [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
                 dt: 1.0 / 30.0,
             },
         );
         let screen_after = view.view.project(pivot);
         assert!(screen_before.distance(screen_after) < 1e-4);
+    }
+
+    #[test]
+    fn rotation_axes_are_fixed_to_the_model_world_frame() {
+        for (axes, axis) in [
+            ([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], Vec3::X),
+            ([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], Vec3::Y),
+            ([0.0, 0.0, 0.0, 0.0, 0.0, 1.0], Vec3::Z),
+        ] {
+            let mut view = ViewportView::default();
+            view.view.azimuth = 53.0;
+            view.view.elevation = 41.0;
+            view.view.roll = 17.0;
+            let before = view.view.rotation();
+            let radians = ROTATION_DEGREES_PER_SECOND.to_radians() / 30.0;
+
+            apply_sample(
+                &mut view,
+                MotionSample {
+                    axes,
+                    dt: 1.0 / 30.0,
+                },
+            );
+
+            let expected = Quat::from_axis_angle(axis, -radians) * before;
+            assert!(view.view.rotation().angle_between(expected) < 1e-4);
+        }
     }
 }
