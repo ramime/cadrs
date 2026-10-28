@@ -1,0 +1,87 @@
+// Deleting from the Trash. Six documents and the folder "Brackets".
+// 01 two documents selected and Delete pressed: both go to the trash (a toast with Undo); the
+//    folder and one more document follow with Delete.
+// 02 the Trash: the folder and the three documents, and an Empty trash button.
+// 03 two selected, right-click: the selection's menu (Restore, Delete permanently…); 04 its
+//    dialog; 05 deleted: the folder and one document left.
+// 06 Delete on one document in the Trash: its own Delete permanently dialog (cancelled).
+// 07 the app menu while the Trash is shown: Empty trash….
+// 08 Empty trash: its dialog; 09 emptied (the button disabled); 10 Ctrl+Z brings it all back.
+Scenario(
+    start: Some("landing"),
+    seed_documents: 6,
+    steps: [
+        Click(ui("create")),
+        WaitFor("new-folder"),
+        Click(ui("new-folder")),
+        WaitFor("new-folder-dialog"),
+        Type("Brackets"),
+        Key("Enter"),
+        WaitFor("folder-row-0"),
+        // Delete: the selection to the trash.
+        Click(ui("doc-name-0")),
+        KeyDown("Ctrl"),
+        Click(ui("doc-name-1")),
+        KeyUp("Ctrl"),
+        Key("Delete"),
+        MoveTo(1300, 700),
+        Wait(3),
+        Screenshot("01-delete-moves-to-trash"),
+        Click(ui("folder-row-0")),
+        Key("Delete"),
+        Wait(2),
+        Click(ui("doc-name-0")),
+        Key("Delete"),
+        Wait(2),
+        Click(ui("app-menu")),
+        WaitFor("app-trash"),
+        Click(ui("app-trash")),
+        WaitFor("empty-trash-button"),
+        MoveTo(1300, 700),
+        Wait(3),
+        Screenshot("02-trash-with-empty-trash"),
+        // The selection's menu in the Trash.
+        Click(ui("doc-name-0")),
+        KeyDown("Ctrl"),
+        Click(ui("doc-name-1")),
+        KeyUp("Ctrl"),
+        RightClick(ui("doc-name-1")),
+        WaitFor("multi-delete-forever"),
+        Wait(2),
+        Screenshot("03-selection-menu-in-trash"),
+        Click(ui("multi-delete-forever")),
+        WaitFor("purge-items-dialog"),
+        Wait(2),
+        Screenshot("04-delete-several-dialog"),
+        Click(ui("purge-items-dialog-ok")),
+        MoveTo(1300, 700),
+        Wait(3),
+        Screenshot("05-several-deleted"),
+        // Delete on one in the Trash asks first.
+        Click(ui("doc-name-0")),
+        Key("Delete"),
+        WaitFor("purge-dialog"),
+        Wait(2),
+        Screenshot("06-delete-key-in-trash"),
+        Click(ui("purge-dialog-cancel")),
+        Wait(2),
+        // Empty trash: the app menu's item, then the button.
+        Click(ui("app-menu")),
+        WaitFor("app-empty-trash"),
+        Wait(2),
+        Screenshot("07-app-menu-empty-trash"),
+        Key("Escape"),
+        Wait(2),
+        Click(ui("empty-trash-button")),
+        WaitFor("empty-trash-dialog"),
+        Wait(2),
+        Screenshot("08-empty-trash-dialog"),
+        Click(ui("empty-trash-dialog-ok")),
+        MoveTo(1300, 700),
+        Wait(3),
+        Screenshot("09-trash-emptied"),
+        Key("Ctrl+Z"),
+        Wait(3),
+        Screenshot("10-undo-brings-it-back"),
+    ],
+)

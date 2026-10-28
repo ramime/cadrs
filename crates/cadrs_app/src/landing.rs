@@ -233,6 +233,10 @@ enum LandingDialog {
     RenameFolder(FolderId),
     CopyFolder(FolderId),
     PurgeFolder(FolderId),
+    /// Delete permanently… of several items in the Trash (`organize`).
+    PurgeItems,
+    /// Empty trash… (`organize`).
+    EmptyTrash,
 }
 
 fn filter_icon(f: Filter) -> &'static str {
@@ -782,7 +786,7 @@ fn rebuild_main(
         if state.filter != Filter::Explore {
             commands
                 .entity(tools)
-                .with_children(|a| details::list_toolbar(a, &t, &state));
+                .with_children(|a| details::list_toolbar(a, &t, &state, &lib.lib));
         }
     }
     let picked = details_state.pick;
@@ -1362,6 +1366,8 @@ fn landing_shortcuts(
     mut lib: ResMut<DocLibrary>,
     store: Res<DocumentStore>,
     details_state: Res<LandingDetails>,
+    state: Res<LandingState>,
+    theme: Res<Theme>,
     q_menus: Query<(), With<cadrs_ui::menu::MenuDismissLayer>>,
     mut busy: Local<u8>,
     mut commands: Commands,
@@ -1393,6 +1399,22 @@ fn landing_shortcuts(
         .filter(|k| k.state == ButtonState::Pressed)
         .map(|k| k.shortcut_code())
         .collect();
+    // Delete moves the selection to the trash; in the Trash it deletes it permanently, asking
+    // first.
+    if pressed.contains(&KeyCode::Delete) && !ctrl && !shift {
+        let items: Vec<Pick> = details_state
+            .selection
+            .iter()
+            .copied()
+            .filter(|p| !matches!(p, Pick::Sample(_)))
+            .collect();
+        if state.filter == Filter::Trash {
+            organize::open_purge_items_dialog(&mut commands, &theme, &lib.lib, items);
+        } else if !items.is_empty() {
+            commands.queue(move |world: &mut World| organize::trash_items(world, &items));
+        }
+        return;
+    }
     let changed = if ctrl && pressed.contains(&KeyCode::KeyZ) {
         if shift {
             lib.redo(&store.0)
@@ -1518,7 +1540,8 @@ fn open_folder(dir: &std::path::Path) {
 }
 
 /// The documents page's part of the app menu: the documents folder, the Trash and the labels
-/// (each shows its documents), with the one shown checked.
+/// (each shows its documents), with the one shown checked; while the Trash is shown, Empty
+/// trash….
 pub(crate) fn app_entries(lib: &Library, filter: Filter) -> Vec<MenuEntry> {
     let mut labels: Vec<MenuEntry> = lib
         .labels_by_name()
@@ -1541,7 +1564,7 @@ pub(crate) fn app_entries(lib: &Library, filter: Filter) -> Vec<MenuEntry> {
             .icon("tag-new")
             .into(),
     );
-    vec![
+    let mut entries = vec![
         MenuItem::new("app-open-folder", "Open documents folder")
             .icon("folder")
             .into(),
@@ -1553,8 +1576,18 @@ pub(crate) fn app_entries(lib: &Library, filter: Filter) -> Vec<MenuEntry> {
             .icon("delete")
             .checked(filter == Filter::Trash)
             .into(),
-        MenuEntry::Separator,
-    ]
+    ];
+    if filter == Filter::Trash {
+        let (docs, folders) = lib.trash();
+        entries.push(
+            MenuItem::new("app-empty-trash", "Empty trash…")
+                .icon("delete")
+                .disabled(docs.is_empty() && folders.is_empty())
+                .into(),
+        );
+    }
+    entries.push(MenuEntry::Separator);
+    entries
 }
 
 /// Runs an app menu item of [`app_entries`]; false for one of the others.
@@ -1562,6 +1595,13 @@ pub(crate) fn app_action(world: &mut World, item: &str) -> bool {
     match item {
         "app-open-folder" => open_documents_folder(world),
         "app-trash" => show_filter(world, Filter::Trash),
+        "app-empty-trash" => {
+            let theme = world.resource::<Theme>().clone();
+            let lib = world.resource::<DocLibrary>().lib.clone();
+            let mut commands = world.commands();
+            organize::open_empty_trash_dialog(&mut commands, &theme, &lib);
+            world.flush();
+        }
         "app-new-label" => {
             let theme = world.resource::<Theme>().clone();
             let mut commands = world.commands();
@@ -2022,7 +2062,9 @@ fn confirm_dialog(world: &mut World) {
         | LandingDialog::SampleCopy(_) => details::confirm(world, dialog),
         LandingDialog::RenameFolder(_)
         | LandingDialog::CopyFolder(_)
-        | LandingDialog::PurgeFolder(_) => organize::confirm(world, dialog),
+        | LandingDialog::PurgeFolder(_)
+        | LandingDialog::PurgeItems
+        | LandingDialog::EmptyTrash => organize::confirm(world, dialog),
     }
 }
 

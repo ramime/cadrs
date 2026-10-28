@@ -32,7 +32,7 @@ use bevy::text::{EditableText, FontWeight};
 use bevy::ui_widgets::ScrollArea;
 use cadrs_core::documents_page::{SAMPLE_OWNER, SAMPLES};
 use cadrs_core::library::{
-    AddEntry, CreateLabel, DeleteLabel, RenameLabel, SetDescription, SetLabels,
+    AddEntry, CreateLabel, DeleteLabel, Library, RenameLabel, SetDescription, SetLabels,
 };
 use cadrs_core::{DocumentEntry, DocumentId, Filter, FolderId, ItemType, LabelId};
 use cadrs_ui::menu::ContextMenuAnchor;
@@ -331,15 +331,39 @@ pub fn breadcrumb(
     }
 }
 
-/// The list's tools, right of the search box: Import files… and Label…, the list and grid
-/// toggles (framed like the color scheme's), and the Type filter.
-pub fn list_toolbar(a: &mut ChildSpawnerCommands, t: &Theme, state: &LandingState) {
+/// The list's tools, right of the search box: in the Trash Empty trash…, Import files… and
+/// Label…, the list and grid toggles (framed like the color scheme's), and the Type filter.
+pub fn list_toolbar(a: &mut ChildSpawnerCommands, t: &Theme, state: &LandingState, lib: &Library) {
     a.spawn(Node {
         align_items: AlignItems::Center,
         column_gap: Val::Px(8.0),
         ..default()
     })
     .with_children(|b| {
+        if state.filter == Filter::Trash {
+            let (docs, folders) = lib.trash();
+            b.spawn((
+                Button::new("empty-trash-button")
+                    .label("Empty trash")
+                    .icon("delete")
+                    .icon_size(16.0)
+                    .ghost()
+                    .tooltip("Delete everything in the trash permanently")
+                    .disabled(docs.is_empty() && folders.is_empty())
+                    .build(t),
+                observe(
+                    |_: On<Activate>,
+                     mut commands: Commands,
+                     theme: Res<Theme>,
+                     lib: Res<DocLibrary>| {
+                        super::organize::open_empty_trash_dialog(&mut commands, &theme, &lib.lib);
+                    },
+                ),
+            ))
+            .insert(cadrs_ui::glass::control(t))
+            .entry::<Node>()
+            .and_modify(|mut n| super::page_control(&mut n));
+        }
         for (name, icon_name, label, tip) in [
             (
                 "import-button",
