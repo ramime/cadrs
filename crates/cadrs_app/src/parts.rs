@@ -462,6 +462,17 @@ impl Default for RebuildBudget {
 struct PendingRebuild {
     element: ElementId,
     rebuild: cadrs_core::rebuild::Pending,
+    /// The features it rebuilds, in order, each with whether it is a part feature (those its
+    /// progress counts).
+    order: Vec<(FeatureId, bool)>,
+}
+
+/// Where a feature of the rebuild running stands ([`PartCache::rebuild_steps`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildStep {
+    Done,
+    Busy,
+    Queued,
 }
 
 /// A direction arrow in the view: its origin and unit direction.
@@ -1028,6 +1039,49 @@ impl PartCache {
         self.generation += 1;
     }
 
+    /// Where each feature of the rebuild running stands: the part features before the one being
+    /// computed done (taken from the cache or computed), that one busy and the rest queued, a
+    /// sketch as far as the part features before it are (all queued until it starts, behind
+    /// another rebuild). `None` while nothing rebuilds.
+    pub fn rebuild_steps(&self) -> Option<Vec<(FeatureId, RebuildStep)>> {
+        let p = self.pending.as_ref().filter(|_| self.rebuilding)?;
+        let done = p.rebuild.progress().map(|(done, _)| done);
+        let mut parts = 0;
+        Some(
+            p.order
+                .iter()
+                .map(|&(id, part)| {
+                    let step = match done {
+                        None => RebuildStep::Queued,
+                        Some(d) if parts < d => RebuildStep::Done,
+                        Some(d) if part && parts == d => RebuildStep::Busy,
+                        Some(d) if parts == d => RebuildStep::Done,
+                        Some(_) => RebuildStep::Queued,
+                    };
+                    if part {
+                        parts += 1;
+                    }
+                    (id, step)
+                })
+                .collect(),
+        )
+    }
+
+    /// Shows the parts of a rebuild still running, as far as it has got: only the parts (the
+    /// errors, times and a dialog's stage wait for the finished build, [`Self::apply`]).
+    fn apply_partial(&mut self, parts: &[Part]) {
+        let same = self.parts.len() == parts.len()
+            && self.parts.iter().zip(parts).all(|(a, b)| {
+                a.id == b.id && a.name == b.name && std::sync::Arc::ptr_eq(&a.solid, &b.solid)
+            });
+        if same {
+            return;
+        }
+        self.generation += 1;
+        self.bounds = parts.iter().filter_map(|p| p.solid.bounds()).collect();
+        self.parts = parts.to_vec();
+    }
+
     /// Takes a finished rebuild's parts and errors. While `editing` is an Add extrude (the
     /// last part feature), the parts are the ones before it and [`Self::tool`] its new body
     /// (`over_result`: the parts are the result, the body faint over them).
@@ -1421,6 +1475,13 @@ fn update_part_cache(
                 );
                 cache.rebuilding = true;
             }
+        } else if *over == PartOverride::default()
+            && let Some(p) = &cache.pending
+            && p.element == el.id
+            && let Some(parts) = p.rebuild.partial()
+        {
+            // A long rebuild's parts as far as it has got (not while a dialog shows its edit).
+            cache.apply_partial(&parts);
         }
         return;
     }
@@ -1478,6 +1539,10 @@ fn update_part_cache(
             cache.pending = Some(PendingRebuild {
                 element: el.id,
                 rebuild,
+                order: effective
+                    .iter()
+                    .map(|f| (f.id, f.is_part_feature()))
+                    .collect(),
             });
         }
     }

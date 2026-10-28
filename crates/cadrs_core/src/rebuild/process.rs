@@ -171,6 +171,9 @@ pub(super) enum Event {
     /// The build, its parts' meshes taken out ([`each_solid`]): in the same order, each mesh's
     /// id and the mesh, or only the id of one sent before ([`SOLID_WINDOW`]).
     Rebuilt(Arc<Build>, SentMeshes),
+    /// The parts of the rebuild running, as far as it has got ([`super::Pending::partial`]): a
+    /// build of only its parts, their meshes sent as [`Event::Rebuilt`]'s are.
+    Partial(Arc<Build>, SentMeshes),
     Exported(Result<Vec<StepFile>, String>),
     Projected(Result<Arc<crate::views::ViewGeometry>, String>),
     TaskDone(Result<Vec<u8>, String>),
@@ -550,6 +553,16 @@ impl Remote {
                         PROGRESS_TOTAL.store(total, Ordering::Relaxed);
                     }
                     Event::Computing(k) => computing = k,
+                    Event::Partial(b, solids) => {
+                        let mut b = Arc::unwrap_or_clone(b);
+                        if conn
+                            .solids
+                            .restore(&mut b, solids, &mut self.recent)
+                            .is_ok()
+                        {
+                            super::keep_partial(b.parts);
+                        }
+                    }
                     Event::Blob(hash, bytes) => {
                         crate::blobs::insert_known(&hash, bytes);
                         conn.blobs.insert(hash);
@@ -622,6 +635,7 @@ impl Remote {
             match job {
                 Job::Rebuild {
                     features,
+                    ticket,
                     reply,
                     cancelled,
                     persist,
@@ -629,7 +643,10 @@ impl Remote {
                     if cancelled.load(Ordering::Relaxed) {
                         continue;
                     }
-                    let _ = reply.send(Arc::new(self.rebuild(features, persist)));
+                    super::start_progress(ticket);
+                    let build = self.rebuild(features, persist);
+                    super::clear_partial();
+                    let _ = reply.send(Arc::new(build));
                 }
                 Job::Export {
                     features,
@@ -740,6 +757,23 @@ static SINK: OnceLock<Sink> = OnceLock::new();
 /// Features not to compute: their cache keys (in the kernel process).
 static POISONED: RwLock<Option<HashSet<u64>>> = RwLock::new(None);
 
+/// Sends the parts of the rebuild running to the app (set in the kernel process).
+type PartialSink = Box<dyn Fn(&[crate::parts::Part]) + Send + Sync>;
+
+static PARTIAL_SINK: OnceLock<PartialSink> = OnceLock::new();
+
+/// Sends `parts`, those of the rebuild running as far as it has got, to the app: `false` outside
+/// the kernel process (the caller keeps them, [`super::keep_partial`]).
+pub(super) fn send_partial(parts: &[crate::parts::Part]) -> bool {
+    match PARTIAL_SINK.get() {
+        Some(s) => {
+            s(parts);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Tells the app (from the kernel process; nothing elsewhere).
 pub(super) fn emit(e: &Event) {
     if let Some(s) = SINK.get() {
@@ -845,7 +879,23 @@ pub fn main(args: &[String]) -> i32 {
         .spawn(move || super::run(rx))
         .expect("failed to start the rebuild thread");
     let mut reader = BufReader::new(read);
-    let mut sent = SentSolids::default();
+    // The meshes sent, shared with the rebuild thread's parts sent as it goes.
+    let sent = Arc::new(Mutex::new(SentSolids::default()));
+    let partial_sent = sent.clone();
+    let partial_writer = writer.clone();
+    let _ = PARTIAL_SINK.set(Box::new(move |parts: &[crate::parts::Part]| {
+        let b = Build {
+            parts: parts.to_vec(),
+            ..Build::default()
+        };
+        let Ok(mut sent) = partial_sent.lock() else {
+            return;
+        };
+        let (b, solids) = sent.strip(&b);
+        if let Ok(mut w) = partial_writer.lock() {
+            let _ = write_msg(&mut *w, &Event::Partial(Arc::new(b), solids));
+        }
+    }));
     let send = |e: &Event| -> bool {
         writer
             .lock()
@@ -889,12 +939,16 @@ pub fn main(args: &[String]) -> i32 {
                 let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let _ = tx.send(Job::Rebuild {
                     features: features.into_list(),
+                    ticket: 0,
                     reply,
                     cancelled,
                     persist,
                 });
                 match rx.recv() {
                     Ok(b) => {
+                        let Ok(mut sent) = sent.lock() else {
+                            return 1;
+                        };
                         let (b, solids) = sent.strip(&b);
                         Event::Rebuilt(Arc::new(b), solids)
                     }
