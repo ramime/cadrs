@@ -1500,12 +1500,19 @@ pub(crate) fn show_filter(world: &mut World, filter: Filter) {
 pub(crate) fn open_documents_folder(world: &mut World) {
     let dir = world.resource::<DocumentStore>().0.root().to_path_buf();
     let _ = cadrs_fs::create_dir_all(&dir);
+    open_folder(&dir);
+}
+
+/// Opens folder `dir` in the system's file manager.
+fn open_folder(dir: &std::path::Path) {
     let opener = if cfg!(windows) {
         "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
     } else {
         "xdg-open"
     };
-    if let Err(e) = std::process::Command::new(opener).arg(&dir).spawn() {
+    if let Err(e) = std::process::Command::new(opener).arg(dir).spawn() {
         warn!("cannot open {}: {e}", dir.display());
     }
 }
@@ -1701,11 +1708,13 @@ fn on_row_context_menu(
             .item(MenuItem::new("ctx-restore", "Restore").icon("restore"))
             .item(MenuItem::new("ctx-delete-forever", "Delete permanently…").icon("delete"))
             .separator()
+            .item(MenuItem::new("ctx-open-folder", "Open document folder").icon("folder"))
             .item(MenuItem::new("ctx-properties", "Properties…").icon("info"))
             .min_width(190.0)
     } else {
         Menu::new("doc-context-menu")
             .item(MenuItem::new("ctx-open", "Open").icon("open-external"))
+            .item(MenuItem::new("ctx-open-folder", "Open document folder").icon("folder"))
             .item(MenuItem::new("ctx-rename", "Rename…").icon("edit"))
             .separator()
             .item(
@@ -1796,6 +1805,8 @@ fn on_context_action(
     };
     match ev.item.as_str() {
         "ctx-open" => commands.queue(move |world: &mut World| open_document(world, id)),
+        // The document's own folder (`<documents>/<id>`: its document.ron, thumbnails, blobs).
+        "ctx-open-folder" => open_folder(&store.0.doc_dir(id)),
         "ctx-rename" => open_rename_dialog(&mut commands, &theme, &entry),
         "ctx-copy" => open_copy_dialog(&mut commands, &theme, &entry),
         "ctx-trash" => open_trash_dialog(&mut commands, &theme, &entry),
