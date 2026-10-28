@@ -114,6 +114,7 @@ pub mod sketch_links;
 pub mod sketch_modify_tools;
 pub mod sketch_text;
 pub mod sketch_tools;
+pub mod spacemouse;
 pub mod suppress_variable;
 pub mod surfacing_ui;
 pub mod tab_folders;
@@ -696,6 +697,7 @@ impl Plugin for CadrsAppPlugin {
                 shortcuts::ShortcutsPlugin,
                 script::ScriptPlugin,
             ))
+            .add_plugins(spacemouse::SpaceMousePlugin)
             .add_plugins((
                 rebuild_indicator::RebuildIndicatorPlugin,
                 rebuild_rows::RebuildRowsPlugin,

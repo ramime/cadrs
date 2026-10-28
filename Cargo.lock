@@ -2236,6 +2236,7 @@ dependencies = [
  "chrono",
  "directories",
  "flate2",
+ "hidapi",
  "icon-rs",
  "image",
  "nalgebra",
@@ -2244,6 +2245,7 @@ dependencies = [
  "ron",
  "serde",
  "serde_json",
+ "spnav-rs",
  "tar",
  "ureq",
  "uuid",
@@ -4629,6 +4631,19 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
+name = "hidapi"
+version = "2.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "818c0e1d27887aaf76fe737042e27a66b796a7b099e6d2e1a72d106c2dff3fa6"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "pkg-config",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "http"
@@ -8733,6 +8748,21 @@ checksum = "7ef958a98b9d5da290cfc78946e9f3e61e1e62a18db0d92cac0b83cc161491a9"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "spnav-rs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1960875fb82336a74d865c1afecc2db7a31020b5a8e4a2b3146535e0a77c5b27"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytes",
+ "futures-core",
+ "glam 0.30.10",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
