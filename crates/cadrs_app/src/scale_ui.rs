@@ -235,7 +235,7 @@ pub fn step_to_edge(edges: &[f32], max: f32, x: f32, forward: bool) -> f32 {
 
 /// The wheel over the tabs scrolls them sideways, a whole tab at a time (P3F.3–P3F.4 judge).
 fn on_strip_wheel(
-    mut ev: On<Pointer<Scroll>>,
+    mut ev: On<PointerScroll>,
     q_names: Query<(&Name, Option<&ChildOf>)>,
     mut q_strip: Query<(&ComputedNode, &UiGlobalTransform, &mut ScrollPosition)>,
     q_tabs: StripTabs,

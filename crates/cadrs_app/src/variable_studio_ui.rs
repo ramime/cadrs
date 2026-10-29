@@ -1859,7 +1859,7 @@ fn on_available(ev: On<CheckboxChange>, q: Query<(), With<AvailableBox>>, mut co
 // Dragging rows
 
 fn on_drag_start(
-    ev: On<Pointer<DragStart>>,
+    ev: On<PointerDragStart>,
     q: Query<&DragHandle>,
     doc: Option<Res<ActiveDocument>>,
     mut ui: ResMut<VsUi>,
@@ -1884,7 +1884,7 @@ fn on_drag_start(
 
 /// The pointer over the rows: where the dragged row would go (the rows' midpoints above it).
 fn on_drag(
-    ev: On<Pointer<Drag>>,
+    ev: On<PointerDrag>,
     q: Query<(), With<DragHandle>>,
     q_rows: Query<(&RowLine, &UiGlobalTransform, &ComputedNode)>,
     mut ui: ResMut<VsUi>,
@@ -1893,7 +1893,7 @@ fn on_drag(
         return;
     }
     let Some(d) = ui.drag.as_mut() else { return };
-    let y = ev.pointer_location.position.y;
+    let y = ev.pointer.position.y;
     let mut to = 0;
     for (line, tf, node) in &q_rows {
         if line.row == d.row {
@@ -1910,7 +1910,7 @@ fn on_drag(
     d.to = to;
 }
 
-fn on_drag_end(ev: On<Pointer<DragEnd>>, q: Query<(), With<DragHandle>>, mut commands: Commands) {
+fn on_drag_end(ev: On<PointerDragEnd>, q: Query<(), With<DragHandle>>, mut commands: Commands) {
     if !q.contains(ev.entity) {
         return;
     }
@@ -1962,7 +1962,7 @@ fn sync_drop_marker(
 }
 
 /// A click on a row's handle picks the row (again: unpicks it); Delete then deletes it.
-fn on_handle_click(ev: On<Pointer<Click>>, q: Query<&DragHandle>, mut ui: ResMut<VsUi>) {
+fn on_handle_click(ev: On<PointerClick>, q: Query<&DragHandle>, mut ui: ResMut<VsUi>) {
     let Ok(DragHandle(row)) = q.get(ev.entity).copied() else {
         return;
     };

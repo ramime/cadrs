@@ -1,6 +1,6 @@
 # cadrs
 
-Onshape-style CAD in Rust + Bevy 0.19.1. Local notes in `docs/` (git-ignored: `PLAN.md`,
+Onshape-style CAD in Rust + Bevy 0.20.1. Local notes in `docs/` (git-ignored: `PLAN.md`,
 `PROGRESS.md`, `ORCHESTRATOR.md` for background workers). Kernel design: `crates/cadrs_kernel/README.md`.
 
 ## Commands

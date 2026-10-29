@@ -1145,7 +1145,7 @@ pub(crate) fn axis_label_spot(view: &ViewState, axis: Vec3, size: Vec2) -> (Vec2
 }
 
 fn on_cube_click(
-    click: On<Pointer<Click>>,
+    click: On<PointerClick>,
     q: Query<(), With<CubeImageNode>>,
     q_node: Query<(&ComputedNode, &bevy::ui::UiGlobalTransform), With<CubeImageNode>>,
     mut view: ResMut<ViewportView>,
@@ -1156,7 +1156,7 @@ fn on_cube_click(
     let Some(origin) = widget_origin(&q_node) else {
         return;
     };
-    match spot_at(&view.view, click.pointer_location.position - origin) {
+    match spot_at(&view.view, click.pointer.position - origin) {
         Some(CubeSpot::Face(face)) => {
             let to = view.target().oriented(face.view());
             view.animate_to(to);

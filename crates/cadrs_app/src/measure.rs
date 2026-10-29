@@ -329,14 +329,13 @@ fn sync_summary(
         .spawn((
             Name::new("measure-summary"),
             Summary,
-            Button,
             Node {
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(5.0),
                 margin: UiRect::right(Val::Px(8.0)),
                 ..default()
             },
-            observe(|_: On<Pointer<Click>>, mut commands: Commands| commands.queue(toggle_panel)),
+            observe(|_: On<PointerClick>, mut commands: Commands| commands.queue(toggle_panel)),
             children![
                 (
                     cadrs_ui::icon::icon("measure", 14.0, theme.muted_foreground),

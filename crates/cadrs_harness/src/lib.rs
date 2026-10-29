@@ -7,7 +7,7 @@
 //!
 //! Input without a window: the harness writes `PointerInput` messages for the mouse pointer
 //! (see [`runner::HARNESS_POINTER`] for why not a custom one), located on the render surface, so hovering and clicking go
-//! through normal picking (UI buttons receive `Pointer<Press>`/`Pointer<Click>`). Keys are sent as
+//! through normal picking (UI buttons receive `PointerPress`/`PointerClick`). Keys are sent as
 //! `KeyboardInput` messages, which also update `ButtonInput<KeyCode>`. Keyboard focus dispatch in
 //! `bevy_input_focus` needs a primary window entity, so headless mode spawns a *virtual* one: a
 //! `Window` + `PrimaryWindow` entity that never gets an OS window (winit is disabled).

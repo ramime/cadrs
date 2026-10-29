@@ -798,7 +798,7 @@ fn cpu_light_clusters(settings: Option<ResMut<bevy::light::cluster::GlobalCluste
     }
 }
 
-fn no_light_clusters(add: On<Add, Camera3d>, mut commands: Commands) {
+fn no_light_clusters(add: On<Add<Camera3d>>, mut commands: Commands) {
     commands
         .entity(add.entity)
         .insert(bevy::light::cluster::ClusterConfig::None);

@@ -304,6 +304,11 @@ fn spawn_shell(
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
+                // A root sits in Bevy's implicit viewport grid, whose row (taffy 0.14, Bevy 0.20)
+                // grows to the root's content unless the root's minimum is 0: then 100% is the
+                // window, and long lists scroll inside it instead of stretching the screen.
+                min_width: Val::Px(0.0),
+                min_height: Val::Px(0.0),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(Val::Px(PANEL_GAP)),
                 row_gap: Val::Px(PANEL_GAP),
@@ -4263,7 +4268,7 @@ fn rebuild_feature_rows(
 /// P3D.1 (IR4.6, IR5.1): clicking the Features header's red "!" selects the first failing
 /// feature in list order (fix errors top to bottom, the course's advice), opening its folder.
 fn on_error_icon_click(
-    ev: On<Pointer<Click>>,
+    ev: On<PointerClick>,
     q: Query<(), With<FeatureErrorIcon>>,
     mut commands: Commands,
 ) {

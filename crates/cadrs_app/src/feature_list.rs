@@ -612,27 +612,27 @@ pub fn roll_to(world: &mut World, id: Option<FeatureId>) {
 }
 
 fn on_bar_drag_start(
-    ev: On<Pointer<DragStart>>,
+    ev: On<PointerDragStart>,
     q: Query<(), With<RollbackBar>>,
     mut drag: ResMut<BarDrag>,
 ) {
     if ev.button == PointerButton::Primary && q.contains(ev.entity) {
         *drag = BarDrag {
             active: true,
-            pointer: ev.pointer_location.position,
+            pointer: ev.pointer.position,
             target: None,
         };
     }
 }
 
-fn on_bar_drag(ev: On<Pointer<Drag>>, q: Query<(), With<RollbackBar>>, mut drag: ResMut<BarDrag>) {
+fn on_bar_drag(ev: On<PointerDrag>, q: Query<(), With<RollbackBar>>, mut drag: ResMut<BarDrag>) {
     if drag.active && q.contains(ev.entity) {
-        drag.pointer = ev.pointer_location.position;
+        drag.pointer = ev.pointer.position;
     }
 }
 
 fn on_bar_drag_end(
-    ev: On<Pointer<DragEnd>>,
+    ev: On<PointerDragEnd>,
     q: Query<(), With<RollbackBar>>,
     mut commands: Commands,
 ) {

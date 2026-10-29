@@ -1101,7 +1101,7 @@ fn sync_edge_chips(
 
 /// A click on an edge chip takes this user's view to that pointer.
 fn on_edge_chip_click(
-    ev: On<bevy::picking::events::Pointer<bevy::picking::events::Click>>,
+    ev: On<bevy::picking::events::PointerClick>,
     parents: Query<&ChildOf>,
     chips: Query<&EdgeChip>,
     mut commands: Commands,

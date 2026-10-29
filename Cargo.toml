@@ -35,7 +35,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/rvdende/cadrs"
 
 [workspace.dependencies]
-bevy = { version = "0.19.1", features = ["bevy_dev_tools", "system_clipboard"] }
+bevy = { version = "0.20.1", features = ["bevy_dev_tools", "system_clipboard"] }
 serde = { version = "1", features = ["derive", "rc"] }
 ron = "0.12"
 # The kernel process's messages (`cadrs_core::rebuild::process`): self-describing, so the
@@ -43,13 +43,13 @@ ron = "0.12"
 rmp-serde = "1.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 # The autorouter's GPU search (cadrs_router): the wgpu Bevy uses, taking SPIR-V from rust-gpu.
-wgpu = { version = "29", default-features = false, features = ["std", "parking_lot", "spirv", "vulkan", "metal", "dx12"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "spirv", "vulkan", "metal", "dx12"] }
 futures-lite = "2"
 bytemuck = "1"
 slotmap = { version = "1", features = ["serde"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 resvg = "0.45"
-icon-rs = "0.4.8"
+icon-rs = "0.5"
 directories = "6"
 # The system's file dialogs (cadrs_ui::file_picker, issue #136): on Linux through the desktop
 # portal (zenity when there is none), pure Rust.
@@ -161,3 +161,9 @@ opt-level = 3
 inherits = "release"
 incremental = true
 codegen-units = 64
+
+# TODO before merging: publish icon-rs 0.5.0 and bevy_iroh 0.5.0 (their `bevy-0.20` branches),
+# require bevy_iroh "0.5" above and drop this.
+[patch.crates-io]
+icon-rs = { path = "../icon-rs" }
+bevy_iroh = { path = "../bevy_iroh" }
