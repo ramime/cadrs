@@ -3638,6 +3638,14 @@ fn rebuild_feature_rows(
                     && matches!(&f.kind, cadrs_core::FeatureKind::Derived(d) if d.source.is_none())
             })
         });
+    // Each sketch's eye, looked up once (per feature, a search of the list cost a large studio
+    // a millisecond a frame).
+    let visibility: std::collections::HashMap<FeatureId, bool> = match &el.kind {
+        cadrs_core::ElementKind::PartStudio {
+            sketch_visibility, ..
+        } => sketch_visibility.iter().copied().collect(),
+        _ => Default::default(),
+    };
     let features: Vec<FeatureRowKey> = all
         .iter()
         // A sketch with conflicting constraints shows as an error too (`screens/15`).
@@ -3723,7 +3731,7 @@ fn rebuild_feature_rows(
                 failed,
                 // A Plane's eye only (#66); a sketch's also follows the features using it.
                 if kind == RowKind::Plane {
-                    el.sketch_visibility(f.id) != Some(false)
+                    visibility.get(&f.id) != Some(&false)
                 } else {
                     !cache.hidden_sketches.contains(&f.id)
                 },
@@ -3778,7 +3786,7 @@ fn rebuild_feature_rows(
                                 !cache.hidden_sketches.contains(&s)
                             }
                             crate::derived_ui::DerivedChild::Plane(s) => {
-                                el.sketch_visibility(s) != Some(false)
+                                visibility.get(&s) != Some(&false)
                             }
                             _ => true,
                         };
