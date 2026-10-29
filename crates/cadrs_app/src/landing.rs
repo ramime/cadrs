@@ -1651,12 +1651,37 @@ pub(crate) fn open_document(world: &mut World, id: DocumentId) {
         .shared
         .as_ref()
         .map(crate::collab::read_only_reason);
+    log_opened(&file.document, &file.meta, &store.doc_dir(id));
     let mut active = ActiveDocument::stored(file.document, file.meta);
     active.read_only = read_only;
     world.insert_resource(active);
     world
         .resource_mut::<NextState<AppState>>()
         .set(AppState::Document);
+}
+
+/// The log's line for a document opened from the documents page: which one, where it is stored
+/// and what is in it.
+fn log_opened(doc: &Document, meta: &DocumentMeta, dir: &std::path::Path) {
+    let tabs = doc
+        .elements
+        .iter()
+        .map(|el| format!("{} ({})", el.name, crate::tab_manager::tab_type(el)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let shared = meta
+        .shared
+        .as_ref()
+        .map_or_else(String::new, |s| format!(", shared by {}", s.owner_name));
+    info!(
+        "opened document \"{}\" (id {}) from {}: {} tabs: {tabs}; owner {}, workspace {}{shared}",
+        doc.name,
+        doc.id,
+        dir.display(),
+        doc.elements.len(),
+        meta.owned_by,
+        meta.workspace.as_deref().unwrap_or("Main"),
+    );
 }
 
 /// Tells the person why stored document `id` didn't open: one saved by a newer cadrs is a
