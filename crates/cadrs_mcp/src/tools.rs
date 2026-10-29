@@ -191,6 +191,32 @@ pub struct SetFeatureVisible {
     pub part_studio: Option<String>,
 }
 
+/// Moves a Part Studio's rollback bar: the features below it are not built.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetRollback {
+    /// How many features stay above the bar (built), counted from the top of the feature list
+    /// without the default geometry. Omitted (and `after` too), or past the end: roll to the end.
+    #[serde(default)]
+    pub index: Option<usize>,
+    /// Instead of `index`: the bar goes just below the feature with this name.
+    #[serde(default)]
+    pub after: Option<String>,
+    /// The Part Studio tab's name; omitted: the active tab.
+    #[serde(default)]
+    pub part_studio: Option<String>,
+}
+
+/// Lists UI nodes with where they are on screen.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetUiLayout {
+    /// Only nodes whose `Name` contains this (case-insensitive); omitted: every named node.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// At most this many nodes, top to bottom; omitted: 200.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 /// Renames a part and/or sets its colour.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetPart {

@@ -56,6 +56,8 @@ pub enum Call {
     RenameFeature(RenameFeature),
     SetPart(SetPart),
     SetFeatureVisible(SetFeatureVisible),
+    SetRollback(SetRollback),
+    GetUiLayout(GetUiLayout),
     ListFaces(PartStudio),
     ListEdges(PartStudio),
     Undo,
@@ -441,6 +443,26 @@ impl Cadrs {
         Parameters(p): Parameters<SetFeatureVisible>,
     ) -> Result<CallToolResult, ErrorData> {
         self.call(Call::SetFeatureVisible(p)).await
+    }
+
+    #[tool(
+        description = "Move a Part Studio's rollback bar (one undo step): only the features above it are built, so the Part Studio shows what it was at that point. Give `index` (how many features stay above it) or `after` (a feature's name); neither: roll to the end. Returns where the bar is, the last feature built and the next one."
+    )]
+    async fn set_rollback(
+        &self,
+        Parameters(p): Parameters<SetRollback>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(Call::SetRollback(p)).await
+    }
+
+    #[tool(
+        description = "List the app's named UI nodes (panels, lists, buttons, the viewport area) with their on-screen rectangle in logical pixels (x, y of the top-left corner, w, h), whether they are shown, and their parent's name. Filter by part of the name. Use it to find what is laid out wrong: a panel taller than the window, a list that does not scroll."
+    )]
+    async fn get_ui_layout(
+        &self,
+        Parameters(p): Parameters<GetUiLayout>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(Call::GetUiLayout(p)).await
     }
 
     #[tool(
