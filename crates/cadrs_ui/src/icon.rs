@@ -343,6 +343,8 @@ pub fn resolve_icons(
         if let Some(accent) = atlas.scaled(&icon.name, icon.size, scale, true, dark, &mut images) {
             let layer = (
                 IconAccent,
+                // Its colour follows the icon's, which the scheme has already mapped.
+                crate::color_scheme::KeepColors,
                 ImageNode {
                     image: accent,
                     color: if solid {
