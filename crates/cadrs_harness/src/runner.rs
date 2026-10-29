@@ -401,7 +401,8 @@ pub fn drive(world: &mut World) {
     // Every step (but a Wait or a measurement) waits for the app to settle: no pending work
     // (rebuilds, view animations, section caps, drawing views), then `QUIET_FRAMES` quiet frames.
     // (A WaitFor polls at once: it waits for something on screen itself, which may only be
-    // there while the app is busy, like the loading cover. ScreenshotNow takes the frame as is.)
+    // there while the app is busy, like the loading cover. ScreenshotNow takes the frame as is,
+    // and a Now step runs as the app is.)
     if !matches!(
         step,
         Step::Wait(_)
@@ -409,6 +410,7 @@ pub fn drive(world: &mut World) {
             | Step::ScreenshotNow(_)
             | Step::MeasureStart(_)
             | Step::MeasureEnd
+            | Step::Now(_)
     ) {
         let busy = world
             .get_resource::<cadrs_ui::PendingWork>()
@@ -726,6 +728,7 @@ fn expand(world: &mut World, step: &Step) -> Result<Vec<Vec<Op>>, String> {
             vec![Op::Shot(label.clone())],
         ],
         Step::ScreenshotNow(label) => vec![vec![Op::Shot(label.clone())]],
+        Step::Now(step) => return expand(world, step),
     })
 }
 

@@ -1008,12 +1008,10 @@ pub(crate) fn edge_convex(b: &Body, e: usize) -> Option<bool> {
     }
     let [s1, s2] = edge_sides(b, e).ok()?;
     let p = ed.point(ed.mid_t());
-    let normal = |fi: usize| {
-        let f = &b.faces[fi];
-        let (u, v) = f.surf.project(&p, None);
-        f.surf.normal(u, v) * if f.sense { 1.0 } else { -1.0 }
-    };
-    let (n1, n2) = (normal(s1.0), normal(s2.0));
+    let (n1, n2) = (
+        side_normal(b, e, s1, ed.mid_t(), &p),
+        side_normal(b, e, s2, ed.mid_t(), &p),
+    );
     let dir = ed.curve.tangent(ed.mid_t()).normalize() * if s1.1 { 1.0 } else { -1.0 };
     // Into face 1, square to the edge (material lies left of a coedge about the normal).
     let w1 = n1.cross(&dir);
@@ -1043,14 +1041,29 @@ pub(crate) fn smooth_within(b: &Body, e: usize, angle: f64) -> bool {
     (0..=8).all(|i| {
         let t = ed.t[0] + (ed.t[1] - ed.t[0]) * i as f64 / 8.0;
         let p = ed.point(t);
-        let normal = |fi: usize| {
-            let f = &b.faces[fi];
-            let (u, v) = f.surf.project(&p, None);
-            f.surf.normal(u, v) * if f.sense { 1.0 } else { -1.0 }
-        };
-        let (n1, n2) = (normal(s1.0), normal(s2.0));
+        let (n1, n2) = (side_normal(b, e, s1, t, &p), side_normal(b, e, s2, t, &p));
         n1.dot(&n2) > 0.0 && n1.cross(&n2).norm() < angle.sin()
     })
+}
+
+/// The outward normal of a face at an edge (`side`: the face and its coedge's direction, as
+/// [`edge_sides`] gives it) at the edge's point `p` (its parameter `t`): from the nearest point
+/// of the face's surface, projected from where the coedge's p-curve puts the edge in the face's
+/// (u, v) rather than searched for over the whole surface (seconds in all over a body of many
+/// B-spline faces).
+fn side_normal(b: &Body, e: usize, (fi, fwd): (usize, bool), t: f64, p: &P3) -> V3 {
+    let f = &b.faces[fi];
+    let hint = f
+        .loops
+        .iter()
+        .flatten()
+        .find(|c| c.edge == e && c.fwd == fwd)
+        .map(|c| {
+            let uv = c.pc.point(t);
+            (uv.x, uv.y)
+        });
+    let (u, v) = f.surf.project(p, hint);
+    f.surf.normal(u, v) * if f.sense { 1.0 } else { -1.0 }
 }
 
 /// The picked edges less those whose faces join smoothly (OCCT's blends pass over them too);

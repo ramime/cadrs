@@ -609,11 +609,7 @@ fn edge_fillet(
     }
     let [(f1, c1), (f2, _)] = sides(b, e)?;
     let faces = if c1 { [f1, f2] } else { [f2, f1] };
-    let spine = Spine {
-        curve: ed.curve.clone(),
-        t: ed.t,
-        closed: ed.closed(),
-    };
+    let spine = Spine::new(ed.curve.clone(), ed.t, ed.closed());
     // Convex or concave: the second face turns away from the first's normal (convex).
     let convexity = |t: f64| -> Option<bool> {
         let d = ed.curve.tangent(t).normalize();
@@ -1185,9 +1181,19 @@ struct WeldSide {
 
 /// How far ball `ball`'s centre is from face `wall`'s surface on the side the fillet's offsets
 /// go (outside for a concave one), less its radius `rho`: positive while the ball clears it.
-fn clearance(b: &Body, ef: &EdgeFillet, ball: &Ball, rho: f64, wall: usize) -> f64 {
+/// (`near`: the foot of a ball near by on the wall, to project from, updated.)
+fn clearance(
+    b: &Body,
+    ef: &EdgeFillet,
+    ball: &Ball,
+    rho: f64,
+    wall: usize,
+    near: &mut Option<P2>,
+) -> f64 {
     let g = &b.faces[wall];
-    let c = geom::contact(g, geom::foot(g, &ball.c, None));
+    let foot = geom::foot(g, &ball.c, *near);
+    *near = Some(foot);
+    let c = geom::contact(g, foot);
     (ball.c - c.p).dot(&c.n) * ef.k[0].signum() - rho
 }
 
@@ -1219,20 +1225,25 @@ fn reach_radius(
     };
     let full = ball_of_radius(b, ef, t, r, *guess).ok_or_else(lost)?;
     *guess = [full.q[0].uv, full.q[1].uv];
-    if clearance(b, ef, &full, r, wall) >= 0.0 {
+    // The full ball's foot on the wall searched for over the wall's surface; the smaller balls'
+    // projected from it, the last one's (they move little from one to the next: no search
+    // over the whole surface per step of the bisection, most of a fillet's time).
+    let mut near = None;
+    if clearance(b, ef, &full, r, wall, &mut near) >= 0.0 {
         return Ok(None);
     }
     let (mut lo, mut hi) = (0.02 * r, r);
     let mut g = *guess;
     let small = ball_of_radius(b, ef, t, lo, g).ok_or_else(lost)?;
-    if clearance(b, ef, &small, lo, wall) <= 0.0 {
+    let mut small_near = near;
+    if clearance(b, ef, &small, lo, wall, &mut small_near) <= 0.0 {
         return Ok(Some(0.0));
     }
     for _ in 0..60 {
         let m = 0.5 * (lo + hi);
         let bl = ball_of_radius(b, ef, t, m, g).ok_or_else(lost)?;
         g = [bl.q[0].uv, bl.q[1].uv];
-        if clearance(b, ef, &bl, m, wall) > 0.0 {
+        if clearance(b, ef, &bl, m, wall, &mut near) > 0.0 {
             lo = m;
         } else {
             hi = m;
@@ -9283,8 +9294,35 @@ fn point_in_face(b: &Body, fi: usize, p: &P3) -> bool {
 /// a face bounded by a spline's hundred spans).
 struct FaceTest {
     fi: usize,
-    polys: Vec<Vec<P2>>,
+    polys: std::sync::Arc<Vec<Vec<P2>>>,
     slack: f64,
+}
+
+thread_local! {
+    /// The faces' polygons of the bodies the [`local_blend`]s on this thread are blending, the
+    /// innermost last (a thread waiting in one may take up another part's): made once per face
+    /// rather than per point tested (a fifth of a fillet's time).
+    static FACE_POLYS: std::cell::RefCell<Vec<(*const Body, HashMap<usize, FacePolys>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+type FacePolys = std::sync::Arc<Vec<Vec<P2>>>;
+
+/// [`FACE_POLYS`] kept for a body while it lives.
+struct PolysScope;
+
+impl PolysScope {
+    /// (`b` is borrowed for as long as it lives: nothing else is made at its address.)
+    fn enter(b: &Body) -> Self {
+        FACE_POLYS.with_borrow_mut(|s| s.push((b as *const Body, HashMap::new())));
+        Self
+    }
+}
+
+impl Drop for PolysScope {
+    fn drop(&mut self) {
+        FACE_POLYS.with_borrow_mut(|s| s.pop());
+    }
 }
 
 impl FaceTest {
@@ -9296,11 +9334,16 @@ impl FaceTest {
             .flatten()
             .map(|c| b.edges[c.edge].tol)
             .fold(1e3 * tol::POINT, f64::max);
-        Self {
-            fi,
-            polys: super::classify::face_polygons(b, f),
-            slack,
-        }
+        let make = || std::sync::Arc::new(super::classify::face_polygons(b, f));
+        let polys = FACE_POLYS
+            .with_borrow_mut(|s| match s.last_mut() {
+                Some((at, kept)) if std::ptr::eq(*at, b) => {
+                    Some(kept.entry(fi).or_insert_with(make).clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(make);
+        Self { fi, polys, slack }
     }
 
     /// [`point_in_face`].
@@ -10348,11 +10391,7 @@ pub fn chamfer_offsets_along(b: &Body, e: usize, d: [f64; 2]) -> Option<[f64; 2]
         return None;
     };
     let [(f1, c1), (f2, _)] = sides(b, e).ok()?;
-    let spine = Spine {
-        curve: ed.curve.clone(),
-        t: ed.t,
-        closed: false,
-    };
+    let spine = Spine::new(ed.curve.clone(), ed.t, false);
     if geom::exact_kind([&b.faces[f1], &b.faces[f2]], &spine) != Some(Exact::Cylinder) {
         return None;
     }
@@ -10838,6 +10877,7 @@ fn local_blend(
     flat: bool,
 ) -> Result<(Body, Vec<Vec<FaceSrc>>)> {
     FULLY_CHECKED.with(|c| *c.borrow_mut() = None);
+    let _polys = PolysScope::enter(b);
     if edges
         .iter()
         .any(|(e, law)| *e >= b.edges.len() || law.is_empty())
