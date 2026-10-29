@@ -599,9 +599,21 @@ pub struct Spine {
     pub t: [f64; 2],
     /// A closed curve: parameters past its range wrap round.
     pub closed: bool,
+    /// [`Self::param_of`]'s samples of a B-spline spine, made when first wanted (a chamfer's
+    /// section plane is found through every point it tries).
+    samples: std::sync::OnceLock<Vec<P3>>,
 }
 
 impl Spine {
+    pub fn new(curve: Curve, t: [f64; 2], closed: bool) -> Self {
+        Self {
+            curve,
+            t,
+            closed,
+            samples: std::sync::OnceLock::new(),
+        }
+    }
+
     /// The parameter on the curve itself (a closed B-spline's wrapped into its range).
     fn on_curve(&self, t: f64) -> f64 {
         let natural = matches!(self.curve, Curve::Line { .. } | Curve::Circle { .. });
@@ -660,9 +672,14 @@ impl Spine {
         let (lo, hi) = (self.t[0].min(self.t[1]), self.t[0].max(self.t[1]));
         let mut t = t;
         let mut best = (c - self.at(t).0).norm();
-        for i in 0..=64 {
+        let samples = self.samples.get_or_init(|| {
+            (0..=64)
+                .map(|i| self.at(lo + (hi - lo) * i as f64 / 64.0).0)
+                .collect()
+        });
+        for (i, q) in samples.iter().enumerate() {
             let s = lo + (hi - lo) * i as f64 / 64.0;
-            let d = (c - self.at(s).0).norm();
+            let d = (c - q).norm();
             if d < 0.5 * best {
                 (t, best) = (s, d);
             }

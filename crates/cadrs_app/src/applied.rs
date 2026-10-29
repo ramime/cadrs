@@ -588,10 +588,12 @@ impl AppliedSession {
 }
 
 /// The parts before the feature being edited (its references are drawn on them).
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Default)]
 pub struct BeforeParts {
     key: Option<(FeatureId, u64)>,
     pub parts: Vec<Part>,
+    /// Their rebuild while it runs, with the key it is for.
+    pending: Option<((FeatureId, u64), cadrs_core::rebuild::Pending)>,
 }
 
 /// Starts a new applied feature in the active Part Studio (the toolbar's buttons).
@@ -1426,12 +1428,16 @@ fn roll_back_to_edited(
     }
 }
 
-/// The parts before the feature being edited (cached on the rebuild thread).
+/// The parts before the feature being edited (cached on the rebuild thread). Asked of the
+/// rebuild worker rather than waited for: a long rebuild running when the dialog opens held the
+/// window until it was done.
 fn update_before_parts(
     session: Option<Res<AppliedSession>>,
     doc: Option<Res<ActiveDocument>>,
     mut before: ResMut<BeforeParts>,
     mut cache: ResMut<PartCache>,
+    mut pending: ResMut<cadrs_ui::PendingWork>,
+    mut why: ResMut<cadrs_ui::PendingWhy>,
 ) {
     let (Some(s), Some(doc)) = (session, doc) else {
         if before.key.is_some() {
@@ -1457,11 +1463,21 @@ fn update_before_parts(
         format!("{upstream:?}").hash(&mut h);
         h.finish()
     };
-    if before.key == Some((s.feature, key)) {
+    let key = (s.feature, key);
+    if before.key == Some(key) {
         return;
     }
-    before.parts = cadrs_core::rebuild::build(upstream).parts.clone();
-    before.key = Some((s.feature, key));
+    if before.pending.as_ref().is_none_or(|(k, _)| *k != key) {
+        before.pending = Some((key, cadrs_core::rebuild::request(upstream.to_vec())));
+    }
+    let Some(build) = before.pending.as_mut().and_then(|(_, p)| p.poll()) else {
+        pending.0 = true;
+        why.add("parts before the feature");
+        return;
+    };
+    before.pending = None;
+    before.parts = build.parts.clone();
+    before.key = Some(key);
     // Onshape's ghost: the parts before the feature, faint and pickable over the result.
     cache.ghost = before.parts.clone();
     cache.ghost_generation += 1;

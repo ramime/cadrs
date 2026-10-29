@@ -233,19 +233,24 @@ pub(crate) fn update_analysis(
     let stale = lost.done.as_ref().is_none_or(|(k, _)| *k != key);
     // Only on parts built from these features: before the first rebuild of a tab is done
     // there are none, every face sketch would look lost, and the check would rebuild the
-    // features before each one, ahead of the rebuild itself (and of its snapshot).
+    // features before each one, ahead of the rebuild itself (and of its snapshot). Not on a
+    // dialog's preview either (rolled back to the feature it edits: the sketches after it
+    // would look lost, and their checks rebuild what the preview leaves out, ahead of the
+    // dialog's ✓), and only the sketches built (not those below the rollback bar).
     if stale
         && !parts.rebuilding
         && lost.running.is_none()
         && let Some(el) = doc.active_element()
-        && parts
-            .settled()
-            .is_some_and(|(e, f, _)| e == el.id && f == el.features())
+        && parts.settled().is_some_and(|(e, f, o)| {
+            e == el.id && f == el.features() && *o == crate::parts::PartOverride::default()
+        })
     {
         let features = el.features().to_vec();
+        let built: HashSet<FeatureId> = el.active_features().iter().map(|f| f.id).collect();
         let solids = parts.parts.clone();
         let found = run_or_spawn(wait, move || {
             (0..features.len())
+                .filter(|i| built.contains(&features[*i].id))
                 .filter(|i| cadrs_core::parts::sketch_face_lost_in(&features, *i, &solids))
                 .map(|i| features[i].id)
                 .collect()

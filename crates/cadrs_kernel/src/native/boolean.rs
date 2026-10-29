@@ -580,14 +580,90 @@ fn refine_param(c: &Curve, t0: f64, t1: f64, p: &P3, t: f64) -> f64 {
     }
 }
 
+/// Where a surface lies, to tell a point too far from it to be on it without projecting the
+/// point onto it: a B-spline's control points' box, or an extruded B-spline curve's control
+/// points' box seen along the extrusion (the weights all positive).
+enum SurfaceBound {
+    Box(Bbox),
+    /// The box in `across`'s x and y (its z along the extrusion).
+    Across {
+        across: Frame,
+        min: (f64, f64),
+        max: (f64, f64),
+    },
+}
+
+impl SurfaceBound {
+    fn of(s: &Surface) -> Option<Self> {
+        let points = |cps: &mut dyn Iterator<Item = &super::nurbs::H>| -> Option<Vec<P3>> {
+            cps.map(|h| (h.w > 0.0).then(|| super::nurbs::dehom(h)))
+                .collect()
+        };
+        match s {
+            Surface::Nurbs(n) => {
+                let mut b = Bbox::empty();
+                for p in points(&mut n.cps.iter().flatten())? {
+                    b.add(&p);
+                }
+                Some(Self::Box(b))
+            }
+            Surface::Extrusion {
+                c: Curve::Nurbs(c),
+                d,
+            } if d.norm() > 0.0 => {
+                let across = Frame::from_z(P3::origin(), d.normalize());
+                let (mut min, mut max) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+                for p in points(&mut c.cps.iter())? {
+                    let l = across.local(&p);
+                    min = (min.0.min(l.x), min.1.min(l.y));
+                    max = (max.0.max(l.x), max.1.max(l.y));
+                }
+                Some(Self::Across { across, min, max })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `p` is farther than `tol` from the surface.
+    fn far(&self, p: &P3, tol: f64) -> bool {
+        match self {
+            Self::Box(b) => !b.grow(tol).contains(p),
+            Self::Across { across, min, max } => {
+                let l = across.local(p);
+                l.x < min.0 - tol || l.x > max.0 + tol || l.y < min.1 - tol || l.y > max.1 + tol
+            }
+        }
+    }
+}
+
+/// [`edge_on_surface_tol`], told at once when the edge's start is too far from the surface
+/// (`bound`, its [`SurfaceBound`]) to be on it: no projection onto a B-spline per edge and face
+/// (seconds in all in a union of faces with many edges and extruded B-spline faces).
+fn edge_on_bounded(
+    e: &WEdge,
+    s: &Surface,
+    bound: Option<&SurfaceBound>,
+    ftol: f64,
+    tol: f64,
+) -> bool {
+    let far = |b: &SurfaceBound| b.far(&e.curve.point(e.t[0]), tol.max(e.tol).max(ftol));
+    if !e.degenerate && bound.is_some_and(far) {
+        return false;
+    }
+    edge_on_surface_tol(e, s, ftol, tol)
+}
+
 /// Two faces sharing an edge (the same vertices and curve) whose surfaces are tangent along
-/// it, and which aren't both analytic (analytic pairs are intersected exactly).
+/// it, and which aren't both analytic (analytic pairs are intersected exactly). `bounds`: the
+/// faces' surfaces' [`SurfaceBound`]s; `ebox`: the edges' boxes.
 fn tangent_along_shared_edge(
     pool: &Pool,
     fa: &WFace,
     fb: &WFace,
     ea: &[usize],
     eb: &[usize],
+    bounds: (Option<&SurfaceBound>, Option<&SurfaceBound>),
+    ebox: &[Bbox],
 ) -> bool {
     let analytic = |s: &Surface| {
         !matches!(
@@ -610,19 +686,19 @@ fn tangent_along_shared_edge(
         let ((fu, fv), (gu, gv)) = (f.surf.project(p, None), g.surf.project(p, None));
         f.surf.normal(fu, fv).cross(&g.surf.normal(gu, gv)).norm() < 1e-3
     };
-    let tangent_on = |edges: &[usize], f: &WFace, g: &WFace| -> bool {
+    let tangent_on = |edges: &[usize], f: &WFace, g: &WFace, bound: Option<&SurfaceBound>| {
         edges.iter().any(|&x| {
             let e = &pool.edges[x];
             !e.degenerate
                 && (e.t[1] - e.t[0]).abs() > 0.0
-                && edge_on_surface(e, &g.surf, pool.tol)
+                && edge_on_bounded(e, &g.surf, bound, 0.0, pool.tol)
                 && e.curve.longer_than(e.t[0], e.t[1], 1e-3)
                 && [0.25, 0.5, 0.75]
                     .iter()
                     .all(|k| tangent_at(f, g, &e.curve.point(e.t[0] + (e.t[1] - e.t[0]) * k)))
         })
     };
-    if tangent_on(eb, fb, fa) || tangent_on(ea, fa, fb) {
+    if tangent_on(eb, fb, fa, bounds.0) || tangent_on(ea, fa, fb, bounds.1) {
         return true;
     }
     for &x in ea {
@@ -632,7 +708,9 @@ fn tangent_along_shared_edge(
         }
         for &y in eb {
             let o = &pool.edges[y];
-            if o.degenerate {
+            // (Edges whose boxes keep apart aren't the same curve: no points of one sought on the
+            // other, for each of two faces' hundreds of edge pairs.)
+            if o.degenerate || x != y && !ebox[x].grow(pool.tol * 10.0).overlaps(&ebox[y]) {
                 continue;
             }
             // The same curve, at least where they overlap (whole circles may have their seams in
@@ -2335,6 +2413,8 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
     // Edges of one body lying on a face of the other (imprinted as cuts once split).
     let mut on_face: Vec<Vec<usize>> = vec![Vec::new(); faces.len()];
     let ftree = super::bvh::Bvh::new(faces.iter().map(|f| f.bbox).collect());
+    let bounds: Vec<Option<SurfaceBound>> =
+        faces.iter().map(|f| SurfaceBound::of(&f.surf)).collect();
     // Per spline edge of many spans, each span's box (grown by the run's tolerance): made when
     // first wanted, the edge's own box over a face's.
     let span_boxes: Vec<std::sync::OnceLock<Option<Vec<Bbox>>>> =
@@ -2351,7 +2431,8 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
                 continue;
             }
             let ed = pool.edges[e].clone();
-            if edge_on_surface_tol(&ed, &faces[fi].surf, faces[fi].tol, run_tol) {
+            let surf = &faces[fi].surf;
+            if edge_on_bounded(&ed, surf, bounds[fi].as_ref(), faces[fi].tol, run_tol) {
                 if !on_face[fi].contains(&e) {
                     on_face[fi].push(e);
                 }
@@ -2476,6 +2557,8 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
                 &faces[fb],
                 &face_edges[fa],
                 &face_edges[fb],
+                (bounds[fa].as_ref(), bounds[fb].as_ref()),
+                &ebox,
             ) {
                 continue;
             }
@@ -2577,16 +2660,17 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
         let curves: Vec<ssi::IntCurve> = curves.into_iter().filter(|ic| !along(ic)).collect();
         // Whether a boundary edge of either face lies on the other's surface.
         let edge_on_other = {
-            let lies = |edges: &[usize], g: &WFace| {
+            let lies = |edges: &[usize], g: &WFace, bound: Option<&SurfaceBound>| {
                 edges.iter().any(|&x| {
                     let e = &pool.edges[x];
                     !e.degenerate
                         && e.curve
                             .longer_than(e.t[0].min(e.t[1]), e.t[0].max(e.t[1]), 1e-3)
-                        && edge_on_surface(e, &g.surf, pool.tol)
+                        && edge_on_bounded(e, &g.surf, bound, 0.0, pool.tol)
                 })
             };
-            lies(&face_edges[fa], &faces[fb]) || lies(&face_edges[fb], &faces[fa])
+            lies(&face_edges[fa], &faces[fb], bounds[fb].as_ref())
+                || lies(&face_edges[fb], &faces[fa], bounds[fa].as_ref())
         };
         // A curve running within the tolerance of another all along (branches of a near
         // tangent contact traced twice) is that curve again: the copy goes, else every point

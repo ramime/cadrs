@@ -24,6 +24,9 @@ pub struct Entry {
     /// integrals: a rebuild asks for them over the same bodies many times).
     faces: OnceLock<Vec<FaceInfo>>,
     edges: OnceLock<Vec<EdgeInfo>>,
+    /// [`Kernel::bounding_box`]: extremes over its faces (a rebuild asks for every part's box
+    /// near each new body).
+    aabb: OnceLock<Aabb>,
 }
 
 impl Entry {
@@ -33,6 +36,7 @@ impl Entry {
             polys: OnceLock::new(),
             faces: OnceLock::new(),
             edges: OnceLock::new(),
+            aabb: OnceLock::new(),
         }
     }
     pub fn polys(&self) -> &Vec<Vec<Vec<P2>>> {
@@ -49,7 +53,8 @@ impl Entry {
 /// A kernel session: its bodies and the tolerances its operations run with.
 #[derive(Default)]
 pub struct NativeKernel {
-    bodies: HashMap<u64, Entry>,
+    /// (Shared with [`Self::fork`]s: a body never changes.)
+    bodies: HashMap<u64, Arc<Entry>>,
     next: u64,
     tol: super::tol::Tolerances,
     /// Face colours (sRGB and alpha) by body, in face order: an imported file's, or what the
@@ -67,6 +72,9 @@ pub struct NativeKernel {
 
 /// How many of [`Kernel::joins`]'s unions a session keeps for the union that may follow.
 const JOINED_KEPT: usize = 4;
+
+/// How many body ids each [`NativeKernel::fork`] of a session has to itself.
+const FORK_IDS: u64 = 1 << 32;
 
 impl NativeKernel {
     /// An empty session at the default tolerances.
@@ -88,7 +96,10 @@ impl NativeKernel {
 
     /// The session's record of a body.
     pub(crate) fn entry(&self, id: BodyId) -> Result<&Entry> {
-        self.bodies.get(&id.0).ok_or(KernelError::UnknownBody(id))
+        self.bodies
+            .get(&id.0)
+            .map(Arc::as_ref)
+            .ok_or(KernelError::UnknownBody(id))
     }
 
     /// The B-rep of a body of the session (`UnknownBody` if it has none of that id).
@@ -100,8 +111,50 @@ impl NativeKernel {
     pub fn insert(&mut self, body: Body) -> BodyId {
         let id = self.next;
         self.next += 1;
-        self.bodies.insert(id, Entry::new(body));
+        self.bodies.insert(id, Arc::new(Entry::new(body)));
         BodyId(id)
+    }
+
+    /// A session to run an operation in on another thread, its bodies, colours and
+    /// tolerances this one's; [`Self::absorb`] takes back what it made. Its new bodies are
+    /// numbered from a range of its own (`lane`), so their ids don't depend on which of several
+    /// forks runs first.
+    pub fn fork(&self, lane: u64) -> NativeKernel {
+        NativeKernel {
+            bodies: self.bodies.clone(),
+            next: self.next + (lane + 1) * FORK_IDS,
+            tol: self.tol,
+            colors: self.colors.clone(),
+            draw_history: None,
+            // (Not the unions kept for a union to come: a boolean takes its result out of them,
+            // and two sessions mustn't hand out the same body.)
+            joined: Vec::new(),
+        }
+    }
+
+    /// Takes the bodies (and their colours) a [`Self::fork`] of this session made, and the
+    /// unions it kept for [`Kernel::joins`] (after this session's, as though made here in turn:
+    /// the oldest past [`JOINED_KEPT`] released).
+    pub fn absorb(&mut self, fork: NativeKernel) {
+        for (id, e) in fork.bodies {
+            if self.bodies.contains_key(&id) {
+                continue;
+            }
+            if let Some(c) = fork.colors.get(&id) {
+                self.colors.insert(id, c.clone());
+            }
+            self.bodies.insert(id, e);
+            self.next = self.next.max(id + 1);
+        }
+        for j in fork.joined {
+            self.joined.push(j);
+            if self.joined.len() > JOINED_KEPT {
+                let (_, _, old) = self.joined.remove(0);
+                for x in old.bodies {
+                    self.release(x);
+                }
+            }
+        }
     }
 
     /// Adds a built body with its faces' origins as the history of a new result.
@@ -181,11 +234,11 @@ impl NativeKernel {
 
 /// Exact extent of the body's edges along `d` (and of its curved faces' interior extremes).
 pub fn extent_along(b: &Body, o: &P3, d: &V3) -> (f64, f64) {
-    let mut lo = f64::INFINITY;
-    let mut hi = f64::NEG_INFINITY;
-    let mut add = |x: f64| {
-        lo = lo.min(x);
-        hi = hi.max(x);
+    let lo = std::cell::Cell::new(f64::INFINITY);
+    let hi = std::cell::Cell::new(f64::NEG_INFINITY);
+    let add = |x: f64| {
+        lo.set(lo.get().min(x));
+        hi.set(hi.get().max(x));
     };
     for v in &b.verts {
         add((v.p - o).dot(d));
@@ -248,14 +301,26 @@ pub fn extent_along(b: &Body, o: &P3, d: &V3) -> (f64, f64) {
     }
     // Interior extremes of curved faces: where the normal is ±d.
     for (fi, f) in b.faces.iter().enumerate() {
-        if matches!(f.surf, Surface::Plane { .. }) {
+        // (An extrusion's height along d is linear along its rulings: its extremes lie on its
+        // edges, and the search finds none.)
+        if matches!(f.surf, Surface::Plane { .. } | Surface::Extrusion { .. }) {
+            continue;
+        }
+        // A B-spline whose control points keep within the extent so far adds nothing (it lies
+        // in their hull): no search over it (seconds in all over a part's boxes).
+        if let Surface::Nurbs(n) = &f.surf
+            && n.cps.iter().flatten().all(|h| {
+                let x = (super::nurbs::dehom(h) - o).dot(d);
+                h.w > 0.0 && x >= lo.get() && x <= hi.get()
+            })
+        {
             continue;
         }
         for cand in face_extremes(b, fi, d) {
             add((cand - o).dot(d));
         }
     }
-    (lo, hi)
+    (lo.get(), hi.get())
 }
 
 /// Points of a face's interior where its normal is parallel to `d` (candidates for extremes).
@@ -606,7 +671,8 @@ impl Kernel for NativeKernel {
         let gap = profile::closed_gap(profile);
         if gap > profile::JOIN {
             for id in &r.bodies {
-                if let Some(e) = self.bodies.get_mut(&id.0) {
+                // (Just made: its entry is this session's alone.)
+                if let Some(e) = self.bodies.get_mut(&id.0).and_then(Arc::get_mut) {
                     profile::carry_gap(Arc::make_mut(&mut e.body), gap);
                 }
             }
@@ -1366,15 +1432,17 @@ impl Kernel for NativeKernel {
     }
 
     fn bounding_box(&self, body: BodyId) -> Result<Aabb> {
-        let b = self.get(body)?;
-        let o = P3::origin();
-        let (x0, x1) = extent_along(b, &o, &V3::x());
-        let (y0, y1) = extent_along(b, &o, &V3::y());
-        let (z0, z1) = extent_along(b, &o, &V3::z());
-        Ok(Aabb {
-            min: P3::new(x0, y0, z0),
-            max: P3::new(x1, y1, z1),
-        })
+        let e = self.entry(body)?;
+        Ok(*e.aabb.get_or_init(|| {
+            let o = P3::origin();
+            let (x0, x1) = extent_along(&e.body, &o, &V3::x());
+            let (y0, y1) = extent_along(&e.body, &o, &V3::y());
+            let (z0, z1) = extent_along(&e.body, &o, &V3::z());
+            Aabb {
+                min: P3::new(x0, y0, z0),
+                max: P3::new(x1, y1, z1),
+            }
+        }))
     }
 
     fn project(

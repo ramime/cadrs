@@ -597,6 +597,16 @@ impl Surface {
                 })
                 .collect()
         };
+        // An extrusion's points of a row differ by v·d alone: its curve once per row, not per
+        // point (each point as `eval` makes it).
+        if let Surface::Extrusion { c, d } = self {
+            return (0..=n)
+                .flat_map(|i| {
+                    let (p, ..) = c.d2(at(i, 0).0);
+                    (0..=n).map(move |j| P3::from((p + d * at(i, j).1).coords))
+                })
+                .collect();
+        }
         let Surface::Nurbs(ns) = self else {
             return compute();
         };

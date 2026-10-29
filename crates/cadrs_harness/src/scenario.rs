@@ -30,7 +30,7 @@
 //! (a tooltip's delay, an animation caught half-way). A step that waits longer than the
 //! scenario's `timeout` (seconds, default 30; `SetTimeout(s)` changes it from there on) fails
 //! the scenario. `WaitFor` and `ScreenshotNow` don't wait to settle (for a state that only
-//! lasts while the app is busy).
+//! lasts while the app is busy), nor does a step wrapped in `Now` (an edit during a rebuild).
 
 use std::path::{Path, PathBuf};
 
@@ -189,6 +189,10 @@ pub enum Step {
     /// Send a named set-up command to the app (see `cadrs_ui::ScriptCommand`), e.g.
     /// `Custom("populate-sketch 500")`.
     Custom(String),
+    /// Run the step at once, without waiting for the app to settle: what a user does while
+    /// it is busy (`Now(RightClick(ui("feature-extrude-1")))` during a long rebuild). Its UI
+    /// target is still waited for.
+    Now(Box<Step>),
     /// Start timing frames; [`Step::MeasureEnd`] writes `perf-<label>.txt` (frame times in ms:
     /// mean, median, 95th percentile, max) to the output directory.
     MeasureStart(String),
@@ -236,6 +240,7 @@ mod tests {
                     Click(world(2, 3)), Custom("populate-sketch 10"), MeasureStart("x"),
                     MeasureEnd, PressWith("right", at(4, 4)), ReleaseWith("right"),
                     Hover(xyz(1, 2, 3)), ExpectText("a", "b"), SetTimeout(5),
+                    Now(RightClick(ui("busy"))),
                 ],
             )"#,
         )
@@ -244,7 +249,11 @@ mod tests {
         assert_eq!(s.steps[30], Step::SetTimeout(5.0));
         assert_eq!(s.start.as_deref(), Some("gallery"));
         assert_eq!(s.warmup, 20);
-        assert_eq!(s.steps.len(), 31);
+        assert_eq!(s.steps.len(), 32);
+        assert_eq!(
+            s.steps[31],
+            Step::Now(Box::new(Step::RightClick(Target::Ui("busy".into()))))
+        );
         assert_eq!(s.steps[28], Step::Hover(Target::Xyz(1.0, 2.0, 3.0)));
         assert_eq!(s.steps[29], Step::ExpectText("a".into(), "b".into()));
         assert!(s.cursor);

@@ -41,10 +41,16 @@ struct Built {
 pub fn builds(
     world: &mut World,
     key: &'static str,
-    features: Vec<Feature>,
+    mut features: Vec<Feature>,
     feature: FeatureId,
     retry: fn(&mut World),
 ) -> Option<bool> {
+    // Only the features up to it: the ones after don't change whether it builds, and a feature
+    // edited before the end would wait for all of them (its dialog shows the Part Studio rolled
+    // back to it, so they may not be built yet). They rebuild in the view once it is kept.
+    if let Some(i) = features.iter().position(|f| f.id == feature) {
+        features.truncate(i + 1);
+    }
     if let Some(b) = world.get_resource::<Built>()
         && b.key == key
         && b.features == features
@@ -57,8 +63,13 @@ pub fn builds(
     {
         return None;
     }
-    // Anything older is dropped (a queued rebuild of it is cancelled).
+    // Anything older is dropped (a queued rebuild of it is cancelled), and the view's rebuild
+    // running now (the dialog's preview, or one the dialog was opened during) stops rather than
+    // finish first.
     world.remove_resource::<Waiting>();
+    if let Some(cache) = world.get_resource::<crate::parts::PartCache>() {
+        cache.stop_rebuild();
+    }
     let mut job = cadrs_core::rebuild::request_persisted(features.clone());
     if let Some(build) = job.wait(Some(Duration::from_millis(50))) {
         return Some(build.error(feature).is_none());
@@ -78,6 +89,13 @@ fn retry_when_built(world: &mut World) {
     };
     let Some(build) = w.job.poll() else {
         world.insert_resource(w);
+        // Scripted steps wait for the ✓ too.
+        if let Some(mut p) = world.get_resource_mut::<cadrs_ui::PendingWork>() {
+            p.0 = true;
+        }
+        if let Some(mut why) = world.get_resource_mut::<cadrs_ui::PendingWhy>() {
+            why.add("dialog check");
+        }
         return;
     };
     world.insert_resource(Built {

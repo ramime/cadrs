@@ -843,7 +843,7 @@ impl Rebuilder {
                 "Split",
                 state,
                 bodies,
-                |this, _, body| this.kernel.split(body, &tool, source),
+                |k, _, body| k.split(body, &tool, source),
                 |this, body| match side {
                     None => true,
                     Some((o, n)) => this
@@ -852,8 +852,8 @@ impl Rebuilder {
                         .is_ok_and(|m| (m.center_of_mass - o).dot(&n) > 0.0),
                 },
             ),
-            SplitType::Face => self.per_part(id, "Split", state, bodies, |this, i, body| {
-                this.kernel.split_faces(body, &faces[i], &tool)
+            SplitType::Face => self.per_part(id, "Split", state, bodies, |k, i, body| {
+                k.split_faces(body, &faces[i], &tool)
             }),
         };
         if let Some(b) = sheet {

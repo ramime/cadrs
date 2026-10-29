@@ -4,8 +4,9 @@
 use super::*;
 use cadrs_kernel::naming::{self, BodyNames};
 use cadrs_kernel::{
-    Axis, BoolOp, ChamferMeasure, ChamferOpts, ChamferSpec, Curve2, EdgeId, FaceId, FilletProfile,
-    FilletSize, FilletSpec, Kernel, Loop, OpResult, Plane, Profile, Region, RevolveSpec, ShellSpec,
+    Axis, BoolOp, ChamferMeasure, ChamferOpts, ChamferSpec, Curve2, DefaultKernel, EdgeId, FaceId,
+    FilletProfile, FilletSize, FilletSpec, Kernel, Loop, OpResult, Plane, Profile, Region,
+    RevolveSpec, ShellSpec,
 };
 use nalgebra::{Point2, Point3, Unit, Vector3};
 
@@ -137,7 +138,7 @@ impl Rebuilder {
         what: &str,
         state: &Arc<State>,
         groups: Vec<(PartId, BodyId)>,
-        op: impl FnMut(&mut Self, usize, BodyId) -> cadrs_kernel::Result<OpResult>,
+        op: impl Fn(&mut DefaultKernel, usize, BodyId) -> cadrs_kernel::Result<OpResult> + Sync,
     ) -> Result<Output, String> {
         self.per_part_keeping(id, what, state, groups, op, |_, _| true)
     }
@@ -150,9 +151,10 @@ impl Rebuilder {
         what: &str,
         state: &Arc<State>,
         groups: Vec<(PartId, BodyId)>,
-        mut op: impl FnMut(&mut Self, usize, BodyId) -> cadrs_kernel::Result<OpResult>,
+        op: impl Fn(&mut DefaultKernel, usize, BodyId) -> cadrs_kernel::Result<OpResult> + Sync,
         mut keep: impl FnMut(&mut Self, BodyId) -> bool,
     ) -> Result<Output, String> {
+        use rayon::prelude::*;
         let mut next = (**state).clone();
         let mut placed: Vec<Placed> = Vec::new();
         let release = |this: &mut Self, placed: Vec<Placed>| {
@@ -160,12 +162,46 @@ impl Rebuilder {
                 this.kernel.release(p.body);
             }
         };
+        // The parts side by side, each in a session of its own (a part's operation doesn't
+        // depend on another's: a fillet of two feet took the sum of both), their bodies taken
+        // back in the parts' order, so the ids and what follows don't depend on which is done
+        // first. (One part runs here, as before.)
+        let mut done: Vec<Option<cadrs_kernel::Result<OpResult>>> = if groups.len() > 1 {
+            let kernel = &self.kernel;
+            let forks: Vec<(DefaultKernel, cadrs_kernel::Result<OpResult>)> = groups
+                .par_iter()
+                .enumerate()
+                .map(|(i, &(_, body))| {
+                    let mut k = kernel.fork(i as u64);
+                    let r = op(&mut k, i, body);
+                    (k, r)
+                })
+                .collect();
+            forks
+                .into_iter()
+                .map(|(k, r)| {
+                    self.kernel.absorb(k);
+                    Some(r)
+                })
+                .collect()
+        } else {
+            groups.iter().map(|_| None).collect()
+        };
         for (i, (pid, body)) in groups.into_iter().enumerate() {
             let names = state.part(pid).map(|p| p.names.clone()).unwrap_or_default();
-            let r = match op(self, i, body) {
+            let r = match done[i]
+                .take()
+                .unwrap_or_else(|| op(&mut self.kernel, i, body))
+            {
                 Ok(r) => r,
                 Err(e) => {
                     release(self, placed);
+                    // (And what the parts after it made.)
+                    for r in done.iter_mut().filter_map(Option::take).flatten() {
+                        for b in r.bodies {
+                            self.kernel.release(b);
+                        }
+                    }
                     return Err(format!("{what} failed: {e}"));
                 }
             };
@@ -306,12 +342,12 @@ impl Rebuilder {
                 );
             }
             let setback = crate::applied::SMOOTH_SETBACK * x.size;
-            return self.per_part(id, "Fillet", state, bodies, |this, i, body| {
-                this.kernel.fillet_smooth(body, &edges[i], &spec, setback)
+            return self.per_part(id, "Fillet", state, bodies, |k, i, body| {
+                k.fillet_smooth(body, &edges[i], &spec, setback)
             });
         }
-        self.per_part(id, "Fillet", state, bodies, |this, i, body| {
-            this.kernel.fillet_with(body, &edges[i], &spec)
+        self.per_part(id, "Fillet", state, bodies, |k, i, body| {
+            k.fillet_with(body, &edges[i], &spec)
         })
     }
 
@@ -337,13 +373,9 @@ impl Rebuilder {
             .ok_or("The edge to fillet no longer exists")?;
         let (from, to) = x.partial_range(info.length)?;
         let spec = *spec;
-        self.per_part(
-            id,
-            "Fillet",
-            state,
-            vec![(g.part, g.body)],
-            |this, _, body| this.kernel.fillet_partial(body, edge, &spec, from, to),
-        )
+        self.per_part(id, "Fillet", state, vec![(g.part, g.body)], |k, _, body| {
+            k.fillet_partial(body, edge, &spec, from, to)
+        })
     }
 
     /// A variable fillet (P3.10, PS14.6): per edge of the picked edges' tangent chains, the
@@ -433,8 +465,8 @@ impl Rebuilder {
         }
         let bodies = groups.iter().map(|g| (g.part, g.body)).collect();
         let overflow = x.allow_overflow;
-        self.per_part(id, "Fillet", state, bodies, |this, i, body| {
-            this.kernel.fillet_variable(body, &laws[i], overflow)
+        self.per_part(id, "Fillet", state, bodies, |k, i, body| {
+            k.fillet_variable(body, &laws[i], overflow)
         })
     }
 
@@ -459,13 +491,9 @@ impl Rebuilder {
         if a.0 != c.0 || b.0 != c.0 {
             return Err("The full round's faces must be on one part".into());
         }
-        self.per_part(
-            id,
-            "Full round",
-            state,
-            vec![(c.0, c.1)],
-            |this, _, body| this.kernel.full_round(body, a.2, c.2, b.2),
-        )
+        self.per_part(id, "Full round", state, vec![(c.0, c.1)], |k, _, body| {
+            k.full_round(body, a.2, c.2, b.2)
+        })
     }
 
     /// The Chamfer feature (PS14.7–14.9).
@@ -533,14 +561,14 @@ impl Rebuilder {
             ChamferMeasurement::Tangent => ChamferMeasure::Tangent,
         };
         let flip = x.flip;
-        self.per_part(id, "Chamfer", state, bodies, |this, i, body| {
+        self.per_part(id, "Chamfer", state, bodies, |k, i, body| {
             let opts = ChamferOpts {
                 spec,
                 measurement,
                 flip,
                 flipped: flipped[i].clone(),
             };
-            this.kernel.chamfer_with(body, &edges[i], &opts)
+            k.chamfer_with(body, &edges[i], &opts)
         })
         .map(|mut o| {
             o.uses = uses;
@@ -588,7 +616,7 @@ impl Rebuilder {
         let bodies = groups.iter().map(|g| (g.0, g.1)).collect();
         let (t, outward, hollow) = (x.thickness, x.outward, x.hollow);
         let shelled: Vec<PartId> = groups.iter().map(|g| g.0).collect();
-        self.per_part(id, "Shell", state, bodies, |this, i, body| {
+        self.per_part(id, "Shell", state, bodies, |k, i, body| {
             // Inward, the cavity's corners are sharp, the walls' faces extended until they
             // meet, as Onshape shells (issue #105); outward, the walls round the body's
             // convex edges as before.
@@ -599,7 +627,7 @@ impl Rebuilder {
                 hollow,
                 sharp: !outward,
             };
-            this.kernel.shell_with(body, &spec)
+            k.shell_with(body, &spec)
         })
         .map(|mut o| {
             if self.stage_for == Some(id) {
@@ -695,24 +723,18 @@ impl Rebuilder {
         let faces: Vec<Vec<cadrs_kernel::FaceId>> = groups.iter().map(|g| g.2.clone()).collect();
         let bodies = groups.iter().map(|g| (g.0, g.1)).collect();
         let (kind, distance) = (x.kind, x.distance);
-        self.per_part(
-            id,
-            kind.label(),
-            state,
-            bodies,
-            |this, i, body| match kind {
-                DirectEditKind::DeleteFace => this.kernel.delete_faces(body, &faces[i]),
-                DirectEditKind::Simplify => this.kernel.simplify(body),
-                DirectEditKind::MoveFace => {
-                    let spec = cadrs_kernel::OffsetSpec {
-                        distance: 0.0,
-                        faces: faces[i].iter().map(|f| (*f, distance)).collect(),
-                        sharp: true,
-                    };
-                    this.kernel.offset(body, &spec)
-                }
-            },
-        )
+        self.per_part(id, kind.label(), state, bodies, |k, i, body| match kind {
+            DirectEditKind::DeleteFace => k.delete_faces(body, &faces[i]),
+            DirectEditKind::Simplify => k.simplify(body),
+            DirectEditKind::MoveFace => {
+                let spec = cadrs_kernel::OffsetSpec {
+                    distance: 0.0,
+                    faces: faces[i].iter().map(|f| (*f, distance)).collect(),
+                    sharp: true,
+                };
+                k.offset(body, &spec)
+            }
+        })
     }
 
     /// The Hole feature (PS15): a revolved tool per point, subtracted from the parts in scope.

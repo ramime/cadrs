@@ -1083,6 +1083,15 @@ impl PartCache {
         )
     }
 
+    /// Stops the view's rebuild before the next feature it would compute, for another that
+    /// must not wait for it (a dialog's ✓ checking its feature). The features it got through
+    /// stay cached, and it is asked for again once it has stopped.
+    pub fn stop_rebuild(&self) {
+        if let Some(p) = &self.pending {
+            p.rebuild.stop();
+        }
+    }
+
     /// Shows the parts of a rebuild still running, as far as it has got: only the parts (the
     /// errors, times and a dialog's stage wait for the finished build, [`Self::apply`]).
     fn apply_partial(&mut self, parts: &[Part]) {
@@ -1458,6 +1467,7 @@ fn update_part_cache(
         && !visibility_changed
     {
         // A rebuild still running: take its result when it is done.
+        let mut again = false;
         if cache.pending.is_some()
             && let Some(p) = &mut cache.pending
             && let Some(build) = p.rebuild.poll()
@@ -1465,7 +1475,11 @@ fn update_part_cache(
             let same_element = p.element == el.id;
             cache.pending = None;
             cache.superseded = None;
-            if same_element {
+            if build.stopped {
+                // Stopped for another rebuild ([`PartCache::stop_rebuild`]): asked for again
+                // below, from where it got.
+                again = same_element;
+            } else if same_element {
                 log.0.push((features.len(), build.computed, build.elapsed));
                 cache.apply(
                     &build,
@@ -1500,7 +1514,9 @@ fn update_part_cache(
             // A long rebuild's parts as far as it has got (not while a dialog shows its edit).
             cache.apply_partial(&parts);
         }
-        return;
+        if !again {
+            return;
+        }
     }
     // The features above the rollback bar and not suppressed (P3.9).
     let built = if el.cam().is_some() {
