@@ -42,7 +42,7 @@ pub enum Call {
     CreateDocument(CreateDocument),
     OpenDocument(OpenDocument),
     GetDocument,
-    GetFrameStats,
+    GetFrameStats(GetFrameStats),
     AddPartStudio(AddPartStudio),
     AddAssembly(AddPartStudio),
     AddSketch(AddSketch),
@@ -57,6 +57,7 @@ pub enum Call {
     SetPart(SetPart),
     SetFeatureVisible(SetFeatureVisible),
     SetRollback(SetRollback),
+    ShowFeature(FeatureName),
     GetUiLayout(GetUiLayout),
     ListFaces(PartStudio),
     ListEdges(PartStudio),
@@ -268,8 +269,11 @@ impl Cadrs {
         the Time systems preference, or CADRS_FRAME_PROFILE=1. The panel at the bottom left of the 3D \
         view shows the same (F12 steps through it, the fps line, nothing)."
     )]
-    async fn get_frame_stats(&self) -> Result<CallToolResult, ErrorData> {
-        self.call(Call::GetFrameStats).await
+    async fn get_frame_stats(
+        &self,
+        Parameters(p): Parameters<GetFrameStats>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(Call::GetFrameStats(p)).await
     }
 
     #[tool(
@@ -453,6 +457,16 @@ impl Cadrs {
         Parameters(p): Parameters<SetRollback>,
     ) -> Result<CallToolResult, ErrorData> {
         self.call(Call::SetRollback(p)).await
+    }
+
+    #[tool(
+        description = "Scroll the Part Studio's feature list to a feature's row (opening its folder), as double-clicking its part in the view does. Returns once asked; the list scrolls over the next frames."
+    )]
+    async fn show_feature(
+        &self,
+        Parameters(p): Parameters<FeatureName>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(Call::ShowFeature(p)).await
     }
 
     #[tool(

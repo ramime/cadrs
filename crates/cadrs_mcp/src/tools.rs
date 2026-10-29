@@ -191,6 +191,14 @@ pub struct SetFeatureVisible {
     pub part_studio: Option<String>,
 }
 
+/// What `get_frame_stats` lists.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct GetFrameStats {
+    /// How many of the slowest schedules, systems and render passes to list; omitted: 25.
+    #[serde(default)]
+    pub top: Option<usize>,
+}
+
 /// Moves a Part Studio's rollback bar: the features below it are not built.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetRollback {

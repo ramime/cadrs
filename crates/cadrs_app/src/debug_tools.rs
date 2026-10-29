@@ -118,6 +118,7 @@ fn report_ui_changes(
     parents: Query<&ChildOf>,
     images: Query<Ref<ImageNode>>,
     texts: Query<Ref<Text>>,
+    archetypes: &bevy::ecs::archetype::Archetypes,
     mut frames: Local<u32>,
 ) {
     *frames += 1;
@@ -166,7 +167,8 @@ fn report_ui_changes(
     info!(
         "UI changes: {node} Node, {content} content size ({image_sized} images, {text_sized} \
          texts), {target} render target, {added} added; {images_changed} ImageNode and \
-         {texts_changed} Text changed (written at {writers:?}); by name: {:?}",
+         {texts_changed} Text changed (written at {writers:?}); {} archetypes; by name: {:?}",
+        archetypes.len(),
         &top[..top.len().min(15)]
     );
 }

@@ -275,16 +275,16 @@ fn run(world: &mut World, call: &Call) -> Result<Value, String> {
         Call::CreateDocument(p) => create_document(world, &p.name),
         Call::OpenDocument(p) => open_document(world, &p.name),
         Call::GetDocument => describe(world),
-        Call::GetFrameStats => {
+        Call::GetFrameStats(p) => {
             let mut stats = world
                 .resource::<crate::frame_stats::FrameStats>()
                 .describe();
-            if let (Some(o), Some(p)) = (
+            if let (Some(o), Some(prof)) = (
                 stats.as_object_mut(),
                 world.get_resource::<crate::frame_profile::FrameProfile>(),
             ) {
                 let cpu = *world.resource::<crate::frame_profile::CpuProfiling>();
-                o.insert("profile".into(), p.describe(25, cpu));
+                o.insert("profile".into(), prof.describe(p.top.unwrap_or(25), cpu));
             }
             Ok(stats)
         }
@@ -304,6 +304,13 @@ fn run(world: &mut World, call: &Call) -> Result<Value, String> {
         Call::SetPart(p) => set_part(world, p),
         Call::SetFeatureVisible(p) => set_feature_visible(world, p),
         Call::SetRollback(p) => set_rollback(world, p),
+        Call::ShowFeature(p) => {
+            let d = doc(world)?;
+            let element = part_studio(d, p.part_studio.as_deref())?;
+            let id = feature_named(d, element, &p.name)?.id;
+            crate::document::reveal_feature(world, id);
+            Ok(json!({ "feature": p.name }))
+        }
         Call::GetUiLayout(p) => get_ui_layout(world, p),
         Call::ListFaces(p) => list_faces(world, p.part_studio.as_deref()),
         Call::ListEdges(p) => list_edges(world, p.part_studio.as_deref()),
