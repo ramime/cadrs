@@ -10,7 +10,8 @@
 //!   `get_frame_stats`, as the *Time systems* preference does (`0` keeps them off;
 //!   [`crate::frame_profile::CpuProfiling`]).
 //! - `CADRS_NO_VSYNC=1`: presents frames as fast as they are made (no vsync), to see what a
-//!   frame really costs.
+//!   frame really costs, as *Preferences › Vertical sync* off does, for this run only
+//!   (`crate::preferences_ui::apply_vsync`).
 //! - `CADRS_UI_CHANGES=1`: about once a second, how many UI nodes changed what Bevy lays them
 //!   out from (their `Node`, measured content or render target) in the last frame, and which
 //!   (by name, or their nearest named ancestor's). Any such change makes Bevy lay the whole UI
@@ -65,9 +66,6 @@ impl Plugin for DebugToolsPlugin {
                 bevy::render::Render,
                 write_test.in_set(bevy::render::RenderSystems::PrepareBindGroups),
             );
-        }
-        if std::env::var_os("CADRS_NO_VSYNC").is_some() {
-            app.add_systems(Startup, no_vsync);
         }
         if std::env::var_os("CADRS_UI_CHANGES").is_some() {
             app.add_systems(
@@ -406,11 +404,4 @@ fn report_extracted_ui(
         sizes.len(),
         &sizes[..sizes.len().min(12)]
     );
-}
-
-/// `CADRS_NO_VSYNC`: the window presents without waiting for the display.
-fn no_vsync(mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {
-    for mut w in &mut windows {
-        w.present_mode = bevy::window::PresentMode::AutoNoVsync;
-    }
 }

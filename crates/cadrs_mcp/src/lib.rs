@@ -59,6 +59,7 @@ pub enum Call {
     SetRollback(SetRollback),
     ShowFeature(FeatureName),
     GetUiLayout(GetUiLayout),
+    SetPreferences(SetPreferences),
     ListFaces(PartStudio),
     ListEdges(PartStudio),
     Undo,
@@ -477,6 +478,16 @@ impl Cadrs {
         Parameters(p): Parameters<GetUiLayout>,
     ) -> Result<CallToolResult, ErrorData> {
         self.call(Call::GetUiLayout(p)).await
+    }
+
+    #[tool(
+        description = "Change this machine's preferences, as the Preferences dialog's OK does (they are saved): vsync (true: frames wait for the display's refresh; false: drawn as fast as they are made, so get_frame_stats shows what a frame costs). Give only what changes; it answers with all the preferences in force."
+    )]
+    async fn set_preferences(
+        &self,
+        Parameters(p): Parameters<SetPreferences>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(Call::SetPreferences(p)).await
     }
 
     #[tool(

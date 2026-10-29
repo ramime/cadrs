@@ -312,6 +312,7 @@ fn run(world: &mut World, call: &Call) -> Result<Value, String> {
             Ok(json!({ "feature": p.name }))
         }
         Call::GetUiLayout(p) => get_ui_layout(world, p),
+        Call::SetPreferences(p) => set_preferences(world, p),
         Call::ListFaces(p) => list_faces(world, p.part_studio.as_deref()),
         Call::ListEdges(p) => list_edges(world, p.part_studio.as_deref()),
         Call::Undo => {
@@ -1776,6 +1777,21 @@ fn get_ui_layout(world: &mut World, p: &tools::GetUiLayout) -> Result<Value, Str
         "nodes": nodes.into_iter().take(limit).map(|(.., v)| v).collect::<Vec<_>>(),
         "matched": total,
     }))
+}
+
+/// Sets and saves the preferences given; answers with all of them.
+fn set_preferences(world: &mut World, p: &tools::SetPreferences) -> Result<Value, String> {
+    if let Some(on) = p.vsync {
+        crate::preferences_ui::set_vsync(world, on);
+    }
+    let prefs = world.resource::<LocalPreferences>().0;
+    let mut v = serde_json::to_value(prefs).map_err(|e| e.to_string())?;
+    if let Some(o) = v.as_object_mut() {
+        // What the window does now: `CADRS_NO_VSYNC=1` turns vsync off for the run.
+        let vsync_now = prefs.vsync && std::env::var_os("CADRS_NO_VSYNC").is_none();
+        o.insert("vsync_in_force".into(), json!(vsync_now));
+    }
+    Ok(v)
 }
 
 /// Renames a part and/or sets its colour.

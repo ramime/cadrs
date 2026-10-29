@@ -225,6 +225,15 @@ pub struct GetUiLayout {
     pub limit: Option<usize>,
 }
 
+/// Changes this machine's preferences, as the Preferences dialog's OK does (saved).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SetPreferences {
+    /// Vertical sync: frames wait for the display's refresh (true) or are drawn as fast as they
+    /// are made (false). Omitted: unchanged.
+    #[serde(default)]
+    pub vsync: Option<bool>,
+}
+
 /// Renames a part and/or sets its colour.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetPart {
