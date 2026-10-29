@@ -3610,6 +3610,7 @@ fn rebuild_feature_rows(
         Res<crate::derived_ui::ComponentsOpen>,
     ),
     mut row_slots: ResMut<FeatureRowSlots>,
+    mut was_present: Local<[bool; 5]>,
     mut commands: Commands,
 ) {
     let Some(doc) = doc else {
@@ -3622,6 +3623,40 @@ fn rebuild_feature_rows(
     else {
         return;
     };
+    // Nothing to build again while all that the rows show is as it was: the key over a large
+    // studio's features cost every frame half a millisecond. (Each optional input counts as
+    // changed when it comes or goes.)
+    let present = [
+        session.is_some(),
+        extrude.is_some(),
+        applied.is_some(),
+        strategy.is_some(),
+        derived_session.is_some(),
+    ];
+    let inputs_changed = doc.is_changed()
+        || theme.is_changed()
+        || session.as_ref().is_some_and(|r| r.is_changed())
+        || errors.is_changed()
+        || under.is_changed()
+        || faces_lost.is_changed()
+        || atlas.is_changed()
+        || cache.is_changed()
+        || extrude.as_ref().is_some_and(|r| r.is_changed())
+        || applied.as_ref().is_some_and(|r| r.is_changed())
+        || filter.is_changed()
+        || deps.is_changed()
+        || times.is_changed()
+        || over.is_changed()
+        || strategy.as_ref().is_some_and(|r| r.is_changed())
+        || derived_open.is_changed()
+        || link_status.is_changed()
+        || derived_session.as_ref().is_some_and(|r| r.is_changed())
+        || components_open.is_changed()
+        || *was_present != present;
+    *was_present = present;
+    if !added && !window.is_changed() && !inputs_changed && last.is_some() {
+        return;
+    }
     let Some(el) = doc.active_element() else {
         return;
     };

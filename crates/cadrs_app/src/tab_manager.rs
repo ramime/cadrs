@@ -656,9 +656,12 @@ fn thumb_of(world: &World, id: ElementId) -> Option<Handle<Image>> {
 
 /// Shows or hides the dock and spawns the panel's frame once (header, search, filters, the
 /// list's frame, footer and preview).
-fn sync_panel(world: &mut World) {
+fn sync_panel(
+    world: &mut World,
+    q_dock: &mut QueryState<(Entity, &mut Node), With<TabManagerDock>>,
+    q: &mut QueryState<Entity, With<TabManagerPanel>>,
+) {
     let open = world.resource::<TabManager>().open;
-    let mut q_dock = world.query_filtered::<(Entity, &mut Node), With<TabManagerDock>>();
     let Some((dock, mut node)) = q_dock.iter_mut(world).next() else {
         return;
     };
@@ -666,7 +669,6 @@ fn sync_panel(world: &mut World) {
     if node.display != want {
         node.display = want;
     }
-    let mut q = world.query_filtered::<Entity, With<TabManagerPanel>>();
     let existing: Vec<Entity> = q.iter(world).collect();
     if !open {
         for e in existing {

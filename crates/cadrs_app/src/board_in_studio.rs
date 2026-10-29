@@ -1083,7 +1083,11 @@ struct EditBar;
 
 /// Keeps the edit bar on screen while editing: "Layout of <board> (<studio>)", the fit tools,
 /// Move by…, Open in PCB Studio, Done.
-fn sync_edit_bar(world: &mut World) {
+fn sync_edit_bar(
+    world: &mut World,
+    q: &mut QueryState<Entity, With<EditBar>>,
+    qa: &mut QueryState<Entity, With<crate::viewport::ViewportArea>>,
+) {
     let want = world
         .resource::<crate::eda::Eda2d>()
         .plane()
@@ -1098,11 +1102,9 @@ fn sync_edit_bar(world: &mut World) {
             .map_or_else(|| d.source_name.clone(), |e| e.name.clone());
         Some(format!("Layout of {} ({studio})", b.board_name))
     });
-    let mut q = world.query_filtered::<Entity, With<EditBar>>();
     let existing = q.iter(world).next();
     match (title, existing) {
         (Some(title), None) => {
-            let mut qa = world.query_filtered::<Entity, With<crate::viewport::ViewportArea>>();
             let Some(area) = qa.iter(world).next() else {
                 return;
             };

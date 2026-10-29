@@ -4,7 +4,7 @@
 //! than [`MIN_ROWS`] are built whole, as before.
 //!
 //! A list's rows container carries [`VirtualRows`]. [`move_windows`] moves its window as the list
-//! scrolls (a page ahead each way, so it moves once every half page); the list's owner rebuilds
+//! scrolls (half a page ahead each way, so it moves once every quarter page); the list's owner rebuilds
 //! the rows when it changes, through [`Slots`]: every row asks whether it is in the window, and
 //! the ones left out add their height to the spacers.
 
@@ -131,18 +131,19 @@ fn shown_rows(top: f32, view_top: f32, view_h: f32, pitch: f32, total: usize) ->
     from.min(total)..to.min(total)
 }
 
-/// The window for `shown`: kept while it holds half a page either side, else a page either side.
+/// The window for `shown`: kept while it holds a quarter page either side, else half a page
+/// either side (rows built off screen still cost the frame their text).
 fn place_window(
     current: Option<&Range<usize>>,
     shown: Range<usize>,
     page: usize,
     total: usize,
 ) -> Range<usize> {
-    let half = page.div_ceil(2);
-    let need = shown.start.saturating_sub(half)..(shown.end + half).min(total);
+    let (half, quarter) = (page.div_ceil(2), page.div_ceil(4));
+    let need = shown.start.saturating_sub(quarter)..(shown.end + quarter).min(total);
     match current {
         Some(w) if w.start <= need.start && need.end <= w.end => w.clone(),
-        _ => shown.start.saturating_sub(page)..(shown.end + page).min(total),
+        _ => shown.start.saturating_sub(half)..(shown.end + half).min(total),
     }
 }
 
@@ -222,13 +223,13 @@ mod tests {
 
     #[test]
     fn the_window_moves_only_near_its_edges() {
-        // 40 rows shown from row 100, of 1,000: a page (40 rows) either side.
+        // 40 rows shown from row 100, of 1,000: half a page (20 rows) either side.
         let w = place_window(None, 100..140, 40, 1000);
-        assert_eq!(w, 60..180);
-        // Scrolled 10 rows: still half a page either side.
+        assert_eq!(w, 80..160);
+        // Scrolled 10 rows: still a quarter page either side.
         assert_eq!(place_window(Some(&w), 110..150, 40, 1000), w);
-        // Scrolled 30 rows: moved.
-        assert_eq!(place_window(Some(&w), 130..170, 40, 1000), 90..210);
+        // Scrolled 15 rows: moved.
+        assert_eq!(place_window(Some(&w), 115..155, 40, 1000), 95..175);
     }
 
     #[test]
