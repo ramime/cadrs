@@ -43,7 +43,10 @@ Onshape-style CAD in Rust + Bevy 0.20.1. Local notes in `docs/` (git-ignored: `P
   failing shells/fillets, replayed by `crates/cadrs_kernel/tests/native_debug.rs`); see the
   kernel README. The kernel is pure Rust (`cadrs_kernel::native`); there is no OCCT any more.
 - App debugging: `CADRS_SLOW_FRAMES=<ms>` logs every frame slower than that with its slowest
-  systems (`cadrs_app::debug_tools`; add further env-switched aids there). System times (the
+  systems (`cadrs_app::debug_tools`; add further env-switched aids there). `CADRS_NO_VSYNC=1`
+  shows a frame's real cost; `CADRS_UI_CHANGES=1` names the UI nodes that change every frame
+  (each one costs a full UI layout), and with Bevy's `track_location` feature the code that
+  changed them. System times (the
   F12 panel, `get_frame_stats`) are off unless asked for, as they cost about a fifth of a frame:
   start with `CADRS_FRAME_PROFILE=1`, or the *Time systems* preference.
 - Cold builds take 4+ minutes. Never run two cargo builds at once.
