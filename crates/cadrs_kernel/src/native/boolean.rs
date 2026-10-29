@@ -655,7 +655,7 @@ fn edge_on_bounded(
 
 /// Two faces sharing an edge (the same vertices and curve) whose surfaces are tangent along
 /// it, and which aren't both analytic (analytic pairs are intersected exactly). `bounds`: the
-/// faces' surfaces' [`SurfaceBound`]s.
+/// faces' surfaces' [`SurfaceBound`]s; `ebox`: the edges' boxes.
 fn tangent_along_shared_edge(
     pool: &Pool,
     fa: &WFace,
@@ -663,6 +663,7 @@ fn tangent_along_shared_edge(
     ea: &[usize],
     eb: &[usize],
     bounds: (Option<&SurfaceBound>, Option<&SurfaceBound>),
+    ebox: &[Bbox],
 ) -> bool {
     let analytic = |s: &Surface| {
         !matches!(
@@ -707,7 +708,9 @@ fn tangent_along_shared_edge(
         }
         for &y in eb {
             let o = &pool.edges[y];
-            if o.degenerate {
+            // (Edges whose boxes keep apart aren't the same curve: no points of one sought on the
+            // other, for each of two faces' hundreds of edge pairs.)
+            if o.degenerate || x != y && !ebox[x].grow(pool.tol * 10.0).overlaps(&ebox[y]) {
                 continue;
             }
             // The same curve, at least where they overlap (whole circles may have their seams in
@@ -2555,6 +2558,7 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
                 &face_edges[fa],
                 &face_edges[fb],
                 (bounds[fa].as_ref(), bounds[fb].as_ref()),
+                &ebox,
             ) {
                 continue;
             }

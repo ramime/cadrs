@@ -2840,6 +2840,7 @@ mod kernel_ops {
                 return out;
             };
             let tol = 1e-6 * (1.0 + tb.diagonal());
+            let mut near: Vec<(PartId, BodyId)> = Vec::new();
             for p in &state.parts {
                 let (Some(b), PartKind::Solid) = (p.body, p.part.kind) else {
                     continue;
@@ -2857,20 +2858,53 @@ mod kernel_ops {
                 if only_ui && self.kernel.faces(b).is_ok_and(|f| f.len() > HUGE_FACES) {
                     continue;
                 }
-                // Overlapping, else touching: their union is one solid. A body that adds is asked
-                // whether it touches first (its union is the Add's); where that union fails or
-                // falls apart, whether they overlap all the same (a boolean's trouble with them).
-                let joined = adds && self.kernel.joins(b, tool).unwrap_or(false);
+                near.push((p.part.id, b));
+            }
+            // Overlapping, else touching: their union is one solid. A body that adds is asked
+            // whether it touches first (its union is the Add's); where that union fails or
+            // falls apart, whether they overlap all the same (a boolean's trouble with them).
+            let check = |k: &mut cadrs_kernel::DefaultKernel, b: BodyId| {
+                let joined = adds && k.joins(b, tool).unwrap_or(false);
                 if joined {
-                    out.touches.push(p.part.id);
-                    if self.kernel.overlaps(b, tool).unwrap_or(false) {
-                        out.overlaps.push(p.part.id);
-                    }
-                } else if self.kernel.overlaps(b, tool).unwrap_or(false) {
-                    out.overlaps.push(p.part.id);
-                    out.touches.push(p.part.id);
-                } else if !adds && self.kernel.joins(b, tool).unwrap_or(false) {
-                    out.touches.push(p.part.id);
+                    (true, k.overlaps(b, tool).unwrap_or(false))
+                } else if k.overlaps(b, tool).unwrap_or(false) {
+                    (true, true)
+                } else {
+                    (!adds && k.joins(b, tool).unwrap_or(false), false)
+                }
+            };
+            // The parts near it side by side, each in a fork of the session (a boolean each),
+            // taken back in the parts' order with the unions they keep for the Add.
+            let found: Vec<(bool, bool)> = if near.len() > 1 {
+                use rayon::prelude::*;
+                let kernel = &self.kernel;
+                let forks: Vec<(cadrs_kernel::DefaultKernel, (bool, bool))> = near
+                    .par_iter()
+                    .enumerate()
+                    .map(|(i, &(_, b))| {
+                        let mut k = kernel.fork(i as u64);
+                        let r = check(&mut k, b);
+                        (k, r)
+                    })
+                    .collect();
+                forks
+                    .into_iter()
+                    .map(|(k, r)| {
+                        self.kernel.absorb(k);
+                        r
+                    })
+                    .collect()
+            } else {
+                near.iter()
+                    .map(|&(_, b)| check(&mut self.kernel, b))
+                    .collect()
+            };
+            for (&(pid, _), (touches, overlaps)) in near.iter().zip(found) {
+                if touches {
+                    out.touches.push(pid);
+                }
+                if overlaps {
+                    out.overlaps.push(pid);
                 }
             }
             out
@@ -3710,7 +3744,7 @@ pub fn whole_sketch_regions(g: &Sketch) -> Vec<Region> {
         own = c;
         &own
     };
-    let all = cadrs_sketch::region::regions(g);
+    let all = cadrs_sketch::region::regions_shared(g);
     let inside = |poly: &[Vec2], p: Vec2| -> bool {
         let mut c = false;
         let n = poly.len();
