@@ -16,6 +16,7 @@
 //! - Measuring is a view: nothing in the document changes, and nothing is undone.
 //! - Not while a sketch or a feature dialog is open (the selection belongs to it then).
 
+use crate::GizmoGroups;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input_focus::InputFocus;
@@ -38,7 +39,7 @@ impl Plugin for MeasurePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MeasureMode>()
             .init_resource::<MeasureResult>()
-            .init_gizmo_group::<MeasureGizmos>()
+            .gizmo_group::<MeasureGizmos>()
             .add_systems(Startup, configure_gizmos)
             .add_systems(
                 Update,

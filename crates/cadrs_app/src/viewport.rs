@@ -17,6 +17,7 @@
 use cadrs_ui::ShortcutKey;
 use std::collections::HashMap;
 
+use crate::GizmoGroups;
 use crate::ground_grid::{GroundGrid, GroundGridMaterial, GroundGridParams, GroundGridPlugin};
 use bevy::camera::ScalingMode;
 use bevy::camera::visibility::RenderLayers;
@@ -70,9 +71,9 @@ impl Plugin for ViewportPlugin {
             .init_resource::<FeatureRowClick>()
             .init_resource::<ViewportDrag>()
             .init_resource::<ActiveKind>()
-            .init_gizmo_group::<HighlightGizmos>()
-            .init_gizmo_group::<HoverGizmos>()
-            .init_gizmo_group::<EdgeOnGizmos>()
+            .gizmo_group::<HighlightGizmos>()
+            .gizmo_group::<HoverGizmos>()
+            .gizmo_group::<EdgeOnGizmos>()
             .add_systems(
                 PostUpdate,
                 flag_pending_work.run_if(in_state(AppState::Document)),

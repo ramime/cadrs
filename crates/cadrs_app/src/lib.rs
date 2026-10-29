@@ -836,6 +836,34 @@ impl Plugin for CadrsAppPlugin {
     }
 }
 
+/// Gizmo groups without the fixed timestep, which is off ([`no_fixed_timestep`]).
+pub(crate) trait GizmoGroups {
+    /// Like `init_gizmo_group`, without the systems that carry the group's gizmos over from the
+    /// fixed timestep's schedules (one a frame for each of 70 groups, carrying nothing).
+    fn gizmo_group<C: bevy::gizmos::config::GizmoConfigGroup>(&mut self) -> &mut Self;
+}
+
+impl GizmoGroups for App {
+    fn gizmo_group<C: bevy::gizmos::config::GizmoConfigGroup>(&mut self) -> &mut Self {
+        use bevy::ecs::schedule::ScheduleCleanupPolicy::RemoveSystemsOnly;
+        use bevy::gizmos::{clear_gizmo_context, collect_requested_gizmos, propagate_gizmos};
+        use bevy::time::Fixed;
+        self.init_gizmo_group::<C>();
+        let _ = self.remove_systems_in_set(Last, propagate_gizmos::<C, Fixed>, RemoveSystemsOnly);
+        let _ = self.remove_systems_in_set(
+            FixedFirst,
+            clear_gizmo_context::<C, Fixed>,
+            RemoveSystemsOnly,
+        );
+        let _ = self.remove_systems_in_set(
+            FixedLast,
+            collect_requested_gizmos::<C, Fixed>,
+            RemoveSystemsOnly,
+        );
+        self
+    }
+}
+
 /// Turns Bevy's fixed timestep off: nothing of ours runs on it, yet every frame ran two systems
 /// per gizmo group (over 140) to set their buffers aside around it, and it ran its schedules
 /// whenever its step came round.

@@ -25,6 +25,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -53,8 +54,8 @@ impl Plugin for ViewsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ViewCache>()
             .init_resource::<ViewScene>()
-            .init_gizmo_group::<ViewThin>()
-            .init_gizmo_group::<ViewMedium>()
+            .gizmo_group::<ViewThin>()
+            .gizmo_group::<ViewMedium>()
             .add_systems(Startup, configure_view_gizmos)
             .add_systems(
                 Update,

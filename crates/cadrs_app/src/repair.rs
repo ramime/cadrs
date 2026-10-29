@@ -22,6 +22,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ImageRenderTarget, RenderTarget, ScalingMode};
@@ -55,9 +56,9 @@ pub struct RepairPlugin;
 impl Plugin for RepairPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Repair>()
-            .init_gizmo_group::<RepairEdgeGizmos>()
-            .init_gizmo_group::<RepairHighlightGizmos>()
-            .init_gizmo_group::<RepairCubeArcGizmos>()
+            .gizmo_group::<RepairEdgeGizmos>()
+            .gizmo_group::<RepairHighlightGizmos>()
+            .gizmo_group::<RepairCubeArcGizmos>()
             .add_systems(Startup, (configure_gizmos, spawn_cameras))
             .add_observer(on_button)
             .add_observer(on_sync_checkbox)

@@ -19,6 +19,7 @@
 //! Every change goes through the command layer; the arrow drag previews through
 //! [`PartOverride`] and records one step when released.
 
+use crate::GizmoGroups;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input_focus::InputFocus;
@@ -42,7 +43,7 @@ pub struct ExtrudePlugin;
 impl Plugin for ExtrudePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ArrowState>()
-            .init_gizmo_group::<RegionGizmos>()
+            .gizmo_group::<RegionGizmos>()
             .add_systems(Startup, configure_gizmos)
             .add_systems(
                 Update,

@@ -41,6 +41,7 @@ mod preview;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -68,8 +69,8 @@ pub struct SectionViewPlugin;
 impl Plugin for SectionViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SectionViews>()
-            .init_gizmo_group::<SectionPlaneGizmos>()
-            .init_gizmo_group::<SectionArcGizmos>()
+            .gizmo_group::<SectionPlaneGizmos>()
+            .gizmo_group::<SectionArcGizmos>()
             .add_systems(Startup, configure_gizmos)
             .init_resource::<SectionClip>()
             .init_resource::<SectionArrow>()

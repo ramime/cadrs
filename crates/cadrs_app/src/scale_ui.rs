@@ -119,7 +119,15 @@ fn sync_scale_notice(
     cache: Res<crate::parts::PartCache>,
     mut q_row: Query<&mut Node, With<ScaleNotice>>,
     mut q_text: Query<&mut Text, With<ScaleNoticeText>>,
+    q_new: Query<(), Added<ScaleNotice>>,
+    mut had_doc: Local<bool>,
 ) {
+    // (Counting the parts and wording the notice each frame cost a large studio.)
+    let doc_changed = doc.as_ref().is_some_and(|d| d.is_changed())
+        || std::mem::replace(&mut *had_doc, doc.is_some()) != doc.is_some();
+    if !doc_changed && !cache.is_changed() && q_new.is_empty() {
+        return;
+    }
     let want = doc
         .as_ref()
         .and_then(|d| d.active_element())

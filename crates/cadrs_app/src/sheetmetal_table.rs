@@ -46,6 +46,7 @@
 
 use std::sync::Arc;
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ImageRenderTarget, RenderTarget, ScalingMode};
@@ -112,9 +113,9 @@ pub struct SheetMetalTablePlugin;
 impl Plugin for SheetMetalTablePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SmTable>()
-            .init_gizmo_group::<FlatLineGizmos>()
-            .init_gizmo_group::<FlatHighlightGizmos>()
-            .init_gizmo_group::<FlatCubeArcGizmos>()
+            .gizmo_group::<FlatLineGizmos>()
+            .gizmo_group::<FlatHighlightGizmos>()
+            .gizmo_group::<FlatCubeArcGizmos>()
             .add_systems(Startup, (configure_gizmos, spawn_cameras))
             .add_observer(on_activate)
             .add_observer(on_context_menu)

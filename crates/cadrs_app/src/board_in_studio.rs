@@ -26,6 +26,7 @@ use cadrs_ui::ShortcutKey;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -45,7 +46,7 @@ impl Plugin for BoardInStudioPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BoardEditing>()
             .init_resource::<OverlayCache>()
-            .init_gizmo_group::<RatsnestGizmos>()
+            .gizmo_group::<RatsnestGizmos>()
             .add_systems(Startup, configure_gizmos)
             .add_observer(on_edit_bar)
             .add_observer(on_link_menu)

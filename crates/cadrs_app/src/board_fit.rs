@@ -30,6 +30,7 @@
 
 use std::hash::{Hash, Hasher};
 
+use crate::GizmoGroups;
 use bevy::prelude::*;
 use cadrs_core::pcb::fit::{self, Entity as FitEntity};
 use cadrs_core::{PartId, Solid};
@@ -46,7 +47,7 @@ pub struct BoardFitPlugin;
 impl Plugin for BoardFitPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FitState>()
-            .init_gizmo_group::<FitGizmos>()
+            .gizmo_group::<FitGizmos>()
             .add_systems(Startup, configure_gizmos)
             .add_systems(
                 Update,

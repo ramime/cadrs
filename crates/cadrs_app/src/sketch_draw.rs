@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::gizmos::config::{GizmoConfigGroup, GizmoConfigStore, GizmoLineJoint};
@@ -61,16 +62,16 @@ pub struct SketchDrawSet;
 
 impl Plugin for SketchDrawPlugin {
     fn build(&self, app: &mut App) {
-        app.init_gizmo_group::<SketchLineGizmos>()
-            .init_gizmo_group::<SketchThinGizmos>()
-            .init_gizmo_group::<SketchRubberGizmos>()
-            .init_gizmo_group::<SketchHoverGizmos>()
-            .init_gizmo_group::<SketchWideGizmos>()
-            .init_gizmo_group::<SketchDotGizmos>()
-            .init_gizmo_group::<SketchRingGizmos>()
-            .init_gizmo_group::<SketchAcceptedGizmos>()
-            .init_gizmo_group::<SketchAcceptedDotGizmos>()
-            .init_gizmo_group::<SketchHiddenGizmos>()
+        app.gizmo_group::<SketchLineGizmos>()
+            .gizmo_group::<SketchThinGizmos>()
+            .gizmo_group::<SketchRubberGizmos>()
+            .gizmo_group::<SketchHoverGizmos>()
+            .gizmo_group::<SketchWideGizmos>()
+            .gizmo_group::<SketchDotGizmos>()
+            .gizmo_group::<SketchRingGizmos>()
+            .gizmo_group::<SketchAcceptedGizmos>()
+            .gizmo_group::<SketchAcceptedDotGizmos>()
+            .gizmo_group::<SketchHiddenGizmos>()
             .init_resource::<SketchLabels>()
             .init_resource::<SketchOverlay>()
             .init_resource::<crate::sketch_glyphs::GlyphOffsets>()

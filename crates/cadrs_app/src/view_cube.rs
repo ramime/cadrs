@@ -7,6 +7,7 @@
 //! The cube is a tiny 3D scene on render layer 1, drawn by its own camera into an image that a
 //! UI node shows, so it composes with the UI like any other widget.
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{RenderTarget, ScalingMode};
@@ -27,8 +28,8 @@ pub struct ViewCubePlugin;
 
 impl Plugin for ViewCubePlugin {
     fn build(&self, app: &mut App) {
-        app.init_gizmo_group::<CubeGizmos>()
-            .init_gizmo_group::<CubeArcGizmos>()
+        app.gizmo_group::<CubeGizmos>()
+            .gizmo_group::<CubeArcGizmos>()
             .init_resource::<CubeHover>()
             .init_resource::<CornerHover>()
             .add_systems(Startup, setup_cube)

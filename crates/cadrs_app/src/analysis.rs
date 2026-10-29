@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 
+use crate::GizmoGroups;
 use bevy::prelude::*;
 use bevy::text::FontWeight;
 use bevy::ui_widgets::{Activate, observe};
@@ -56,7 +57,7 @@ impl Plugin for AnalysisPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AnalysisViews>()
             .init_resource::<ShadingAnalysis>()
-            .init_gizmo_group::<CurvatureGizmos>()
+            .gizmo_group::<CurvatureGizmos>()
             .add_systems(Startup, configure_gizmos)
             .add_systems(
                 Update,

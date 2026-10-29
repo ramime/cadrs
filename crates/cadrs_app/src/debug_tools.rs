@@ -18,6 +18,9 @@
 //!   Bevy's `track_location` feature, it also says which line of code wrote the changed images.
 //!   Also the UI colours changed (each is drawn again), every node by its nearest named
 //!   ancestor, and the archetypes the nodes are spread over (a query pays for each).
+//! - `CADRS_WRITE_TEST=1`: about every two seconds, how long a 700 KB `write_buffer` takes on
+//!   average (the UI's vertices are about that, written every frame). Milliseconds, not hundredths,
+//!   mean uploads are staged where the CPU writes slowly (`vendor/gpu-allocator/CADRS.md`).
 //! - `CADRS_SINGLE_THREADED=Update,PostUpdate,…`: runs those schedules (`First`, `PreUpdate`,
 //!   `Update`, `PostUpdate`, `Last`) on the main thread alone, so a profiler's samples of that
 //!   thread (`perf record -t <pid>`) hold all their systems, each under its own name.
@@ -54,6 +57,14 @@ impl Plugin for DebugToolsPlugin {
                 };
             }
         }
+        if std::env::var_os("CADRS_WRITE_TEST").is_some()
+            && let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp)
+        {
+            render.add_systems(
+                bevy::render::Render,
+                write_test.in_set(bevy::render::RenderSystems::PrepareBindGroups),
+            );
+        }
         if std::env::var_os("CADRS_NO_VSYNC").is_some() {
             app.add_systems(Startup, no_vsync);
         }
@@ -62,6 +73,12 @@ impl Plugin for DebugToolsPlugin {
                 PostUpdate,
                 report_ui_changes.before(bevy::ui::UiSystems::Layout),
             );
+            if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+                render.add_systems(
+                    bevy::render::Render,
+                    report_extracted_ui.in_set(bevy::render::RenderSystems::PrepareBindGroups),
+                );
+            }
         }
     }
 }
@@ -203,6 +220,25 @@ fn report_ui_changes(
         o.0 += 1;
         o.1 += u32::from(!vis.get());
     }
+    // The characters of shown texts by owner: each is a glyph drawn (and uploaded) each frame.
+    let mut chars = std::collections::BTreeMap::<String, usize>::new();
+    for (e, vis) in &all {
+        let Ok(t) = texts.get(e) else { continue };
+        if !vis.get() {
+            continue;
+        }
+        let named = std::iter::successors(Some(e), |&e| parents.get(e).ok().map(ChildOf::parent))
+            .find_map(|e| names.get(e).ok())
+            .map_or("(unnamed)", |n| n.as_str());
+        *chars.entry(named.to_string()).or_default() += t.0.chars().count();
+    }
+    let mut chars: Vec<_> = chars.into_iter().collect();
+    chars.sort_by_key(|c| std::cmp::Reverse(c.1));
+    info!(
+        "UI text shown: {} characters; most under: {:?}",
+        chars.iter().map(|c| c.1).sum::<usize>(),
+        &chars[..chars.len().min(25)]
+    );
     let mut owners: Vec<_> = owners.into_iter().collect();
     owners.sort_by_key(|o| std::cmp::Reverse(o.1.0));
     info!(
@@ -272,6 +308,77 @@ fn report_ui_changes(
          {texts_changed} Text changed (written at {writers:?}); {} archetypes; by name: {:?}",
         archetypes.len(),
         &top[..top.len().min(15)]
+    );
+}
+
+/// `CADRS_WRITE_TEST`: how long a 700 KB `write_buffer` takes (the UI's vertices are about that).
+fn write_test(
+    device: Res<bevy::render::renderer::RenderDevice>,
+    queue: Res<bevy::render::renderer::RenderQueue>,
+    mut buffer: Local<Option<bevy::render::render_resource::Buffer>>,
+    mut frames: Local<u32>,
+    mut total: Local<f64>,
+) {
+    use bevy::render::render_resource::{BufferDescriptor, BufferUsages};
+    const SIZE: usize = 700 * 1024;
+    let b = buffer.get_or_insert_with(|| {
+        device.create_buffer(&BufferDescriptor {
+            label: Some("write-test"),
+            size: SIZE as u64,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    });
+    let data = vec![(*frames % 251) as u8; SIZE];
+    let t = Instant::now();
+    queue.write_buffer(b, 0, &data);
+    *total += t.elapsed().as_secs_f64();
+    *frames += 1;
+    if *frames % 120 == 0 {
+        info!(
+            "write_buffer of 700 KB: {:.3} ms on average",
+            *total / 120.0 * 1e3
+        );
+        *total = 0.0;
+    }
+}
+
+/// `CADRS_UI_CHANGES`, in the render world: the UI items drawn (glyphs one each), by node.
+fn report_extracted_ui(
+    extracted: Res<bevy::ui_render::ExtractedUiNodes>,
+    gpu_images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
+    phases: Res<bevy::render::render_phase::ViewSortedRenderPhases<bevy::ui_render::TransparentUi>>,
+    mut frames: Local<u32>,
+) {
+    *frames += 1;
+    if *frames % 60 != 0 {
+        return;
+    }
+    let mut sizes: Vec<(usize, Entity)> = extracted
+        .uinodes
+        .iter()
+        .map(|(e, (_, items))| (items.len(), e.id()))
+        .collect();
+    sizes.sort_by_key(|s| std::cmp::Reverse(s.0));
+    let views: Vec<usize> = phases.values().map(|p| p.items.len()).collect();
+    let glyphs: usize = extracted
+        .uinodes
+        .values()
+        .flat_map(|(_, items)| items.values())
+        .map(|n| match &n.item {
+            bevy::ui_render::ExtractedUiItem::Glyphs { glyphs } => glyphs.len(),
+            _ => 0,
+        })
+        .sum();
+    info!(
+        "UI glyphs drawn: {glyphs}; {} images on the GPU (wgpu tracks each in every submission)",
+        gpu_images.iter().count()
+    );
+    info!(
+        "UI drawn: {views:?} items by view; {} extracted from {} nodes; most: {:?}",
+        sizes.iter().map(|s| s.0).sum::<usize>(),
+        sizes.len(),
+        &sizes[..sizes.len().min(12)]
     );
 }
 

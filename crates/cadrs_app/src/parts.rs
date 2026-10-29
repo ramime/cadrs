@@ -28,6 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::GizmoGroups;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -65,17 +66,17 @@ impl Plugin for PartsPlugin {
             .init_resource::<HoverParts>()
             .init_resource::<PartMeshStore>()
             .init_resource::<RetainedEdges>()
-            .init_gizmo_group::<PartEdgeGizmos>()
-            .init_gizmo_group::<PreviewEdgeGizmos>()
-            .init_gizmo_group::<ChangeEdgeGizmos>()
-            .init_gizmo_group::<FaceOutlineGizmos>()
-            .init_gizmo_group::<FaceHoverGizmos>()
-            .init_gizmo_group::<EdgeHighlightGizmos>()
-            .init_gizmo_group::<PartOutlineGizmos>()
-            .init_gizmo_group::<ReferenceEdgeGizmos>()
-            .init_gizmo_group::<PickedEdgeGizmos>()
-            .init_gizmo_group::<VertexGizmos>()
-            .init_gizmo_group::<FreeEdgeGizmos>()
+            .gizmo_group::<PartEdgeGizmos>()
+            .gizmo_group::<PreviewEdgeGizmos>()
+            .gizmo_group::<ChangeEdgeGizmos>()
+            .gizmo_group::<FaceOutlineGizmos>()
+            .gizmo_group::<FaceHoverGizmos>()
+            .gizmo_group::<EdgeHighlightGizmos>()
+            .gizmo_group::<PartOutlineGizmos>()
+            .gizmo_group::<ReferenceEdgeGizmos>()
+            .gizmo_group::<PickedEdgeGizmos>()
+            .gizmo_group::<VertexGizmos>()
+            .gizmo_group::<FreeEdgeGizmos>()
             .add_plugins(crate::part_shading::PartShadingPlugin)
             .add_systems(Startup, configure_gizmos)
             .add_systems(

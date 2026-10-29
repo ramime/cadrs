@@ -49,6 +49,7 @@ pub mod views;
 use cadrs_ui::ShortcutKey;
 use std::collections::HashMap;
 
+use crate::GizmoGroups;
 use bevy::camera::ScalingMode;
 use bevy::camera::visibility::RenderLayers;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
@@ -102,9 +103,9 @@ impl Plugin for DrawingPlugin {
             .init_resource::<SheetScene>()
             .init_resource::<ElementClipboard>()
             .init_resource::<create_dialog::TemplateLibrary>()
-            .init_gizmo_group::<SheetThin>()
-            .init_gizmo_group::<SheetMedium>()
-            .init_gizmo_group::<SheetThick>()
+            .gizmo_group::<SheetThin>()
+            .gizmo_group::<SheetMedium>()
+            .gizmo_group::<SheetThick>()
             .add_systems(Startup, (spawn_drawing_camera, configure_gizmos))
             .add_systems(OnExit(AppState::Document), reset_drawing_ui)
             .add_systems(
