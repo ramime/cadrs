@@ -162,7 +162,7 @@ pub(crate) fn update_analysis(
     mut analysis: ResMut<SketchAnalysis>,
     mut errors: ResMut<SketchErrors>,
     (mut under, mut faces_lost): (ResMut<SketchUnderDefined>, ResMut<SketchFacesLost>),
-    (mut badges, mut lost): (Local<BadgeAnalyses>, Local<LostFaces>),
+    (mut badges, mut lost, mut again): (Local<BadgeAnalyses>, Local<LostFaces>, Local<bool>),
 ) {
     // The colours stay as they were while dragging (the solve keeps the structure).
     if draw.drag.is_some() {
@@ -171,6 +171,19 @@ pub(crate) fn update_analysis(
     let Some(doc) = doc else {
         return;
     };
+    // Nothing to work out while what it reads is as it was and nothing it waits for runs: it
+    // compared every sketch with its last analysis every frame (a large studio's hundreds).
+    // After a batch, once more: a sketch changed meanwhile is in the next one.
+    let quiet = !doc.is_changed()
+        && !parts.is_changed()
+        && !draw.is_changed()
+        && session.as_ref().is_none_or(|s| !s.is_changed())
+        && badges.running.is_none()
+        && lost.running.is_none()
+        && !std::mem::take(&mut *again);
+    if quiet {
+        return;
+    }
     // Scripted runs wait for every rebuild (RebuildBudget(None)): they work these out at once
     // too, so screenshots never show a badge from before an edit.
     let wait = budget.0.is_none();
@@ -202,6 +215,7 @@ pub(crate) fn update_analysis(
     }
     if let Some(results) = badges.running.as_ref().and_then(|r| r.lock().ok()?.take()) {
         badges.running = None;
+        *again = true;
         for r in results {
             match badges.done.iter_mut().find(|d| d.0 == r.0) {
                 Some(d) => *d = r,
@@ -219,19 +233,24 @@ pub(crate) fn update_analysis(
     let stale = lost.done.as_ref().is_none_or(|(k, _)| *k != key);
     // Only on parts built from these features: before the first rebuild of a tab is done
     // there are none, every face sketch would look lost, and the check would rebuild the
-    // features before each one, ahead of the rebuild itself (and of its snapshot).
+    // features before each one, ahead of the rebuild itself (and of its snapshot). Not on a
+    // dialog's preview either (rolled back to the feature it edits: the sketches after it
+    // would look lost, and their checks rebuild what the preview leaves out, ahead of the
+    // dialog's ✓), and only the sketches built (not those below the rollback bar).
     if stale
         && !parts.rebuilding
         && lost.running.is_none()
         && let Some(el) = doc.active_element()
-        && parts
-            .settled()
-            .is_some_and(|(e, f, _)| e == el.id && f == el.features())
+        && parts.settled().is_some_and(|(e, f, o)| {
+            e == el.id && f == el.features() && *o == crate::parts::PartOverride::default()
+        })
     {
         let features = el.features().to_vec();
+        let built: HashSet<FeatureId> = el.active_features().iter().map(|f| f.id).collect();
         let solids = parts.parts.clone();
         let found = run_or_spawn(wait, move || {
             (0..features.len())
+                .filter(|i| built.contains(&features[*i].id))
                 .filter(|i| cadrs_core::parts::sketch_face_lost_in(&features, *i, &solids))
                 .map(|i| features[i].id)
                 .collect()
@@ -245,6 +264,7 @@ pub(crate) fn update_analysis(
     {
         lost.running = None;
         lost.done = Some(found);
+        *again = true;
     }
     let lost = lost
         .done

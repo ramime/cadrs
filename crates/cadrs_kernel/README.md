@@ -384,7 +384,9 @@ results, or with `--static`, it falls back to reading the suites' source, which 
 working notes): kernels written in Rust compile to SPIR-V with rust-gpu (f64 included) and run
 on Vulkan, 8–20× faster than rayon on the CPU for surface sampling, tessellation points, point
 classification by ray parity and quadrature. Topology, booleans and intersection stay on the
-CPU. Build the shaders with `cargo gpu build --shader-crate crates/cadrs_gpu_kernels
+CPU. Mass properties use it only with `CADRS_GPU=1`: in a rebuild (pi7zoll-gehäuse's Part
+Studio, many B-spline faces) its dispatches lost to the CPU's cores, 7.7 s against 6.5 s.
+Build the shaders with `cargo gpu build --shader-crate crates/cadrs_gpu_kernels
 --output-dir crates/cadrs_gpu/shaders` (cargo-gpu: `cargo +nightly-2026-07-03 install
 cargo-gpu --version 0.11.0 --locked`).
 

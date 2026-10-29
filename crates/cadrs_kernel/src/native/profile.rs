@@ -942,8 +942,11 @@ pub fn merge_regions(regions: &[Region2]) -> Result<Vec<MergedFace>> {
     for (li, l) in loops.iter().enumerate() {
         for p in l {
             let mut ts = Vec::new();
+            // (Only a vertex near the piece's box can lie on it: no search along the piece for
+            // each of a spline profile's hundreds of vertices.)
+            let near = piece_box(p).map(|b| b.grow(tol));
             for (lj, v) in &verts {
-                if *lj == li {
+                if *lj == li || near.is_some_and(|b| !in_box(&b, v)) {
                     continue;
                 }
                 let t = p.param_of(v);
@@ -1348,6 +1351,22 @@ fn ray_crossings(p: &Piece, q: &P2) -> i32 {
 }
 
 /// Point strictly inside a loop (even–odd on the exact pieces).
+/// A box a piece lies in (`None`: none known for sure, a B-spline with weights not all
+/// positive).
+fn piece_box(p: &Piece) -> Option<Bbox> {
+    if let Curve::Nurbs(n) = &p.c
+        && n.cps.iter().any(|h| h.w <= 0.0)
+    {
+        return None;
+    }
+    Some(super::boolean::curve_bbox(&p.c, p.t0, p.t1))
+}
+
+/// Whether `q` lies in the box `b` seen in the profile's plane (x and y).
+fn in_box(b: &Bbox, q: &P2) -> bool {
+    q.x >= b.min.x && q.x <= b.max.x && q.y >= b.min.y && q.y <= b.max.y
+}
+
 pub fn in_loop(l: &[Piece], q: &P2) -> bool {
     l.iter().map(|p| ray_crossings(p, q)).sum::<i32>() % 2 == 1
 }
@@ -1355,8 +1374,21 @@ pub fn in_loop(l: &[Piece], q: &P2) -> bool {
 /// Whether the interiors of any two regions overlap (points just inside one region's boundary
 /// lie inside another).
 pub fn regions_overlap(regions: &[Region2]) -> bool {
+    // (A point outside a region's outer loop's box is outside it: no ray crossed with each of
+    // the loop's pieces.)
+    let boxes: Vec<Option<Bbox>> = regions
+        .iter()
+        .map(|r| {
+            r.outer.iter().try_fold(Bbox::empty(), |mut bb, p| {
+                bb.union(&piece_box(p)?);
+                Some(bb)
+            })
+        })
+        .collect();
     let inside = |q: &P2, j: usize| {
-        in_loop(&regions[j].outer, q) && !regions[j].holes.iter().any(|h| in_loop(h, q))
+        boxes[j].is_none_or(|b| in_box(&b, q))
+            && in_loop(&regions[j].outer, q)
+            && !regions[j].holes.iter().any(|h| in_loop(h, q))
     };
     for (i, r) in regions.iter().enumerate() {
         for l in std::iter::once(&r.outer).chain(r.holes.iter()) {

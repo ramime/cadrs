@@ -498,6 +498,29 @@ fn piece_distance(piece: &Piece, p: Vec2) -> f64 {
     }
 }
 
+/// A box the piece lies in, `d` larger all round: a point outside it is farther than `d` from
+/// the piece, told without a nearest-point search (a Bézier's, Newton steps from samples).
+fn piece_box(piece: &Piece, d: f64) -> (Vec2, Vec2) {
+    let around = |c: Vec2, r: f64| (c - Vec2::new(r + d, r + d), c + Vec2::new(r + d, r + d));
+    let of = |ps: &[Vec2]| {
+        let (lo, hi) = ps
+            .iter()
+            .fold((ps[0], ps[0]), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        (lo - Vec2::new(d, d), hi + Vec2::new(d, d))
+    };
+    match *piece {
+        Piece::Line(a, b) => of(&[a, b]),
+        Piece::Arc(g) => around(g.center, g.radius),
+        Piece::Ellipse { g, .. } => around(g.center, g.a.length().max(g.minor) + g.offset.abs()),
+        Piece::Bezier(g) => of(&g.p),
+    }
+}
+
+/// Whether `p` lies in the box `b` ([`piece_box`]).
+fn in_box(b: &(Vec2, Vec2), p: Vec2) -> bool {
+    p.x >= b.0.x && p.y >= b.0.y && p.x <= b.1.x && p.y <= b.1.y
+}
+
 /// True for a piece that is a whole circle or ellipse.
 fn piece_closed(piece: &Piece) -> bool {
     match *piece {
@@ -1121,12 +1144,19 @@ fn rulings(
     // The face must lie on the swept piece (a Transform may have moved it off, P3 Onshape
     // import): no rulings otherwise.
     // (A curve's pieces may be cut apart, so any piece of the sketch will do.)
+    // (Each piece's box first: a point outside it is off the piece, with no nearest-point
+    // search per point and piece, seconds in all over a spline sketch's hundreds of pieces.)
+    let boxes: Vec<(&Piece, (Vec2, Vec2))> = g
+        .rings
+        .iter()
+        .flat_map(|(_, ps)| ps)
+        .map(|(p, _)| (p, piece_box(p, 100.0 * tol)))
+        .collect();
     let off_sketch = |foot: Vec3| {
         let q = g.frame.to_sketch(foot);
-        g.rings
+        boxes
             .iter()
-            .flat_map(|(_, ps)| ps)
-            .all(|(p, _)| piece_distance(p, q) > 100.0 * tol)
+            .all(|(p, b)| !in_box(b, q) || piece_distance(p, q) > 100.0 * tol)
     };
     if on_piece && pts.iter().any(|(_, foot, ..)| off_sketch(*foot)) {
         return;
@@ -1731,9 +1761,11 @@ fn classify(
         let mut best_count = 0;
         for (ri, (_, ring)) in gr.rings.iter().enumerate() {
             for (pi, (piece, _)) in ring.iter().enumerate() {
+                // (Only the points in the piece's box can be on it.)
+                let b = piece_box(piece, tol_piece);
                 let count = pts
                     .iter()
-                    .filter(|p| piece_distance(piece, **p) < tol_piece)
+                    .filter(|p| in_box(&b, **p) && piece_distance(piece, **p) < tol_piece)
                     .count();
                 if count > best_count {
                     best_count = count;
