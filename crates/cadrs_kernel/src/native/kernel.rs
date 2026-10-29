@@ -49,7 +49,8 @@ impl Entry {
 /// A kernel session: its bodies and the tolerances its operations run with.
 #[derive(Default)]
 pub struct NativeKernel {
-    bodies: HashMap<u64, Entry>,
+    /// (Shared with [`Self::fork`]s: a body never changes.)
+    bodies: HashMap<u64, Arc<Entry>>,
     next: u64,
     tol: super::tol::Tolerances,
     /// Face colours (sRGB and alpha) by body, in face order: an imported file's, or what the
@@ -67,6 +68,9 @@ pub struct NativeKernel {
 
 /// How many of [`Kernel::joins`]'s unions a session keeps for the union that may follow.
 const JOINED_KEPT: usize = 4;
+
+/// How many body ids each [`NativeKernel::fork`] of a session has to itself.
+const FORK_IDS: u64 = 1 << 32;
 
 impl NativeKernel {
     /// An empty session at the default tolerances.
@@ -88,7 +92,10 @@ impl NativeKernel {
 
     /// The session's record of a body.
     pub(crate) fn entry(&self, id: BodyId) -> Result<&Entry> {
-        self.bodies.get(&id.0).ok_or(KernelError::UnknownBody(id))
+        self.bodies
+            .get(&id.0)
+            .map(Arc::as_ref)
+            .ok_or(KernelError::UnknownBody(id))
     }
 
     /// The B-rep of a body of the session (`UnknownBody` if it has none of that id).
@@ -100,8 +107,45 @@ impl NativeKernel {
     pub fn insert(&mut self, body: Body) -> BodyId {
         let id = self.next;
         self.next += 1;
-        self.bodies.insert(id, Entry::new(body));
+        self.bodies.insert(id, Arc::new(Entry::new(body)));
         BodyId(id)
+    }
+
+    /// A session to run an operation in on another thread, its bodies, colours and
+    /// tolerances this one's; [`Self::absorb`] takes back what it made. Its new bodies are
+    /// numbered from a range of its own (`lane`), so their ids don't depend on which of several
+    /// forks runs first.
+    pub fn fork(&self, lane: u64) -> NativeKernel {
+        NativeKernel {
+            bodies: self.bodies.clone(),
+            next: self.next + (lane + 1) * FORK_IDS,
+            tol: self.tol,
+            colors: self.colors.clone(),
+            draw_history: None,
+            // (Not the unions kept for a union to come: a boolean takes its result out of them,
+            // and two sessions mustn't hand out the same body.)
+            joined: Vec::new(),
+        }
+    }
+
+    /// Takes the bodies (and their colours) a [`Self::fork`] of this session made, but those
+    /// it kept only as [`Kernel::joins`]' unions.
+    pub fn absorb(&mut self, fork: NativeKernel) {
+        let kept: std::collections::HashSet<u64> = fork
+            .joined
+            .iter()
+            .flat_map(|(_, _, r)| r.bodies.iter().map(|b| b.0))
+            .collect();
+        for (id, e) in fork.bodies {
+            if self.bodies.contains_key(&id) || kept.contains(&id) {
+                continue;
+            }
+            if let Some(c) = fork.colors.get(&id) {
+                self.colors.insert(id, c.clone());
+            }
+            self.bodies.insert(id, e);
+            self.next = self.next.max(id + 1);
+        }
     }
 
     /// Adds a built body with its faces' origins as the history of a new result.
@@ -606,7 +650,8 @@ impl Kernel for NativeKernel {
         let gap = profile::closed_gap(profile);
         if gap > profile::JOIN {
             for id in &r.bodies {
-                if let Some(e) = self.bodies.get_mut(&id.0) {
+                // (Just made: its entry is this session's alone.)
+                if let Some(e) = self.bodies.get_mut(&id.0).and_then(Arc::get_mut) {
                     profile::carry_gap(Arc::make_mut(&mut e.body), gap);
                 }
             }

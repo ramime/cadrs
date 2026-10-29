@@ -2287,6 +2287,7 @@ dependencies = [
  "flate2",
  "image",
  "nalgebra",
+ "rayon",
  "resvg",
  "rmp-serde",
  "ron",

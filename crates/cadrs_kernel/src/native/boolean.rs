@@ -636,14 +636,21 @@ impl SurfaceBound {
     }
 }
 
-/// [`edge_on_surface`], told at once when the edge's start is too far from the surface
-/// (`bound`, its [`SurfaceBound`]) to be on it: no projection onto a B-spline per edge and pair
+/// [`edge_on_surface_tol`], told at once when the edge's start is too far from the surface
+/// (`bound`, its [`SurfaceBound`]) to be on it: no projection onto a B-spline per edge and face
 /// (seconds in all in a union of faces with many edges and extruded B-spline faces).
-fn edge_on_bounded(e: &WEdge, s: &Surface, bound: Option<&SurfaceBound>, tol: f64) -> bool {
-    if !e.degenerate && bound.is_some_and(|b| b.far(&e.curve.point(e.t[0]), tol.max(e.tol))) {
+fn edge_on_bounded(
+    e: &WEdge,
+    s: &Surface,
+    bound: Option<&SurfaceBound>,
+    ftol: f64,
+    tol: f64,
+) -> bool {
+    let far = |b: &SurfaceBound| b.far(&e.curve.point(e.t[0]), tol.max(e.tol).max(ftol));
+    if !e.degenerate && bound.is_some_and(far) {
         return false;
     }
-    edge_on_surface(e, s, tol)
+    edge_on_surface_tol(e, s, ftol, tol)
 }
 
 /// Two faces sharing an edge (the same vertices and curve) whose surfaces are tangent along
@@ -683,7 +690,7 @@ fn tangent_along_shared_edge(
             let e = &pool.edges[x];
             !e.degenerate
                 && (e.t[1] - e.t[0]).abs() > 0.0
-                && edge_on_bounded(e, &g.surf, bound, pool.tol)
+                && edge_on_bounded(e, &g.surf, bound, 0.0, pool.tol)
                 && e.curve.longer_than(e.t[0], e.t[1], 1e-3)
                 && [0.25, 0.5, 0.75]
                     .iter()
@@ -2403,6 +2410,8 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
     // Edges of one body lying on a face of the other (imprinted as cuts once split).
     let mut on_face: Vec<Vec<usize>> = vec![Vec::new(); faces.len()];
     let ftree = super::bvh::Bvh::new(faces.iter().map(|f| f.bbox).collect());
+    let bounds: Vec<Option<SurfaceBound>> =
+        faces.iter().map(|f| SurfaceBound::of(&f.surf)).collect();
     // Per spline edge of many spans, each span's box (grown by the run's tolerance): made when
     // first wanted, the edge's own box over a face's.
     let span_boxes: Vec<std::sync::OnceLock<Option<Vec<Bbox>>>> =
@@ -2419,7 +2428,8 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
                 continue;
             }
             let ed = pool.edges[e].clone();
-            if edge_on_surface_tol(&ed, &faces[fi].surf, faces[fi].tol, run_tol) {
+            let surf = &faces[fi].surf;
+            if edge_on_bounded(&ed, surf, bounds[fi].as_ref(), faces[fi].tol, run_tol) {
                 if !on_face[fi].contains(&e) {
                     on_face[fi].push(e);
                 }
@@ -2516,8 +2526,6 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
         ob
     };
     // The pairs of faces to intersect, in a fixed order.
-    let bounds: Vec<Option<SurfaceBound>> =
-        faces.iter().map(|f| SurfaceBound::of(&f.surf)).collect();
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     for fa in 0..na_faces {
         if !selected(faces[fa].orig) {
@@ -2654,7 +2662,7 @@ fn run(a: &Body, b: &Body, mode: Mode, opts: RunOpts) -> Result<BoolOut> {
                     !e.degenerate
                         && e.curve
                             .longer_than(e.t[0].min(e.t[1]), e.t[0].max(e.t[1]), 1e-3)
-                        && edge_on_bounded(e, &g.surf, bound, pool.tol)
+                        && edge_on_bounded(e, &g.surf, bound, 0.0, pool.tol)
                 })
             };
             lies(&face_edges[fa], &faces[fb], bounds[fb].as_ref())

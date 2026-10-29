@@ -60,7 +60,7 @@ impl Rebuilder {
         let faces: Vec<Vec<cadrs_kernel::FaceId>> = groups.iter().map(|g| g.2.clone()).collect();
         let bodies = groups.iter().map(|g| (g.0, g.1)).collect();
         let (angle, tangent) = (x.angle.to_radians(), x.tangent_propagation);
-        let mut out = self.per_part(id, "Draft", state, bodies, |this, i, body| {
+        let mut out = self.per_part(id, "Draft", state, bodies, |k, i, body| {
             let spec = DraftSpec {
                 faces: faces[i].clone(),
                 angle,
@@ -69,7 +69,7 @@ impl Rebuilder {
                 neutral_normal: None,
                 tangent_propagation: tangent,
             };
-            this.kernel.draft(body, &spec)
+            k.draft(body, &spec)
         })?;
         // PS11.1: some faces gone but the rest drafted is a warning, not a failure.
         if missing > 0 {
