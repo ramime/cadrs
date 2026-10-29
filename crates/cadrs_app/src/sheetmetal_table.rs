@@ -908,12 +908,11 @@ fn units(world: &World) -> cadrs_sketch::units::Units {
 }
 
 /// The panel, rebuilt when what it shows changes.
-fn sync_panel(world: &mut World) {
+fn sync_panel(world: &mut World, q_panel: &mut QueryState<Entity, With<PanelRoot>>) {
     let open = is_open(
         world.resource::<SidePanel>(),
         world.resource::<ActiveKind>(),
     );
-    let mut q_panel = world.query_filtered::<Entity, With<PanelRoot>>();
     let old: Vec<Entity> = q_panel.iter(world).collect();
     if !open {
         for e in old {

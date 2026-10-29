@@ -1087,6 +1087,7 @@ fn sync_edit_bar(
     world: &mut World,
     q: &mut QueryState<Entity, With<EditBar>>,
     qa: &mut QueryState<Entity, With<crate::viewport::ViewportArea>>,
+    mut was_editing: Local<bool>,
 ) {
     let want = world
         .resource::<crate::eda::Eda2d>()
@@ -1185,7 +1186,14 @@ fn sync_edit_bar(
         }
         _ => {}
     }
-    sync_fit_buttons(world);
+    // The fit buttons and the status line are there only while a board's layout is edited (and
+    // the frame after, to take the status line away): looking for them went through every named
+    // entity every frame.
+    let editing = want.is_some();
+    if editing || *was_editing {
+        sync_fit_buttons(world);
+    }
+    *was_editing = editing;
 }
 
 /// The fit buttons show their state (on: selected); Align's prompt shows under the bar.

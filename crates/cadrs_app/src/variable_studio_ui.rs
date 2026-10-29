@@ -432,9 +432,12 @@ fn mark_dirty(
 
 /// Spawns the overlay on the first Variable Studio tab, shows or hides it, and rebuilds the
 /// table when what it shows changes (the cell being edited is edited again afterwards).
-fn sync_view(world: &mut World, mut last: Local<Option<View>>) {
+fn sync_view(
+    world: &mut World,
+    q: &mut QueryState<(Entity, &mut Node), With<VsView>>,
+    mut last: Local<Option<View>>,
+) {
     let show = *world.resource::<ActiveKind>() == ActiveKind::VariableStudio;
-    let mut q = world.query_filtered::<(Entity, &mut Node), With<VsView>>();
     let overlay = q.iter(world).next().map(|(e, _)| e);
     if let Some(e) = overlay {
         let d = if show { Display::Flex } else { Display::None };
@@ -2358,8 +2361,11 @@ struct InsertView {
     only: Vec<String>,
 }
 
-fn sync_insert_dialog(world: &mut World, mut last: Local<Option<InsertView>>) {
-    let mut q = world.query_filtered::<Entity, With<InsertDialog>>();
+fn sync_insert_dialog(
+    world: &mut World,
+    q: &mut QueryState<Entity, With<InsertDialog>>,
+    mut last: Local<Option<InsertView>>,
+) {
     let dialog = q.iter(world).next();
     let Some(s) = world.get_resource::<InsertSession>().cloned() else {
         if let Some(e) = dialog {
