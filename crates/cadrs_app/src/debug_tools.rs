@@ -17,7 +17,8 @@
 //!   out again, so a node that changes every frame costs a full layout every frame. Built with
 //!   Bevy's `track_location` feature, it also says which line of code wrote the changed images.
 //!   Also the UI colours changed (each is drawn again), every node by its nearest named
-//!   ancestor, and the archetypes the nodes are spread over (a query pays for each).
+//!   ancestor, the archetypes the nodes are spread over (a query pays for each), what the UI
+//!   draws (items, glyphs, GPU textures) and the cameras rendering.
 //! - `CADRS_WRITE_TEST=1`: about every two seconds, how long a 700 KB `write_buffer` takes on
 //!   average (the UI's vertices are about that, written every frame). Milliseconds, not hundredths,
 //!   mean uploads are staged where the CPU writes slowly (`vendor/gpu-allocator/CADRS.md`).
@@ -158,6 +159,14 @@ fn report_ui_changes(
     images: Query<Ref<ImageNode>>,
     texts: Query<Ref<Text>>,
     all: Query<(Entity, &InheritedVisibility), With<Node>>,
+    cameras: Query<(
+        &Camera,
+        Option<&Name>,
+        Option<&Msaa>,
+        Has<Camera3d>,
+        Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
+        Option<&bevy::camera::Hdr>,
+    )>,
     fills: Query<Ref<BackgroundColor>>,
     borders: Query<Ref<BorderColor>>,
     archetypes: &bevy::ecs::archetype::Archetypes,
@@ -267,6 +276,23 @@ fn report_ui_changes(
         );
     }
     info!("UI colours changed: {colours:?}");
+    // The cameras that render: each runs its passes every frame.
+    let active: Vec<String> = cameras
+        .iter()
+        .filter(|c| c.0.is_active)
+        .map(|(c, name, msaa, three_d, tm, hdr)| {
+            format!(
+                "{} (order {}, {}{:?}{}{})",
+                name.map_or("?", |n| n.as_str()),
+                c.order,
+                if three_d { "3d, " } else { "" },
+                msaa.copied().unwrap_or_default(),
+                tm.map(|t| format!(", {t:?}")).unwrap_or_default(),
+                if hdr.is_some() { ", hdr" } else { "" },
+            )
+        })
+        .collect();
+    info!("Cameras rendering: {active:?}");
     // How the UI's entities are spread: each table a query visits costs it, however few rows.
     let node_id = components.component_id::<Node>();
     let ui_archetypes: Vec<_> = archetypes

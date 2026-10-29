@@ -41,6 +41,10 @@ pub struct ViewportPlugin;
 
 impl Plugin for ViewportPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(
+            Last,
+            occluded_camera_when_drawn.after(bevy::gizmos::GizmoMeshSystems),
+        );
         // The views shade their own (no Bevy lights), but Bevy's shadow-caster check queues a
         // command every frame that builds a query over every archetype (thousands, with the UI).
         use bevy::ecs::schedule::SystemCondition;
@@ -807,6 +811,45 @@ pub fn ortho_projection(scale: f32) -> Projection {
 fn cpu_light_clusters(settings: Option<ResMut<bevy::light::cluster::GlobalClusterSettings>>) {
     if let Some(mut settings) = settings {
         settings.gpu_clustering = None;
+    }
+}
+
+/// The occluded camera renders only while something is on its layer (a sketch shown, the Extrude
+/// dialog's regions): a camera costs the render thread its passes each frame with nothing to
+/// draw too (house_test went from 187 to 218 fps without it). Off in a drawing and a board's flat
+/// views, whose cameras take its order.
+#[allow(clippy::type_complexity)]
+fn occluded_camera_when_drawn(
+    kind: Res<ActiveKind>,
+    eda2d: Res<crate::eda::Eda2d>,
+    store: Res<GizmoConfigStore>,
+    handles: Res<bevy::gizmos::GizmoHandles>,
+    drawn: Query<
+        (&RenderLayers, &InheritedVisibility),
+        Or<(With<Mesh3d>, With<bevy::gizmos::retained::Gizmo>)>,
+    >,
+    mut q_cam: Query<(&mut Camera, &Name), With<OverlayCamera>>,
+) {
+    let layer = RenderLayers::layer(OCCLUDED_LAYER);
+    // Immediate gizmos drawn this frame (a group's handle is set when it drew).
+    let gizmos = || {
+        store.iter().any(|(id, config, _)| {
+            config.enabled
+                && config.render_layers.intersects(&layer)
+                && handles.handles().get(id).is_some_and(Option::is_some)
+        })
+    };
+    let meshes = || {
+        drawn
+            .iter()
+            .any(|(l, vis)| vis.get() && l.intersects(&layer))
+    };
+    let flat = *kind == ActiveKind::Drawing || eda2d.flat();
+    let want = !flat && (gizmos() || meshes());
+    for (mut cam, name) in &mut q_cam {
+        if name.as_str() == "occluded-camera" && cam.is_active != want {
+            cam.is_active = want;
+        }
     }
 }
 

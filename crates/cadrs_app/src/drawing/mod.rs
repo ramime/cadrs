@@ -352,13 +352,13 @@ fn deactivate_outside_documents(mut q: Query<&mut Camera, With<DrawingCamera>>) 
 }
 
 /// Turns the sheet camera on for Drawing tabs (and the occluded-scene camera off, as they
-/// share an order) and hides the Part Studio chrome: the feature panel, view cube, the
-/// right-edge panel strip and the viewport tools.
+/// share an order: `crate::viewport::occluded_camera_when_drawn`) and hides the Part Studio
+/// chrome: the feature panel, view cube, the right-edge panel strip and the viewport tools.
 #[allow(clippy::type_complexity)]
 fn sync_drawing_chrome(
     kind: Res<ActiveKind>,
     eda2d: Res<crate::eda::Eda2d>,
-    mut q_cam: Query<(&mut Camera, Option<&DrawingCamera>, &Name)>,
+    mut q_cam: Query<&mut Camera, With<DrawingCamera>>,
     mut q_nodes: ParamSet<(
         Query<(&Name, &mut Node, &mut Visibility)>,
         Query<Entity, (With<Name>, With<Visibility>, Added<Node>)>,
@@ -367,13 +367,9 @@ fn sync_drawing_chrome(
     let drawing = *kind == ActiveKind::Drawing;
     // A native board's Schematic or Layout view is flat too (`crate::eda`, its own camera).
     let flat2d = eda2d.flat();
-    for (mut cam, is_drawing, name) in &mut q_cam {
-        if is_drawing.is_some() {
-            if cam.is_active != drawing {
-                cam.is_active = drawing;
-            }
-        } else if name.as_str() == "occluded-camera" && cam.is_active == (drawing || flat2d) {
-            cam.is_active = !(drawing || flat2d);
+    for mut cam in &mut q_cam {
+        if cam.is_active != drawing {
+            cam.is_active = drawing;
         }
     }
     let chrome = |name: &Name, mut node: Mut<Node>, mut vis: Mut<Visibility>| match name.as_str() {
