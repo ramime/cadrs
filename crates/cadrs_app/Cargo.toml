@@ -56,6 +56,14 @@ icon-rs.workspace = true
 wayland-client.workspace = true
 wayland-backend.workspace = true
 raw-window-handle.workspace = true
+# Pure Rust client for the FreeSpacenav daemon protocol (no system libspnav link dependency).
+spnav-rs = "0.1.1"
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Read 3Dconnexion devices directly: the 3DxWare SDK is not redistributable with CADrs and is
+# not included in the driver installation. Keep this backend out of non-Windows builds.
+hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
 
 [features]
 default = ["kicad", "easyeda"]

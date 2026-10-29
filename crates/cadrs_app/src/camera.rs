@@ -373,6 +373,17 @@ impl ViewState {
         self.rotate_screen(yaw, pitch);
     }
 
+    /// Moves the model about a fixed world axis while keeping its focus and framing: the camera
+    /// takes the inverse rotation, as it does when emulating 3Dconnexion's object-navigation mode.
+    pub fn rotate_model_about(&mut self, axis: Vec3, radians: f32) {
+        if radians.abs() < 1e-7 {
+            return;
+        }
+        let camera_delta = Quat::from_axis_angle(axis.normalize(), -radians);
+        let rotation = camera_delta * self.rotation();
+        *self = self.with_rotation(rotation);
+    }
+
     /// Middle-drag pan: the scene follows the pointer.
     pub fn pan(&mut self, delta_px: Vec2) {
         self.focus -= (self.right() * delta_px.x - self.up() * delta_px.y) * self.scale;
