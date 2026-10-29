@@ -16,6 +16,11 @@
 //!   (by name, or their nearest named ancestor's). Any such change makes Bevy lay the whole UI
 //!   out again, so a node that changes every frame costs a full layout every frame. Built with
 //!   Bevy's `track_location` feature, it also says which line of code wrote the changed images.
+//!   Also the UI colours changed (each is drawn again), every node by its nearest named
+//!   ancestor, and the archetypes the nodes are spread over (a query pays for each).
+//! - `CADRS_SINGLE_THREADED=Update,PostUpdate,…`: runs those schedules (`First`, `PreUpdate`,
+//!   `Update`, `PostUpdate`, `Last`) on the main thread alone, so a profiler's samples of that
+//!   thread (`perf record -t <pid>`) hold all their systems, each under its own name.
 
 use web_time::Instant;
 
@@ -32,6 +37,22 @@ impl Plugin for DebugToolsPlugin {
                 First,
                 report_slow_frames.after(crate::frame_profile::take_frame),
             );
+        }
+        if let Ok(v) = std::env::var("CADRS_SINGLE_THREADED") {
+            use bevy::ecs::schedule::SingleThreadedExecutor;
+            for name in v.split(',') {
+                let st = |s: &mut Schedule| {
+                    s.set_executor(SingleThreadedExecutor::new());
+                };
+                match name {
+                    "First" => app.edit_schedule(First, st),
+                    "PreUpdate" => app.edit_schedule(PreUpdate, st),
+                    "Update" => app.edit_schedule(Update, st),
+                    "PostUpdate" => app.edit_schedule(PostUpdate, st),
+                    "Last" => app.edit_schedule(Last, st),
+                    _ => app,
+                };
+            }
         }
         if std::env::var_os("CADRS_NO_VSYNC").is_some() {
             app.add_systems(Startup, no_vsync);
@@ -98,8 +119,9 @@ fn report_slow_frames(
     warn!("{out}");
 }
 
-/// `CADRS_UI_CHANGES`: the UI nodes whose layout inputs changed since the last frame.
-#[allow(clippy::type_complexity)]
+/// `CADRS_UI_CHANGES`: the UI nodes whose layout inputs changed since the last frame, the colours
+/// changed, and how the UI's nodes and archetypes are spread.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn report_ui_changes(
     changed: Query<
         (
@@ -118,7 +140,11 @@ fn report_ui_changes(
     parents: Query<&ChildOf>,
     images: Query<Ref<ImageNode>>,
     texts: Query<Ref<Text>>,
+    all: Query<(Entity, &InheritedVisibility), With<Node>>,
+    fills: Query<Ref<BackgroundColor>>,
+    borders: Query<Ref<BorderColor>>,
     archetypes: &bevy::ecs::archetype::Archetypes,
+    components: &bevy::ecs::component::Components,
     mut frames: Local<u32>,
 ) {
     *frames += 1;
@@ -162,6 +188,82 @@ fn report_ui_changes(
             *writers.entry(at.to_string()).or_default() += 1;
         }
     }
+    // Every node, hidden ones apart, by its nearest named ancestor's name.
+    let (mut nodes, mut hidden) = (0, 0);
+    let mut owners = std::collections::BTreeMap::<String, (u32, u32)>::new();
+    for (e, vis) in &all {
+        nodes += 1;
+        hidden += u32::from(!vis.get());
+        let named = std::iter::successors(parents.get(e).ok().map(ChildOf::parent), |&e| {
+            parents.get(e).ok().map(ChildOf::parent)
+        })
+        .find_map(|e| names.get(e).ok())
+        .map_or("(unnamed)", |n| n.as_str());
+        let o = owners.entry(named.to_string()).or_default();
+        o.0 += 1;
+        o.1 += u32::from(!vis.get());
+    }
+    let mut owners: Vec<_> = owners.into_iter().collect();
+    owners.sort_by_key(|o| std::cmp::Reverse(o.1.0));
+    info!(
+        "UI nodes: {nodes} ({hidden} hidden); most under: {:?}",
+        &owners[..owners.len().min(25)]
+    );
+    // Colours don't lay the UI out again, but each one changed is drawn again.
+    let mut colours = std::collections::BTreeMap::<String, u32>::new();
+    let mut count = |changed: bool, added: bool, at: Option<String>| {
+        if changed && !added {
+            *colours.entry(at.unwrap_or_default()).or_default() += 1;
+        }
+    };
+    for c in &fills {
+        count(
+            c.is_changed(),
+            c.is_added(),
+            c.changed_by().into_option().map(|a| format!("fill {a}")),
+        );
+    }
+    for c in &borders {
+        count(
+            c.is_changed(),
+            c.is_added(),
+            c.changed_by().into_option().map(|a| format!("border {a}")),
+        );
+    }
+    info!("UI colours changed: {colours:?}");
+    // How the UI's entities are spread: each table a query visits costs it, however few rows.
+    let node_id = components.component_id::<Node>();
+    let ui_archetypes: Vec<_> = archetypes
+        .iter()
+        .filter(|a| node_id.is_some_and(|id| a.contains(id)) && !a.is_empty())
+        .collect();
+    let mut tables: Vec<_> = ui_archetypes
+        .iter()
+        .map(|a| a.table_id().as_usize())
+        .collect();
+    tables.sort();
+    tables.dedup();
+    // The components that split them most: in how many of those archetypes each one is.
+    let mut by_component = std::collections::BTreeMap::<String, u32>::new();
+    for a in &ui_archetypes {
+        for c in a.components() {
+            if let Some(info) = components.get_info(*c) {
+                *by_component.entry(info.name().to_string()).or_default() += 1;
+            }
+        }
+    }
+    let mut by_component: Vec<_> = by_component.into_iter().collect();
+    by_component.sort_by_key(|c| std::cmp::Reverse(c.1));
+    let n = ui_archetypes.len() as u32;
+    info!(
+        "UI archetypes: {n} with nodes, in {} tables; components in some but not all: {:?}",
+        tables.len(),
+        by_component
+            .iter()
+            .filter(|c| c.1 < n)
+            .take(40)
+            .collect::<Vec<_>>()
+    );
     let mut top: Vec<_> = by_name.into_iter().collect();
     top.sort_by_key(|t| std::cmp::Reverse(t.1));
     info!(

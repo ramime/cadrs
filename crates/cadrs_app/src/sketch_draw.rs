@@ -358,7 +358,9 @@ fn sync_gizmo_layers(
         Some(_) => RenderLayers::layer(crate::sheetmetal_table::FLAT_LAYER),
         None => RenderLayers::layer(OVERLAY_LAYER),
     };
-    fn set<C: GizmoConfigGroup>(store: &mut GizmoConfigStore, want: &RenderLayers) {
+    // (Through the `ResMut`: a store borrowed mutably reads as changed, and the part edges are
+    // drawn again whenever it changes.)
+    fn set<C: GizmoConfigGroup>(store: &mut ResMut<GizmoConfigStore>, want: &RenderLayers) {
         if store.config::<C>().0.render_layers != *want {
             store.config_mut::<C>().0.render_layers = want.clone();
         }

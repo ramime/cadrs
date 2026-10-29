@@ -2679,10 +2679,11 @@ fn draw_part_edges(
         Res<crate::analysis::ShadingAnalysis>,
         Res<EdgesOnly>,
     ),
-    (hover_parts, extra, mut lines_cache): (
+    (hover_parts, extra, mut lines_cache, mut last): (
         Res<HoverParts>,
         Res<crate::viewport::ExtraHighlight>,
         Local<LinesCache>,
+        Local<LastEdges>,
     ),
     (section, mut retained, mut gizmo_assets, gizmo_store, mut commands): (
         Res<crate::section_view::SectionClip>,
@@ -2731,6 +2732,36 @@ fn draw_part_edges(
     } else {
         Color::srgb_u8(0x14, 0x14, 0x14)
     };
+    // Nothing to do when nothing it draws from changed and the frame before drew only the
+    // retained lines (the immediate ones go each frame): looking at every part each frame cost a
+    // Part Studio of hundreds of parts a tenth of its frame.
+    let changed = cache.is_changed()
+        || over.is_changed()
+        || view.is_changed()
+        || highlight.is_changed()
+        || selection.is_changed()
+        || dialog.as_ref().is_some_and(|d| d.is_changed())
+        || dialog.is_some() != last.dialog
+        || failed.is_changed()
+        || ghosts.is_changed()
+        || analysis.is_changed()
+        || edges_only.is_changed()
+        || hover_parts.is_changed()
+        || extra.is_changed()
+        || section.is_changed()
+        || gizmo_store.is_changed()
+        || retained.is_changed()
+        || last.edge_color != Some(edge_color);
+    if !changed && !last.immediate {
+        return;
+    }
+    *last = LastEdges {
+        immediate: false,
+        dialog: dialog.is_some(),
+        edge_color: Some(edge_color),
+    };
+    // (Changed only from outside: reset when a document closes.)
+    let retained = retained.bypass_change_detection();
     // A failing feature: the parts its references are on are drawn red (`ex4-step10.png`).
     let failed_parts: &[PartId] = &failed.1;
     let v = view.view;
@@ -2785,7 +2816,8 @@ fn draw_part_edges(
             || hover_parts.0.contains(&part.id)
             || hover_parts.1.contains(&part.id)
             || list_feature.is_some_and(|f| !feature_faces && part.features.contains(&f));
-        if let Some(c) = cache.xray(part) {
+        let xray = cache.xray(part);
+        if let Some(c) = xray {
             // The body an Add adds or the material a Remove takes out: its edges over
             // everything, as it is. An Add's start cap lies under the selected region's
             // outline, which stays on top.
@@ -2953,6 +2985,14 @@ fn draw_part_edges(
         // edges over its orange shading, so its faces' boundaries read (`ex1-step6.png`,
         // `ex2-step10.png`: dark amber lines).
         let part_failed = failed_parts.contains(&part.id) && failed.2.is_empty();
+        // Whether this part draws lines of its own this frame (outside the retained ones).
+        last.immediate |= xray.is_some()
+            || preview
+            || moved.is_some()
+            || touched
+            || part_hovered
+            || part_selected
+            || failed_parts.contains(&part.id);
         // Only some faces of it fail (the shelled body): their outlines red.
         if failed.0 && failed_parts.contains(&part.id) && !failed.2.is_empty() && !part_hovered {
             for face in part
@@ -3089,6 +3129,15 @@ fn draw_part_edges(
         &mut gizmo_assets,
         &mut commands,
     );
+}
+
+/// What [`draw_part_edges`] drew from last time it ran.
+#[derive(Default)]
+struct LastEdges {
+    /// Lines of its own for a part (hovered, selected, moved, previewed…), not retained.
+    immediate: bool,
+    dialog: bool,
+    edge_color: Option<Color>,
 }
 
 /// The plain part edges and the free edges, drawn as retained gizmos: [`draw_part_edges`] makes

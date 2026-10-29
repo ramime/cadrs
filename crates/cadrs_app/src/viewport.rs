@@ -40,6 +40,17 @@ pub struct ViewportPlugin;
 
 impl Plugin for ViewportPlugin {
     fn build(&self, app: &mut App) {
+        // The views shade their own (no Bevy lights), but Bevy's shadow-caster check queues a
+        // command every frame that builds a query over every archetype (thousands, with the UI).
+        use bevy::ecs::schedule::SystemCondition;
+        app.configure_sets(
+            PostUpdate,
+            bevy::light::SimulationLightSystems::CheckLightVisibility.run_if(
+                any_with_component::<DirectionalLight>
+                    .or_else(any_with_component::<PointLight>)
+                    .or_else(any_with_component::<SpotLight>),
+            ),
+        );
         app.add_plugins(GroundGridPlugin)
             .add_systems(
                 PreUpdate,
@@ -2732,21 +2743,32 @@ fn place_plane_labels(
     parts: Option<Res<crate::parts::PartCache>>,
     meshes: Res<Assets<Mesh>>,
     fills: Query<(&Mesh3d, &InheritedVisibility), With<crate::plane_display::LabelOccluder>>,
+    mut part_bounds: Local<Option<Vec<([f64; 3], [f64; 3])>>>,
 ) {
     let v = view.view;
     let sketch_plane = sketch.active.map(|m| m.plane);
+    if parts.as_ref().is_none_or(|p| p.is_changed()) {
+        *part_bounds = None;
+    }
     // The parts' screen bounds (viewport-relative): a label over a part would draw over its
     // edges, so it hides. From the corners of each part's 3D box (a little larger than its
     // outline; projecting every vertex of every part each frame cost a large assembly most of
     // its frame). Worked out once a label is shown (an assembly shows none, and building every
     // part's boxes cost a large one half a second on each switch to its tab).
     let mut part_boxes: Option<Vec<Rect>> = None;
+    // (Each part's 3D box kept until the parts change: reading every part's each frame cost
+    // a Part Studio of hundreds of parts a cache miss or two apiece.)
     let mut boxes = || -> Vec<Rect> {
-        parts
+        part_bounds
+            .get_or_insert_with(|| {
+                parts
+                    .iter()
+                    .flat_map(|c| c.parts.iter())
+                    .filter_map(|part| part.solid.pick_index().bounds)
+                    .collect()
+            })
             .iter()
-            .flat_map(|c| c.parts.iter())
-            .filter_map(|part| {
-                let (lo, hi) = part.solid.pick_index().bounds?;
+            .filter_map(|&(lo, hi)| {
                 let mut pts = (0..8).map(|k| {
                     let c = [
                         if k & 1 == 0 { lo[0] } else { hi[0] },

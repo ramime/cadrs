@@ -1472,6 +1472,13 @@ pub(crate) fn press_to_edit(
     {
         return;
     }
+    // (The press first: the rest builds queries, and most frames have none.)
+    let Some(k) = events.iter().position(|e| {
+        e.pointer_id == PointerId::Mouse
+            && matches!(e.action, PointerAction::Press(PointerButton::Primary))
+    }) else {
+        return;
+    };
     let modeling = world
         .get_resource::<State<crate::sketch::PartStudioMode>>()
         .is_some_and(|m| *m.get() == crate::sketch::PartStudioMode::Modeling);
@@ -1483,12 +1490,6 @@ pub(crate) fn press_to_edit(
     if !modeling || dialogs {
         return;
     }
-    let Some(k) = events.iter().position(|e| {
-        e.pointer_id == PointerId::Mouse
-            && matches!(e.action, PointerAction::Press(PointerButton::Primary))
-    }) else {
-        return;
-    };
     let over = {
         let areas: Vec<Entity> = world
             .query_filtered::<Entity, With<crate::viewport::ViewportArea>>()
@@ -1777,7 +1778,11 @@ fn motion_transform(m: &cadrs_kernel::Motion) -> Transform {
 
 /// Keeps a ghost on each component whose footprint the Layout's preview moves, turns or flips
 /// (live 3D while dragging); the ghost stays after the drop until the rebuilt part is there.
-fn sync_drag_ghosts(world: &mut World, mut ghosts: Local<Ghosts>) {
+fn sync_drag_ghosts(
+    world: &mut World,
+    mut ghosts: Local<Ghosts>,
+    q: &mut QueryState<(Entity, &'static DragGhost, &'static mut Transform)>,
+) {
     let host = world.resource::<crate::eda::Eda2d>().plane().copied();
     let preview = world.resource::<crate::eda::Preview>().get();
     // Each moved footprint's part and motion (preview placement ∘ stored placement⁻¹).
@@ -1840,7 +1845,6 @@ fn sync_drag_ghosts(world: &mut World, mut ghosts: Local<Ghosts>) {
         .map(|m| m.0)
         .chain(pending.iter().copied())
         .collect();
-    let mut q = world.query::<(Entity, &DragGhost, &mut Transform)>();
     let mut have: HashSet<PartId> = HashSet::new();
     let mut gone = vec![];
     for (e, g, mut tr) in q.iter_mut(world) {

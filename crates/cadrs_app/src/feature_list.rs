@@ -475,9 +475,14 @@ fn on_timer(a: On<bevy::ui_widgets::Activate>, q: Query<&Name>, mut times: ResMu
 
 fn sync_timer_button(
     times: Res<RegenTimes>,
-    q: Query<(Entity, &Name, Has<cadrs_ui::style::Selected>)>,
+    q: Query<(Entity, &Name, Has<cadrs_ui::style::Selected>), With<cadrs_ui::style::Visuals>>,
+    q_new: Query<(), Added<cadrs_ui::style::Visuals>>,
     mut commands: Commands,
 ) {
+    // (Only when the setting changes or buttons are built: thousands of entities have names.)
+    if !times.is_changed() && q_new.is_empty() {
+        return;
+    }
     for (e, name, selected) in &q {
         if name.as_str() == "feature-timer" && selected != times.0 {
             if times.0 {

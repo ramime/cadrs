@@ -908,7 +908,11 @@ fn units(world: &World) -> cadrs_sketch::units::Units {
 }
 
 /// The panel, rebuilt when what it shows changes.
-fn sync_panel(world: &mut World, q_panel: &mut QueryState<Entity, With<PanelRoot>>) {
+fn sync_panel(
+    world: &mut World,
+    q_panel: &mut QueryState<Entity, With<PanelRoot>>,
+    q_folded: &mut QueryState<Entity, With<FoldedLabel>>,
+) {
     let open = is_open(
         world.resource::<SidePanel>(),
         world.resource::<ActiveKind>(),
@@ -918,7 +922,6 @@ fn sync_panel(world: &mut World, q_panel: &mut QueryState<Entity, With<PanelRoot
         for e in old {
             world.entity_mut(e).despawn();
         }
-        let mut q_folded = world.query_filtered::<Entity, With<FoldedLabel>>();
         for e in q_folded.iter(world).collect::<Vec<_>>() {
             world.entity_mut(e).despawn();
         }
@@ -988,7 +991,6 @@ fn sync_panel(world: &mut World, q_panel: &mut QueryState<Entity, With<PanelRoot
     for e in old {
         world.entity_mut(e).despawn();
     }
-    let mut q_folded = world.query_filtered::<Entity, With<FoldedLabel>>();
     for e in q_folded.iter(world).collect::<Vec<_>>() {
         world.entity_mut(e).despawn();
     }

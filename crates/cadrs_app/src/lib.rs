@@ -830,6 +830,38 @@ impl Plugin for CadrsAppPlugin {
         #[cfg(not(target_arch = "wasm32"))]
         app.add_plugins(mcp::McpPlugin);
     }
+
+    fn finish(&self, app: &mut App) {
+        no_fixed_timestep(app);
+    }
+}
+
+/// Turns Bevy's fixed timestep off: nothing of ours runs on it, yet every frame ran two systems
+/// per gizmo group (over 140) to set their buffers aside around it, and it ran its schedules
+/// whenever its step came round.
+fn no_fixed_timestep(app: &mut App) {
+    use bevy::app::RunFixedMainLoopSystems as Fixed;
+    use bevy::ecs::schedule::ScheduleCleanupPolicy;
+    for set in [
+        Fixed::BeforeFixedMainLoop,
+        Fixed::FixedMainLoop,
+        Fixed::AfterFixedMainLoop,
+    ] {
+        // (Not there in tests without Bevy's time plugin.)
+        let _ = app.remove_systems_in_set(
+            RunFixedMainLoop,
+            set,
+            ScheduleCleanupPolicy::RemoveSystemsOnly,
+        );
+    }
+    // Messages are kept until a fixed step has run, for its systems to see them; with none,
+    // they go after two frames.
+    if let Some(mut r) = app
+        .world_mut()
+        .get_resource_mut::<bevy::ecs::message::MessageRegistry>()
+    {
+        r.should_update = bevy::ecs::message::ShouldUpdateMessages::Always;
+    }
 }
 
 /// Permanently deleted documents are kept aside during a session so undo works; they are

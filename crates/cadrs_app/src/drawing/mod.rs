@@ -358,7 +358,10 @@ fn sync_drawing_chrome(
     kind: Res<ActiveKind>,
     eda2d: Res<crate::eda::Eda2d>,
     mut q_cam: Query<(&mut Camera, Option<&DrawingCamera>, &Name)>,
-    mut q_nodes: Query<(&Name, &mut Node, &mut Visibility), With<Node>>,
+    mut q_nodes: ParamSet<(
+        Query<(&Name, &mut Node, &mut Visibility)>,
+        Query<Entity, (With<Name>, With<Visibility>, Added<Node>)>,
+    )>,
 ) {
     let drawing = *kind == ActiveKind::Drawing;
     // A native board's Schematic or Layout view is flat too (`crate::eda`, its own camera).
@@ -372,30 +375,40 @@ fn sync_drawing_chrome(
             cam.is_active = !(drawing || flat2d);
         }
     }
-    for (name, mut node, mut vis) in &mut q_nodes {
-        match name.as_str() {
-            "feature-panel" => {
-                let d = if drawing || *kind == ActiveKind::VariableStudio {
-                    Display::None
-                } else {
-                    Display::Flex
-                };
-                if node.display != d {
-                    node.display = d;
-                }
+    let chrome = |name: &Name, mut node: Mut<Node>, mut vis: Mut<Visibility>| match name.as_str() {
+        "feature-panel" => {
+            let d = if drawing || *kind == ActiveKind::VariableStudio {
+                Display::None
+            } else {
+                Display::Flex
+            };
+            if node.display != d {
+                node.display = d;
             }
-            "view-cube" | "right-panel-strip" | "viewport-tools" | "origin" => {
-                // P3H.3: a PCB Studio keeps the view cube and has its own right-edge toggles.
-                let pcb =
-                    *kind == ActiveKind::PcbStudio && (name.as_str() != "view-cube" || flat2d);
-                let v = if kind.is_flat() || pcb {
-                    Visibility::Hidden
-                } else {
-                    Visibility::Inherited
-                };
-                vis.set_if_neq(v);
+        }
+        "view-cube" | "right-panel-strip" | "viewport-tools" | "origin" => {
+            // P3H.3: a PCB Studio keeps the view cube and has its own right-edge toggles.
+            let pcb = *kind == ActiveKind::PcbStudio && (name.as_str() != "view-cube" || flat2d);
+            let v = if kind.is_flat() || pcb {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            };
+            vis.set_if_neq(v);
+        }
+        _ => {}
+    };
+    // Every named node when the tab changes, else only new ones (thousands have names).
+    if kind.is_changed() || eda2d.is_changed() {
+        for (name, node, vis) in &mut q_nodes.p0() {
+            chrome(name, node, vis);
+        }
+    } else {
+        let new: Vec<Entity> = q_nodes.p1().iter().collect();
+        for e in new {
+            if let Ok((name, node, vis)) = q_nodes.p0().get_mut(e) {
+                chrome(name, node, vis);
             }
-            _ => {}
         }
     }
 }
@@ -853,9 +866,14 @@ fn size_sheet_lines(
         return;
     };
     let px = |w: Weight| (w.mm() as f32 * view.ppm).clamp(1.0, 8.0);
-    store.config_mut::<SheetThin>().0.line.width = px(Weight::Thin);
-    store.config_mut::<SheetMedium>().0.line.width = px(Weight::Medium);
-    store.config_mut::<SheetThick>().0.line.width = px(Weight::Thick);
+    fn set<C: GizmoConfigGroup>(store: &mut ResMut<GizmoConfigStore>, width: f32) {
+        if store.config::<C>().0.line.width != width {
+            store.config_mut::<C>().0.line.width = width;
+        }
+    }
+    set::<SheetThin>(&mut store, px(Weight::Thin));
+    set::<SheetMedium>(&mut store, px(Weight::Medium));
+    set::<SheetThick>(&mut store, px(Weight::Thick));
 }
 
 fn draw_sheet_lines(
