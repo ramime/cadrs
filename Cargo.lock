@@ -1363,7 +1363,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_iroh"
-version = "0.4.6"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "711329fe1e587c2c73c5a481a9c2fe28a4d1229fe3ee9eae72cd747620c8fbc9"
 dependencies = [
  "anyhow",
  "bevy",
@@ -4957,6 +4959,8 @@ dependencies = [
 [[package]]
 name = "icon-rs"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e30d5b64078ec1f266a4fc548063eefb19a55424348dad0b03211ebb470fe8b3"
 
 [[package]]
 name = "icu_collections"

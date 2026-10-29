@@ -104,7 +104,7 @@ tokio-util = "0.7"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 # Sharing and collaboration (cadrs_net): peers over iroh, no server. Only the transport, rooms
 # and typed messages; the voice and video features stay off (MIT/Apache-2.0).
-bevy_iroh = { version = "0.4.6", default-features = false }
+bevy_iroh = { version = "0.5", default-features = false }
 # Share links (cadrs_net): postcard, then base32 so a link survives a chat client.
 postcard = { version = "1.1", features = ["alloc"] }
 data-encoding = "2"
@@ -164,10 +164,6 @@ inherits = "release"
 incremental = true
 codegen-units = 64
 
-# TODO before merging: publish icon-rs 0.5.0 and bevy_iroh 0.5.0 (their `bevy-0.20` branches),
-# require bevy_iroh "0.5" above and drop their two lines here.
 [patch.crates-io]
-icon-rs = { path = "../icon-rs" }
-bevy_iroh = { path = "../bevy_iroh" }
 # wgpu's upload staging in system memory, not the PCIe BAR (vendor/gpu-allocator/CADRS.md).
 gpu-allocator = { path = "vendor/gpu-allocator" }
